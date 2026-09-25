@@ -16,6 +16,7 @@ const CURSOR_HIDE_TIMEOUT: Duration = Duration::from_secs(5);
 #[path = "draw.rs"]
 mod draw;
 use draw::Draw;
+pub use draw::MAX_TEXT_CHARS;
 
 #[path = "cursor.rs"]
 pub mod cursor;
@@ -323,6 +324,34 @@ impl ParticipantsManager {
         } else {
             log::warn!(
                 "ParticipantsManager::draw_end: participant {} not found",
+                identity
+            );
+        }
+    }
+
+    /// Sets the full state of a participant's text annotation.
+    pub fn draw_text(
+        &mut self,
+        identity: &str,
+        path_id: u64,
+        point: Position,
+        text: &str,
+        committed: bool,
+    ) {
+        log::debug!(
+            "ParticipantsManager::draw_text: identity={} path_id={} point={:?} committed={}",
+            identity,
+            path_id,
+            point,
+            committed
+        );
+        if let Some(participant) = self.participants.get_mut(identity) {
+            participant
+                .draw_mut()
+                .set_text(path_id, point, text, committed);
+        } else {
+            log::warn!(
+                "ParticipantsManager::draw_text: participant {} not found",
                 identity
             );
         }

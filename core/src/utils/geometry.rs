@@ -50,7 +50,7 @@ impl fmt::Display for Frame {
 }
 
 #[repr(C)]
-#[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+#[derive(Debug, Copy, Clone, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Position {
     pub x: f64,
     pub y: f64,

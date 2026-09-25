@@ -480,6 +480,26 @@ impl<'a> GraphicsContext<'a> {
         self.participants_manager.draw_end(identity, point);
     }
 
+    /// Sets the full state of a participant's text annotation.
+    ///
+    /// # Arguments
+    /// * `identity` - Identity identifying the participant
+    /// * `path_id` - Unique identifier shared with drawing paths
+    /// * `point` - Top-left anchor of the text
+    /// * `text` - Complete text content
+    /// * `committed` - Whether the text is placed (true) or still being typed
+    pub fn draw_text(
+        &mut self,
+        identity: &str,
+        path_id: u64,
+        point: Position,
+        text: &str,
+        committed: bool,
+    ) {
+        self.participants_manager
+            .draw_text(identity, path_id, point, text, committed);
+    }
+
     /// Clears a specific drawing path for a participant.
     ///
     /// # Arguments
