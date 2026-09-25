@@ -225,6 +225,10 @@ enum DrawingTest {
     ClickAnimation,
     /// Test 4 participants drawing 3 lines each concurrently in different quarters
     FourParticipantsConcurrent,
+    /// Test typed text annotations with permanent mode ON (text stays visible)
+    TextPermanent,
+    /// Test typed text annotations with permanent mode OFF (text fades away)
+    TextFading,
 }
 
 #[tokio::main]
@@ -380,6 +384,14 @@ async fn main() -> io::Result<()> {
                 DrawingTest::FourParticipantsConcurrent => {
                     println!("Running 4 participants concurrent drawing test...");
                     remote_drawing::test_four_participants_concurrent_drawing().await?;
+                }
+                DrawingTest::TextPermanent => {
+                    println!("Running remote text test (permanent)...");
+                    remote_drawing::test_remote_text(true).await?;
+                }
+                DrawingTest::TextFading => {
+                    println!("Running remote text test (fading)...");
+                    remote_drawing::test_remote_text(false).await?;
                 }
             }
             println!("Drawing test finished.");
