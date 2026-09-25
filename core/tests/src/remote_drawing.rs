@@ -1,4 +1,6 @@
-use crate::events::{ClientEvent, DrawPathPoint, DrawPoint, DrawSettings, DrawingMode};
+use crate::events::{
+    ClientEvent, DrawPathPoint, DrawPoint, DrawSettings, DrawTextData, DrawingMode,
+};
 use crate::livekit_utils;
 use crate::screenshare_client;
 use livekit::prelude::*;
@@ -25,6 +27,33 @@ async fn send_draw_start(room: &Room, x: f64, y: f64, path_id: u64) -> io::Resul
     let point = DrawPoint { x, y };
     let draw_path_point = DrawPathPoint { point, path_id };
     let event = ClientEvent::DrawStart(draw_path_point);
+    let payload = serde_json::to_vec(&event).map_err(io::Error::other)?;
+    room.local_participant()
+        .publish_data(DataPacket {
+            payload,
+            reliable: true,
+            ..Default::default()
+        })
+        .await
+        .map_err(io::Error::other)?;
+    Ok(())
+}
+
+/// Sends a DrawText event carrying the full text state
+async fn send_draw_text(
+    room: &Room,
+    x: f64,
+    y: f64,
+    path_id: u64,
+    text: &str,
+    committed: bool,
+) -> io::Result<()> {
+    let event = ClientEvent::DrawText(DrawTextData {
+        point: DrawPoint { x, y },
+        path_id,
+        text: text.to_string(),
+        committed,
+    });
     let payload = serde_json::to_vec(&event).map_err(io::Error::other)?;
     room.local_participant()
         .publish_data(DataPacket {
@@ -501,6 +530,82 @@ pub async fn test_draw_and_clear_all_paths() -> io::Result<()> {
     sleep(Duration::from_secs(2)).await;
 
     // Disable drawing mode
+    println!("Disabling drawing mode");
+    send_drawing_mode(&room, DrawingMode::Disabled).await?;
+
+    println!("\n=== TEST COMPLETED ===");
+    screenshare_client::stop_screenshare_session(&sender)?;
+    Ok(())
+}
+
+/// Test typed text annotations: live typing that follows the cursor, backspace,
+/// commit, cancel, and clearing. With `permanent` false, committed text should
+/// fade out after a few seconds like strokes do.
+pub async fn test_remote_text(permanent: bool) -> io::Result<()> {
+    println!("\n=== TEST: Remote Text (permanent={permanent}) ===");
+    let (sender, _event_socket) = screenshare_client::start_screenshare_session()?;
+
+    let url = std::env::var("LIVEKIT_URL").expect("LIVEKIT_URL environment variable not set");
+    let token = livekit_utils::generate_token("TextTester");
+    let (room, _rx) = Room::connect(&url, &token, RoomOptions::default())
+        .await
+        .unwrap();
+
+    println!("Participant connected. Waiting for setup...");
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+    println!("Enabling drawing mode with permanent={permanent}");
+    send_drawing_mode(&room, DrawingMode::Draw(DrawSettings { permanent })).await?;
+    sleep(Duration::from_millis(500)).await;
+
+    // Type "Hello, Hopp!" one character at a time while the cursor drifts right.
+    println!("\nTyping 'Hello, Hopp!' at the top-left; text should follow the cursor with a caret");
+    let message = "Hello, Hopp!";
+    let mut typed = String::new();
+    for (i, ch) in message.chars().enumerate() {
+        typed.push(ch);
+        send_draw_text(&room, 0.2 + i as f64 * 0.005, 0.2, 1, &typed, false).await?;
+        sleep(Duration::from_millis(150)).await;
+    }
+
+    println!("Backspacing twice and retyping; text should read 'Hello, Hopp!' again");
+    for len in [message.len() - 1, message.len() - 2] {
+        send_draw_text(&room, 0.255, 0.2, 1, &message[..len], false).await?;
+        sleep(Duration::from_millis(300)).await;
+    }
+    send_draw_text(&room, 0.255, 0.2, 1, message, false).await?;
+    sleep(Duration::from_millis(300)).await;
+
+    println!("Committing; caret should disappear");
+    send_draw_text(&room, 0.255, 0.2, 1, message, true).await?;
+    sleep(Duration::from_secs(1)).await;
+
+    println!("Stale update after commit; nothing should change");
+    send_draw_text(&room, 0.6, 0.6, 1, "stale", false).await?;
+    sleep(Duration::from_millis(500)).await;
+
+    println!("\nTyping 'cancel me' in the middle, then cancelling it");
+    send_draw_text(&room, 0.4, 0.5, 2, "cancel me", false).await?;
+    sleep(Duration::from_secs(2)).await;
+    send_draw_clear_path(&room, 2).await?;
+    println!("'cancel me' should be gone");
+    sleep(Duration::from_secs(1)).await;
+
+    println!("\nPlacing text next to a stroke at the bottom");
+    draw_stroke(&room, 0.2, 0.8, 0.5, 0.8, 3).await?;
+    send_draw_text(&room, 0.2, 0.7, 4, "Unicode: café, naïve, ✓", true).await?;
+
+    if permanent {
+        println!("Committed text and stroke should stay. Waiting 4 seconds...");
+        sleep(Duration::from_secs(4)).await;
+        println!("Clearing all; text and stroke should disappear together");
+        send_draw_clear_all_paths(&room).await?;
+    } else {
+        println!("Committed text and stroke should fade out within ~3 seconds...");
+        sleep(Duration::from_secs(5)).await;
+    }
+    sleep(Duration::from_secs(1)).await;
+
     println!("Disabling drawing mode");
     send_drawing_mode(&room, DrawingMode::Disabled).await?;
 
