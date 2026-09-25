@@ -96,6 +96,15 @@ pub struct DrawPoint {
     pub y: f64,
 }
 
+/// Full state of a text annotation typed in drawing mode.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DrawTextData {
+    pub path_id: u64,
+    pub point: DrawPoint,
+    pub text: String,
+    pub committed: bool,
+}
+
 /// A drawing path point with both coordinates and path identifier.
 #[derive(Debug, Serialize, Deserialize, Clone, Copy)]
 pub struct DrawPathPoint {
@@ -123,5 +132,6 @@ pub enum ClientEvent {
     DrawEnd(DrawPoint),
     DrawClearPath { path_id: u64 },
     DrawClearAllPaths,
+    DrawText(DrawTextData),
     ClickAnimation(DrawPoint),
 }

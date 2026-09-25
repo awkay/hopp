@@ -25,7 +25,7 @@ use crate::graphics::graphics_window_context::{
 };
 use crate::room_service::DrawingMode;
 use crate::utils::geometry::{Frame, Position};
-use crate::window::drawing_helpers;
+use crate::window::drawing_helpers::{self, DrawTextInput, DrawTextUpdate};
 
 pub fn drawing_window_attributes() -> WindowAttributes {
     use winit::window::WindowLevel;
@@ -144,9 +144,19 @@ pub(crate) enum DrawingWindowInputEvent {
     DrawStart { x: f64, y: f64, path_id: u64 },
     DrawAddPoint { x: f64, y: f64 },
     DrawEnd { x: f64, y: f64 },
+    DrawText(crate::room_service::DrawTextData),
     DrawClearAllPaths,
     DrawClearPaths(Vec<u64>),
     Escape,
+}
+
+impl From<DrawTextUpdate> for DrawingWindowInputEvent {
+    fn from(update: DrawTextUpdate) -> Self {
+        match update {
+            DrawTextUpdate::Text(data) => Self::DrawText(data),
+            DrawTextUpdate::Cancel { path_id } => Self::DrawClearPaths(vec![path_id]),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -199,6 +209,7 @@ pub struct DrawingWindow {
     left_mouse_pressed: bool,
     current_path_id: u64,
     last_cursor_position: Option<(f64, f64)>,
+    text_input: DrawTextInput,
     capture_frame: Option<Arc<Mutex<Frame>>>,
     draw_y_scale: f64,
     draw_y_offset: f64,
@@ -341,6 +352,7 @@ impl DrawingWindow {
             left_mouse_pressed: false,
             current_path_id: 0,
             last_cursor_position: None,
+            text_input: DrawTextInput::default(),
             capture_frame,
             draw_y_scale: 1.0,
             draw_y_offset: 0.0,
@@ -394,6 +406,7 @@ impl DrawingWindow {
         self.left_mouse_pressed = false;
         self.current_path_id = 0;
         self.last_cursor_position = None;
+        self.text_input = DrawTextInput::default();
 
         let mut participants_manager = ParticipantsManager::new();
         if let Err(e) = participants_manager.add_participant(
@@ -553,6 +566,16 @@ impl DrawingWindow {
         Some(DrawingWindowInputEvent::DrawEnd { x, y })
     }
 
+    fn apply_text_update(
+        &mut self,
+        update: Option<DrawTextUpdate>,
+    ) -> Option<DrawingWindowInputEvent> {
+        let update = update?;
+        drawing_helpers::apply_local_text_update(&mut self.participants_manager, &update);
+        self.signal_activity();
+        Some(update.into())
+    }
+
     fn view<'a>(
         participants: &'a ParticipantsManager,
         capture_frame: Option<Frame>,
@@ -599,6 +622,9 @@ impl DrawingWindow {
                             y: source.y,
                         });
                         self.signal_activity();
+                    } else if self.text_input.is_pending() {
+                        let update = self.text_input.move_to(source);
+                        input_event = self.apply_text_update(update);
                     }
                 } else if self.left_mouse_pressed {
                     input_event = self.end_stroke();
@@ -620,6 +646,9 @@ impl DrawingWindow {
             WindowEvent::Focused(false) => {
                 if self.left_mouse_pressed {
                     input_event = self.end_stroke();
+                } else {
+                    let update = self.text_input.cancel();
+                    input_event = self.apply_text_update(update);
                 }
                 self.set_default_cursor();
             }
@@ -634,7 +663,11 @@ impl DrawingWindow {
                 };
 
                 if *button == winit::event::MouseButton::Left {
-                    if state.is_pressed() {
+                    if state.is_pressed() && self.text_input.is_pending() {
+                        // Clicking places pending text instead of starting a stroke.
+                        let update = self.text_input.commit();
+                        input_event = self.apply_text_update(update);
+                    } else if state.is_pressed() {
                         let Some(source) = source else {
                             return input_event;
                         };
@@ -652,7 +685,7 @@ impl DrawingWindow {
                             path_id: self.current_path_id,
                         });
                         self.signal_activity();
-                    } else {
+                    } else if self.left_mouse_pressed {
                         if let Some(source) = source {
                             self.last_cursor_position = Some((source.x, source.y));
                         }
@@ -662,6 +695,8 @@ impl DrawingWindow {
                     && state.is_pressed()
                     && self.draw_persist
                 {
+                    // Clearing all paths also removes any pending text.
+                    self.text_input.cancel();
                     self.participants_manager
                         .draw_clear_all_paths(drawing_helpers::LOCAL_PARTICIPANT_IDENTITY);
                     input_event = Some(DrawingWindowInputEvent::DrawClearAllPaths);
@@ -669,7 +704,20 @@ impl DrawingWindow {
                 }
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                if event.state.is_pressed() {
+                let text_key = if self.left_mouse_pressed {
+                    None
+                } else {
+                    drawing_helpers::text_key_from_event(event, self.modifiers)
+                };
+                let cursor = self.last_cursor_position.map(|(x, y)| Position { x, y });
+                let update = text_key.and_then(|key| {
+                    self.text_input
+                        .handle_key(key, cursor, &mut self.current_path_id)
+                });
+                if update.is_some() {
+                    input_event = self.apply_text_update(update);
+                } else if event.state.is_pressed() {
+                    // Escape only exits drawing mode when no text is pending.
                     if let Key::Named(NamedKey::Escape) = event.logical_key {
                         input_event = Some(DrawingWindowInputEvent::Escape);
                     }

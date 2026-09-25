@@ -42,7 +42,7 @@ use super::aspect_ratio::{
     calculate_max_window_size, default_window_size, min_window_size, AspectRatioEnforcer,
     WindowConstant,
 };
-use super::drawing_helpers;
+use super::drawing_helpers::{self, DrawTextInput, DrawTextUpdate};
 use crate::components::call_controls::{
     CallControlsDensity, CallControlsMessage, CallControlsState,
 };
@@ -359,12 +359,22 @@ pub(crate) enum ScreenShareInputEvent {
     DrawStart { x: f64, y: f64, path_id: u64 },
     DrawAddPoint { x: f64, y: f64 },
     DrawEnd { x: f64, y: f64 },
+    DrawText(crate::room_service::DrawTextData),
     DrawClearAllPaths,
     DrawClearPaths(Vec<u64>),
     ClickAnimation { x: f64, y: f64 },
     DrawingModeChanged(crate::room_service::DrawingMode),
     AddToClipboard { is_copy: bool },
     PasteFromClipboard(Option<String>),
+}
+
+impl From<DrawTextUpdate> for ScreenShareInputEvent {
+    fn from(update: DrawTextUpdate) -> Self {
+        match update {
+            DrawTextUpdate::Text(data) => Self::DrawText(data),
+            DrawTextUpdate::Cancel { path_id } => Self::DrawClearPaths(vec![path_id]),
+        }
+    }
 }
 
 // ── Application state for the screensharing UI ─────────────────────────────
@@ -384,6 +394,8 @@ struct ScreensharingState {
     current_path_id: u64,
     /// Last cursor position (percentage 0.0-1.0) inside participant area.
     last_draw_cursor: Option<(f64, f64)>,
+    /// Text being typed in draw mode; follows the cursor until committed.
+    text_input: DrawTextInput,
     /// Whether the settings dropdown is open.
     dropdown_open: bool,
     /// When true, drawn strokes persist until right-click; otherwise they fade out.
@@ -417,6 +429,7 @@ impl Default for ScreensharingState {
             left_mouse_pressed: false,
             current_path_id: 0,
             last_draw_cursor: None,
+            text_input: DrawTextInput::default(),
             dropdown_open: false,
             draw_persist: false,
             remote_control_allowed: true,
@@ -933,6 +946,18 @@ impl ScreensharingWindow {
         self.participants_manager.draw_end(identity, point);
     }
 
+    pub fn draw_text(
+        &mut self,
+        identity: &str,
+        path_id: u64,
+        point: Position,
+        text: &str,
+        committed: bool,
+    ) {
+        self.participants_manager
+            .draw_text(identity, path_id, point, text, committed);
+    }
+
     pub fn draw_clear_path(&mut self, identity: &str, path_id: u64) {
         self.participants_manager.draw_clear_path(identity, path_id);
     }
@@ -1112,6 +1137,18 @@ impl ScreensharingWindow {
         }
     }
 
+    /// Applies a local text update and queues it for publishing.
+    fn apply_text_update(
+        &mut self,
+        update: Option<DrawTextUpdate>,
+        input_events: &mut Vec<ScreenShareInputEvent>,
+    ) {
+        if let Some(update) = update {
+            drawing_helpers::apply_local_text_update(&mut self.participants_manager, &update);
+            input_events.push(update.into());
+        }
+    }
+
     /// Bounding rectangle of the participant image area in logical pixels.
     fn participant_image_rect(&self) -> Rectangle {
         let logical = self.viewport.logical_size();
@@ -1161,6 +1198,14 @@ impl ScreensharingWindow {
                         );
                         input_events
                             .push(ScreenShareInputEvent::DrawAddPoint { x: pct_x, y: pct_y });
+                    } else if self.state.active_tab == "draw" && self.state.text_input.is_pending()
+                    {
+                        // Pending text follows the cursor; receivers move the cursor with it.
+                        let update = self
+                            .state
+                            .text_input
+                            .move_to(crate::utils::geometry::Position { x: pct_x, y: pct_y });
+                        self.apply_text_update(update, &mut input_events);
                     } else {
                         input_events
                             .push(ScreenShareInputEvent::CursorMoved { x: pct_x, y: pct_y });
@@ -1213,6 +1258,8 @@ impl ScreensharingWindow {
             // Also reset when the window loses focus so stale state doesn't
             // linger while the user interacts with another window.
             WindowEvent::Focused(false) => {
+                let update = self.state.text_input.cancel();
+                self.apply_text_update(update, &mut input_events);
                 if self.mouse_in_participant_area {
                     if self.state.active_tab == "draw" && self.state.left_mouse_pressed {
                         if let Some((lx, ly)) = self.state.last_draw_cursor {
@@ -1248,7 +1295,11 @@ impl ScreensharingWindow {
                     if self.state.active_tab == "draw" {
                         match button {
                             winit::event::MouseButton::Left => {
-                                if down {
+                                if down && self.state.text_input.is_pending() {
+                                    // Clicking places pending text instead of starting a stroke.
+                                    let update = self.state.text_input.commit();
+                                    self.apply_text_update(update, &mut input_events);
+                                } else if down {
                                     self.state.current_path_id += 1;
                                     self.state.left_mouse_pressed = true;
                                     self.participants_manager.draw_start(
@@ -1261,7 +1312,7 @@ impl ScreensharingWindow {
                                         y: pct_y,
                                         path_id: self.state.current_path_id,
                                     });
-                                } else {
+                                } else if self.state.left_mouse_pressed {
                                     self.state.left_mouse_pressed = false;
                                     self.participants_manager.draw_end(
                                         drawing_helpers::LOCAL_PARTICIPANT_IDENTITY,
@@ -1274,6 +1325,8 @@ impl ScreensharingWindow {
                                 }
                             }
                             winit::event::MouseButton::Right if down && self.state.draw_persist => {
+                                // Clearing all paths also removes any pending text.
+                                self.state.text_input.cancel();
                                 self.participants_manager.draw_clear_all_paths(
                                     drawing_helpers::LOCAL_PARTICIPANT_IDENTITY,
                                 );
@@ -1507,6 +1560,26 @@ impl ScreensharingWindow {
                         key_event.logical_key,
                         key_event.state
                     );
+                } else if self.state.active_tab == "draw"
+                    && (self.mouse_in_participant_area || self.state.text_input.is_pending())
+                {
+                    // Typing in draw mode writes text at the cursor.
+                    if !self.state.left_mouse_pressed {
+                        let cursor = self
+                            .state
+                            .last_draw_cursor
+                            .map(|(x, y)| crate::utils::geometry::Position { x, y });
+                        let update =
+                            drawing_helpers::text_key_from_event(key_event, self.modifiers)
+                                .and_then(|key| {
+                                    self.state.text_input.handle_key(
+                                        key,
+                                        cursor,
+                                        &mut self.state.current_path_id,
+                                    )
+                                });
+                        self.apply_text_update(update, &mut input_events);
+                    }
                 } else {
                     log::debug!(
                         "ScreensharingWindow: [outside] key {:?} ignored",
@@ -1601,6 +1674,8 @@ impl ScreensharingWindow {
                                     drawing_helpers::LOCAL_PARTICIPANT_IDENTITY,
                                 );
                             }
+                            let update = self.state.text_input.cancel();
+                            self.apply_text_update(update, &mut input_events);
                             self.participants_manager.set_drawing_mode(
                                 drawing_helpers::LOCAL_PARTICIPANT_IDENTITY,
                                 mode.clone(),

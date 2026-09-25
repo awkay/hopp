@@ -164,6 +164,7 @@ enum RoomServiceCommand {
     PublishDrawEnd(ClientPoint),
     PublishDrawClearPaths(Vec<u64>),
     PublishDrawClearAllPaths,
+    PublishDrawText(DrawTextData),
     PublishDrawingMode(DrawingMode),
     UnpublishAudioTrack,
     MuteAudioTrack,
@@ -200,6 +201,7 @@ impl std::fmt::Debug for RoomServiceCommand {
             Self::PublishDrawEnd(..) => write!(f, "PublishDrawEnd"),
             Self::PublishDrawClearPaths(..) => write!(f, "PublishDrawClearPaths"),
             Self::PublishDrawClearAllPaths => write!(f, "PublishDrawClearAllPaths"),
+            Self::PublishDrawText(..) => write!(f, "PublishDrawText"),
             Self::PublishDrawingMode(..) => write!(f, "PublishDrawingMode"),
             Self::UnpublishAudioTrack => write!(f, "UnpublishAudioTrack"),
             Self::MuteAudioTrack => write!(f, "MuteAudioTrack"),
@@ -632,6 +634,16 @@ impl RoomService {
             .send(RoomServiceCommand::PublishDrawClearAllPaths);
         if let Err(e) = res {
             log::error!("publish_draw_clear_all_paths: Error sending command: {e:?}");
+        }
+    }
+
+    pub fn publish_draw_text(&self, data: DrawTextData) {
+        log::debug!("publish_draw_text: {:?}", data);
+        let res = self
+            .service_command_tx
+            .send(RoomServiceCommand::PublishDrawText(data));
+        if let Err(e) = res {
+            log::error!("publish_draw_text: Error sending command: {e:?}");
         }
     }
 
@@ -1580,6 +1592,31 @@ async fn room_service_commands(
                     );
                 }
             }
+            RoomServiceCommand::PublishDrawText(data) => {
+                let room = inner.room.lock().await;
+                if room.is_none() {
+                    log::warn!("room_service_commands: Room doesn't exist");
+                    continue;
+                }
+                let room = room.as_ref().unwrap();
+                let local_participant = room.local_participant();
+                let event = ClientEvent::DrawText(data);
+                let payload = serde_json::to_vec(&event).unwrap();
+                // Reliable (ordered) so a late position update can never
+                // reopen text that was already committed or cancelled.
+                let res = local_participant
+                    .publish_data(DataPacket {
+                        payload,
+                        reliable: true,
+                        topic: Some(TOPIC_DRAW.to_string()),
+                        ..Default::default()
+                    })
+                    .await;
+
+                if let Err(e) = res {
+                    log::error!("room_service_commands: Failed to publish draw text: {e:?}");
+                }
+            }
             RoomServiceCommand::PublishDrawingMode(mode) => {
                 let room = inner.room.lock().await;
                 if room.is_none() {
@@ -1915,7 +1952,7 @@ async fn room_service_commands(
 ///
 /// This structure is used to represent cursor positions, mouse coordinates,
 /// and other 2D locations within the room service.
-#[derive(Debug, Serialize, Deserialize, Clone, Copy)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
 pub struct ClientPoint {
     /// The x-coordinate of the point
     pub x: f64,
@@ -1933,6 +1970,23 @@ pub struct DrawPathPoint {
     pub point: ClientPoint,
     /// The unique identifier for the drawing path this point belongs to
     pub path_id: u64,
+}
+
+/// Full state of a text annotation typed in drawing mode.
+///
+/// Every update carries the complete text, so updates are idempotent. The
+/// `path_id` shares the id space of drawing paths, so `DrawClearPath` and
+/// `DrawClearAllPaths` remove text the same way they remove strokes.
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct DrawTextData {
+    /// The unique identifier shared with drawing paths
+    pub path_id: u64,
+    /// Top-left anchor of the text in normalized coordinates
+    pub point: ClientPoint,
+    /// The complete text content
+    pub text: String,
+    /// False while the text is being typed, true once it is placed
+    pub committed: bool,
 }
 
 /// Contains data for mouse click events.
@@ -2106,6 +2160,8 @@ pub enum ClientEvent {
     DrawClearPath { path_id: u64 },
     /// Clear all drawing paths
     DrawClearAllPaths,
+    /// Text annotation typed in drawing mode (full state)
+    DrawText(DrawTextData),
     /// Click animation at a point
     ClickAnimation(ClientPoint),
 }
@@ -2483,6 +2539,9 @@ async fn handle_room_events(ctx: RoomEventContext) {
                     }
                     ClientEvent::DrawClearAllPaths => {
                         event_loop_proxy.send_event(UserEvent::DrawClearAllPaths(identity))
+                    }
+                    ClientEvent::DrawText(data) => {
+                        event_loop_proxy.send_event(UserEvent::DrawText(data, identity))
                     }
                     ClientEvent::ClickAnimation(point) => event_loop_proxy
                         .send_event(UserEvent::ClickAnimationFromParticipant(point, identity)),
