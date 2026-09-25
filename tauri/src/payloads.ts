@@ -143,6 +143,19 @@ export const PDrawClearAllPaths = z.object({
 });
 export type TPDrawClearAllPaths = z.infer<typeof PDrawClearAllPaths>;
 
+// Full state of a text annotation typed in drawing mode. path_id shares the
+// drawing path id space, so DrawClearPath/DrawClearAllPaths also remove text.
+export const PDrawText = z.object({
+  type: z.literal("DrawText"),
+  payload: z.object({
+    path_id: z.number(),
+    point: PClientPoint,
+    text: z.string(),
+    committed: z.boolean(),
+  }),
+});
+export type TPDrawText = z.infer<typeof PDrawText>;
+
 export const PDrawSettings = z.object({
   permanent: z.boolean(),
 });

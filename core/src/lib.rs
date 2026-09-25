@@ -2063,6 +2063,44 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     }
                 }
             }
+            UserEvent::DrawText(data, sid) => {
+                log::debug!(
+                    "user_event: DrawText: {} {:?} committed={} {}",
+                    data.path_id,
+                    data.point,
+                    data.committed,
+                    sid
+                );
+                let pos = Position {
+                    x: data.point.x,
+                    y: data.point.y,
+                };
+                if let (Some(window_manager), Some(remote_control)) =
+                    (self.window_manager.as_mut(), self.remote_control.as_mut())
+                {
+                    if let Some(gfx) = window_manager.active_gfx_mut() {
+                        gfx.draw_text(sid.as_str(), data.path_id, pos, &data.text, data.committed);
+                        gfx.trigger_render();
+                    }
+                    remote_control.cursor_controller.cursor_move_controller(
+                        data.point.x,
+                        data.point.y,
+                        sid.as_str(),
+                    );
+                }
+                if let Some(screensharing_window) = &mut self.screensharing_window {
+                    if screensharing_window.is_visible() {
+                        screensharing_window.draw_text(
+                            sid.as_str(),
+                            data.path_id,
+                            pos,
+                            &data.text,
+                            data.committed,
+                        );
+                        screensharing_window.set_cursor_position(sid.as_str(), Some(pos));
+                    }
+                }
+            }
             UserEvent::ClickAnimationFromParticipant(point, sid) => {
                 log::debug!(
                     "user_event: ClickAnimationFromParticipant: {:?} {}",
@@ -2687,6 +2725,9 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                             window::drawing_window::DrawingWindowInputEvent::DrawEnd { x, y } => {
                                 rs.publish_draw_end(crate::room_service::ClientPoint { x, y });
                             }
+                            window::drawing_window::DrawingWindowInputEvent::DrawText(data) => {
+                                rs.publish_draw_text(data);
+                            }
                             window::drawing_window::DrawingWindowInputEvent::DrawClearAllPaths => {
                                 rs.publish_draw_clear_all_paths();
                             }
@@ -2744,6 +2785,9 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                             }
                             ScreenShareInputEvent::DrawEnd { x, y } => {
                                 rs.publish_draw_end(crate::room_service::ClientPoint { x, y });
+                            }
+                            ScreenShareInputEvent::DrawText(data) => {
+                                rs.publish_draw_text(data);
                             }
                             ScreenShareInputEvent::DrawClearAllPaths => {
                                 rs.publish_draw_clear_all_paths();
@@ -3184,6 +3228,7 @@ pub enum UserEvent {
     DrawEnd(room_service::ClientPoint, String),
     DrawClearPath(u64, String),
     DrawClearAllPaths(String),
+    DrawText(room_service::DrawTextData, String),
     ClickAnimationFromParticipant(room_service::ClientPoint, String),
     LocalDrawingEnabled(socket_lib::DrawingEnabled),
     SharerDrawPersistChanged(bool),
