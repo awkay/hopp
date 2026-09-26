@@ -491,7 +491,7 @@ impl<'a> Application<'a> {
             socket_responses,
             room_service: None,
             event_loop_proxy,
-            controller_draw_persist: false,
+            controller_draw_persist: true,
             last_mode: None,
             window_manager: None,
             audio_capturer,
@@ -879,6 +879,11 @@ impl<'a> Application<'a> {
             .map(str::to_owned);
         let camera_active = selected_camera_name.is_some();
         let selected_mic_name = self.audio_capturer.active_device_name().map(str::to_owned);
+        let bandwidth_mode = self
+            .room_service
+            .as_ref()
+            .map(RoomService::bandwidth_mode_state)
+            .unwrap_or_default();
         let (redraw_rx, redraw_tx) = redraw_rx.zip(redraw_tx).unwrap_or_else(|| {
             let (tx, rx) =
                 std::sync::mpsc::channel::<window::screensharing_window::RedrawCommand>();
@@ -896,6 +901,7 @@ impl<'a> Application<'a> {
                 selected_mic_name,
                 draw_persist: self.controller_draw_persist,
                 last_mode: self.last_mode.clone(),
+                bandwidth_mode,
                 redraw_rx,
                 redraw_tx,
                 event_loop_proxy: self.event_loop_proxy.clone(),
@@ -1575,6 +1581,9 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                 self.stop_camera();
                 self.set_call_controls_mic(None);
                 self.set_call_controls_camera(false, None);
+                if let Some(window) = &mut self.screensharing_window {
+                    window.set_bandwidth_mode_state(Default::default());
+                }
 
                 if let Some(cm) = self.context_manager.as_mut() {
                     if let Some(wm) = self.window_manager.as_mut() {
@@ -1844,7 +1853,8 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
             UserEvent::LivekitServerUrl(url) => {
                 log::debug!("user_event: Livekit server url: {url}");
 
-                let room_service = RoomService::new(url, self.socket.clone());
+                let room_service =
+                    RoomService::new(url, self.socket.clone(), self.event_loop_proxy.clone());
                 if room_service.is_err() {
                     log::error!(
                         "user_event: Error creating room service: {:?}",
@@ -2215,6 +2225,11 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     room_service.set_local_low_bandwidth(enabled);
                 } else {
                     log::warn!("user_event: SetCallLowBandwidth: room service not found");
+                }
+            }
+            UserEvent::BandwidthModeStateChanged(state) => {
+                if let Some(window) = &mut self.screensharing_window {
+                    window.set_bandwidth_mode_state(state);
                 }
             }
             UserEvent::SetScreenSharePickerMode(mode) => {
@@ -3300,6 +3315,8 @@ pub enum UserEvent {
     SetScreenShareResolution(ScreenShareResolution),
     SetLowBandwidthDefault(bool),
     SetCallLowBandwidth(bool),
+    /// Low-bandwidth mode state changed; pushed from the room service to the native windows.
+    BandwidthModeStateChanged(socket_lib::BandwidthModeState),
     SetScreenSharePickerMode(ScreenSharePickerMode),
     SetTelemetryEnabled(bool),
     CreateRoomResult(Result<Vec<socket_lib::CoreParticipantState>, String>),

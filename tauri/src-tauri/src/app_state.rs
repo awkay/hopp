@@ -187,11 +187,11 @@ struct AppStateInternal {
     /// The user's preferred interaction mode for screen sharing sessions
     pub last_mode: Option<StoredMode>,
 
-    /// Whether the sharer's drawing mode should persist until right-click
+    /// Whether the sharer's drawing mode should persist until right-click (default: true)
     #[serde(alias = "drawing_permanent")]
     pub sharer_draw_persist: Option<bool>,
 
-    /// Whether the controller's drawing mode should persist until right-click
+    /// Whether the controller's drawing mode should persist until right-click (default: true)
     pub controller_draw_persist: Option<bool>,
 
     /// Whether the first-time drawing hint toast has been shown
@@ -480,7 +480,7 @@ impl AppState {
     /// Gets whether the sharer's drawing mode should persist until right-click.
     pub fn sharer_draw_persist(&self) -> bool {
         let _lock = self.lock.lock().unwrap();
-        self.state.sharer_draw_persist.unwrap_or(false)
+        self.state.sharer_draw_persist.unwrap_or(true)
     }
 
     /// Updates the sharer draw persist setting and saves to disk.
@@ -496,7 +496,7 @@ impl AppState {
     /// Gets whether the controller's drawing mode should persist until right-click.
     pub fn controller_draw_persist(&self) -> bool {
         let _lock = self.lock.lock().unwrap();
-        self.state.controller_draw_persist.unwrap_or(false)
+        self.state.controller_draw_persist.unwrap_or(true)
     }
 
     /// Updates the controller draw persist setting and saves to disk.

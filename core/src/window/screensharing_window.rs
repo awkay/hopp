@@ -43,6 +43,9 @@ use super::aspect_ratio::{
     WindowConstant,
 };
 use super::drawing_helpers::{self, DrawTextInput, DrawTextUpdate};
+use crate::components::bandwidth_toggle::{
+    bandwidth_toggle, bandwidth_toggle_width, next_local_request,
+};
 use crate::components::call_controls::{
     CallControlsDensity, CallControlsMessage, CallControlsState,
 };
@@ -85,9 +88,15 @@ pub fn screensharing_window_attributes() -> WindowAttributes {
     attrs
 }
 
-const SCREENSHARE_CALL_CONTROLS_MIN_WIDTH: f32 = 640.0;
+// Wide enough for the turtle toggle + call controls on each side of the segmented control.
+const SCREENSHARE_CALL_CONTROLS_MIN_WIDTH: f32 = 690.0;
 const SCREENSHARE_SEGMENTED_CONTROLS_WIDTH: f32 = 132.0;
 const SCREENSHARE_SETTINGS_BUTTON_WIDTH: f32 = 44.0;
+/// Turtle toggle + call controls, centered together in the header slot.
+const SCREENSHARE_HEADER_CONTROLS_WIDTH: f32 =
+    bandwidth_toggle_width(CallControlsDensity::Compact.button_size())
+        + CallControlsDensity::Compact.spacing()
+        + CallControlsDensity::Compact.total_width();
 
 /// Available screen area detected at runtime by probing with a temporary window.
 /// This replaces hardcoded OS chrome offsets (menubar, taskbar, dock) with
@@ -339,6 +348,7 @@ pub enum ScreensharingMessage {
     ToggleDropdown,
     DismissDropdown,
     DropdownItemClicked(usize),
+    ToggleLowBandwidth,
 }
 
 // ── Input events to forward to room service ─────────────────────────────────
@@ -416,6 +426,8 @@ struct ScreensharingState {
     /// clipboard shortcut (in which case they are discarded) or a regular key
     /// (in which case they are flushed first).
     queued_modifier_events: Vec<crate::room_service::KeystrokeData>,
+    /// Low-bandwidth mode state of the current call, drives the turtle toggle.
+    bandwidth_mode: socket_lib::BandwidthModeState,
 }
 
 impl Default for ScreensharingState {
@@ -431,7 +443,7 @@ impl Default for ScreensharingState {
             last_draw_cursor: None,
             text_input: DrawTextInput::default(),
             dropdown_open: false,
-            draw_persist: false,
+            draw_persist: true,
             remote_control_allowed: true,
             app_veil_snapshot: Default::default(),
             user_has_resized: false,
@@ -442,6 +454,7 @@ impl Default for ScreensharingState {
             last_click_y: 0.0,
             sharer_name: "Screen".to_string(),
             queued_modifier_events: Vec::new(),
+            bandwidth_mode: Default::default(),
         }
     }
 }
@@ -599,6 +612,7 @@ pub struct ScreensharingWindowConfig {
     pub selected_mic_name: Option<String>,
     pub draw_persist: bool,
     pub last_mode: Option<socket_lib::StoredMode>,
+    pub bandwidth_mode: socket_lib::BandwidthModeState,
     pub redraw_rx: std::sync::mpsc::Receiver<RedrawCommand>,
     pub redraw_tx: std::sync::mpsc::Sender<RedrawCommand>,
     pub event_loop_proxy: EventLoopProxy<crate::UserEvent>,
@@ -682,6 +696,7 @@ impl ScreensharingWindow {
             selected_mic_name,
             draw_persist,
             last_mode,
+            bandwidth_mode,
             redraw_rx,
             redraw_tx,
             event_loop_proxy,
@@ -819,8 +834,9 @@ impl ScreensharingWindow {
             remote,
             state: call_participants,
         } = ScreensharingParticipants::from_shared(participants, sharer_identity.as_deref());
-        let (initial_state, participants_manager) =
+        let (mut initial_state, participants_manager) =
             build_initial_state(&remote, draw_persist, &last_mode);
+        initial_state.bandwidth_mode = bandwidth_mode;
         let call_controls =
             CallControlsState::new(camera_active, selected_camera_name, selected_mic_name);
         let redraw_in_progress = Arc::new(AtomicBool::new(false));
@@ -1004,6 +1020,11 @@ impl ScreensharingWindow {
 
     pub fn set_selected_mic_name(&mut self, name: Option<String>) {
         self.call_controls.set_selected_mic_name(name);
+    }
+
+    pub fn set_bandwidth_mode_state(&mut self, state: socket_lib::BandwidthModeState) {
+        self.state.bandwidth_mode = state;
+        self.window.request_redraw();
     }
 
     pub fn set_app_veil_snapshot(&mut self, snapshot: crate::room_service::AppVeilSnapshot) {
@@ -1878,9 +1899,17 @@ impl ScreensharingWindow {
                     Space::new().width(Length::Fill),
                     seg_ctrl,
                     container(
-                        call_controls
-                            .view(call_participants, CallControlsDensity::Compact)
-                            .map(ScreensharingMessage::CallControls),
+                        row![
+                            bandwidth_toggle(
+                                &state.bandwidth_mode,
+                                ScreensharingMessage::ToggleLowBandwidth,
+                                CallControlsDensity::Compact.button_size(),
+                            ),
+                            call_controls
+                                .view(call_participants, CallControlsDensity::Compact)
+                                .map(ScreensharingMessage::CallControls),
+                        ]
+                        .spacing(CallControlsDensity::Compact.spacing()),
                     )
                     .width(Length::Fill)
                     .center_x(Length::Fill),
@@ -2116,8 +2145,7 @@ impl ScreensharingWindow {
             let call_controls_slot_width = call_controls_slot_width / 2.0;
             let trailing_padding = WindowConstant::HEADER_SIDE_PADDING
                 + SCREENSHARE_SETTINGS_BUTTON_WIDTH
-                + (call_controls_slot_width - CallControlsDensity::Compact.total_width()).max(0.0)
-                    / 2.0;
+                + (call_controls_slot_width - SCREENSHARE_HEADER_CONTROLS_WIDTH).max(0.0) / 2.0;
             call_controls.wrap_dropdown(
                 base,
                 ScreensharingMessage::CallControls,
@@ -2174,6 +2202,17 @@ impl ScreensharingWindow {
                     self.state.draw_persist
                 );
                 self.state.dropdown_open = false;
+            }
+            ScreensharingMessage::ToggleLowBandwidth => {
+                self.state.dropdown_open = false;
+                self.call_controls.dismiss_dropdowns();
+                let enabled = next_local_request(&self.state.bandwidth_mode);
+                if let Err(e) = self
+                    .event_loop_proxy
+                    .send_event(crate::UserEvent::SetCallLowBandwidth(enabled))
+                {
+                    log::error!("ScreensharingWindow: failed to send SetCallLowBandwidth: {e:?}");
+                }
             }
         }
     }

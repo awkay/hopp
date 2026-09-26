@@ -12,7 +12,7 @@ fork-only features (see below).
 | Bundle ID | `com.hopp.app` | `com.dataico.hopp` | separate identity, keychain, TCC grants, signing |
 | Auto-updater | checks `github.com/gethopp/hopp/releases/.../latest.json` | off | upstream updates would replace our build with the stock app |
 | Telemetry | Sentry / PostHog keys from CI | all empty | no data to upstream's accounts |
-| Features | upstream releases | fork `main`, which carries typing text while drawing (PR #306) and low-bandwidth mode | available to us before an upstream release; low-bandwidth mode is fork-only |
+| Features | upstream releases | fork `main`, which carries typing text while drawing (PR #306), low-bandwidth mode, and "drawing persists" as the default draw mode | available to us before an upstream release; low-bandwidth mode is fork-only |
 | LiveKit Rust SDK | `gethopp/rust-sdks`, branch `hopp` | `awkay/rust-sdks`, branch `hopp-encoding-params` | adds `LocalVideoTrack::set_encoding_parameters`, which low-bandwidth mode needs |
 
 The packaging layer lives in new files; it modifies no upstream file:
