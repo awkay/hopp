@@ -59,6 +59,8 @@ pub struct UserSettings {
     pub screen_share_resolution: ScreenShareResolution,
     #[serde(default)]
     pub screen_share_picker_mode: ScreenSharePickerMode,
+    #[serde(default)]
+    pub low_bandwidth_default: bool,
     pub hopp_server_url: Option<String>,
     pub shortcut_toggle_mic: Option<String>,
     pub shortcut_toggle_camera: Option<String>,
@@ -83,6 +85,7 @@ impl Default for UserSettings {
             noise_cancellation_enabled: true,
             screen_share_resolution: ScreenShareResolution::P4K,
             screen_share_picker_mode: ScreenSharePickerMode::Screen,
+            low_bandwidth_default: false,
             hopp_server_url: None,
             shortcut_toggle_mic: None,
             shortcut_toggle_camera: None,

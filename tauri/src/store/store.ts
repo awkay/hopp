@@ -6,7 +6,7 @@ import { isEqual } from "lodash";
 import { emit, listen } from "@tauri-apps/api/event";
 import { TCallTokensMessage } from "@/payloads";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import type { CoreParticipantState, CoreRoleEvent } from "@/core_payloads";
+import type { BandwidthModeState, CoreParticipantState, CoreRoleEvent } from "@/core_payloads";
 
 const windowName = getCurrentWindow().label;
 
@@ -31,6 +31,9 @@ export type CallState = {
   isInitialisingCall?: boolean;
   participants: CoreParticipantState[];
   micLevel: number;
+  // Low-bandwidth mode for this call, as reported by core. Undefined until core reports it;
+  // cleared with the rest of the call state when the call ends.
+  bandwidthMode?: BandwidthModeState;
 } & TCallTokensMessage["payload"];
 
 type State = {
@@ -342,6 +345,17 @@ listen<CoreRoleEvent>("core_role_change", (event) => {
 
   const newRole = roleMap[event.payload.role] ?? ParticipantRole.NONE;
   useStore.getState().updateCallTokens({ role: newRole });
+});
+
+listen<BandwidthModeState>("core_bandwidth_mode_state", (event) => {
+  // Keep call state single-writer in main window; other windows receive it via store sync.
+  if (windowName !== "main") return;
+
+  const { callTokens } = useStore.getState();
+  if (!callTokens) return;
+  if (isEqual(callTokens.bandwidthMode, event.payload)) return;
+
+  useStore.getState().updateCallTokens({ bandwidthMode: event.payload });
 });
 
 export default useStore;

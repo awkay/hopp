@@ -189,6 +189,16 @@ pub struct CoreRoleEvent {
     pub role: CoreRoleChange,
 }
 
+/// Low-bandwidth mode state for the current call, sent from core to the UI.
+/// The mode is active while any participant (local or remote) requests it.
+#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq)]
+pub struct BandwidthModeState {
+    pub active: bool,
+    pub local_requested: bool,
+    /// Display names of the remote participants currently requesting the mode.
+    pub requested_by: Vec<String>,
+}
+
 /// Represents the user's preferred interaction mode for screen sharing sessions.
 /// This is stored persistently and restored when the user joins a new session.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -264,6 +274,11 @@ pub enum Message {
     SetTelemetryEnabled(bool),
     /// Microphone RMS level in [0.0, 1.0], emitted ~1 Hz from core capturer.
     MicrophoneAudioLevel(f32),
+    /// Persisted default: request low-bandwidth mode in every call joined.
+    SetLowBandwidthDefault(bool),
+    /// Request (or withdraw the request for) low-bandwidth mode in the current call.
+    SetCallLowBandwidth(bool),
+    BandwidthModeState(BandwidthModeState),
 }
 
 impl Message {

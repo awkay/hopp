@@ -3,7 +3,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use livekit::options::{TrackPublishOptions, VideoCodec, VideoEncoding};
+use livekit::options::{
+    DegradationPreference, TrackPublishOptions, VideoCodec, VideoEncoding, VideoEncodingUpdate,
+};
 use livekit::participant::ConnectionQuality;
 use livekit::track::{LocalTrack, LocalVideoTrack, TrackSource, VideoQuality};
 use livekit::webrtc::prelude::{RtcVideoSource, VideoResolution};
@@ -13,6 +15,10 @@ use thread_priority::{set_current_thread_priority, ThreadPriority};
 use tokio::runtime::Handle as TokioHandle;
 
 use crate::audio::mixer::SharedProcessor;
+use crate::bandwidth_mode::{
+    default_screen_bitrate, screen_encoding, BandwidthModeRequest, BandwidthNegotiation,
+    MAX_FRAMERATE, SCREEN_SHARE_USES_AV1,
+};
 use crate::livekit::audio::AudioPublisher;
 use crate::livekit::participant::ParticipantInfo;
 use crate::livekit::video::{process_video_stream, VideoBufferManager};
@@ -32,14 +38,10 @@ const TOPIC_TICK_RESPONSE: &str = "tick_response";
 const VIDEO_TRACK_NAME: &str = "screen_share";
 const TOPIC_DRAW: &str = "draw";
 const TOPIC_APP_VEIL: &str = "app_veil";
-const MAX_FRAMERATE: f64 = 40.0;
+const TOPIC_BANDWIDTH_MODE: &str = "bandwidth_mode";
 const CAMERA_TRACK_NAME: &str = "camera";
 const CAMERA_MAX_BITRATE: u64 = 1_700_000;
 const CAMERA_MAX_FRAMERATE: f64 = 30.0;
-
-// Bitrate constants (in bits per second)
-const AV1_BITRATE_DEFAULT: u64 = 5_000_000; // 5 Mbps
-const H264_BITRATE_DEFAULT: u64 = 12_000_000; // 12 Mbps
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct NormalizedRect {
@@ -61,7 +63,7 @@ pub struct AppVeilSnapshot {
     pub keyboard_input_blocked: bool,
 }
 
-fn canonical_participant_identity(identity: &str) -> &str {
+pub(crate) fn canonical_participant_identity(identity: &str) -> &str {
     identity
         .strip_suffix(":audio")
         .or_else(|| identity.strip_suffix(":video"))
@@ -180,7 +182,13 @@ enum RoomServiceCommand {
     PublishPasteFromClipboard(PasteFromClipboardData),
     PublishClipboardData(ClipboardDataPayload),
     PublishClickAnimation(ClientPoint),
-    PublishAppVeilSnapshot { force: bool },
+    PublishAppVeilSnapshot {
+        force: bool,
+    },
+    SetLocalLowBandwidth(bool),
+    /// Re-publishes our low-bandwidth request (if any) for late joiners.
+    RepublishBandwidthModeRequest,
+    SetScreenCaptureSize(Option<(u32, u32)>),
 }
 
 impl std::fmt::Debug for RoomServiceCommand {
@@ -220,6 +228,9 @@ impl std::fmt::Debug for RoomServiceCommand {
             Self::PublishAppVeilSnapshot { force } => {
                 write!(f, "PublishAppVeilSnapshot {{ force: {force} }}")
             }
+            Self::SetLocalLowBandwidth(v) => write!(f, "SetLocalLowBandwidth({v})"),
+            Self::RepublishBandwidthModeRequest => write!(f, "RepublishBandwidthModeRequest"),
+            Self::SetScreenCaptureSize(v) => write!(f, "SetScreenCaptureSize({v:?})"),
         }
     }
 }
@@ -260,6 +271,9 @@ pub(crate) struct RoomServiceInner {
     snapshot_sender: SnapshotSender,
     app_veil_snapshot: std::sync::Mutex<Option<AppVeilSnapshot>>,
     published_app_veil_snapshot: std::sync::Mutex<Option<AppVeilSnapshot>>,
+    bandwidth: std::sync::Mutex<BandwidthNegotiation>,
+    /// Output size of the active screen capture, `None` when not sharing.
+    capture_size: std::sync::Mutex<Option<(u32, u32)>>,
 }
 
 impl RoomServiceInner {
@@ -316,6 +330,8 @@ impl RoomServiceInner {
         }
         self.published_app_veil_snapshot.lock().unwrap().take();
         self.app_veil_snapshot.lock().unwrap().take();
+        self.bandwidth.lock().unwrap().clear();
+        self.capture_size.lock().unwrap().take();
     }
 }
 
@@ -425,6 +441,8 @@ impl RoomService {
             snapshot_sender,
             app_veil_snapshot: std::sync::Mutex::new(None),
             published_app_veil_snapshot: std::sync::Mutex::new(None),
+            bandwidth: std::sync::Mutex::new(BandwidthNegotiation::default()),
+            capture_size: std::sync::Mutex::new(None),
         });
         let audio_runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -654,6 +672,29 @@ impl RoomService {
             .send(RoomServiceCommand::PublishDrawingMode(mode));
         if let Err(e) = res {
             log::error!("publish_drawing_mode: Error sending command: {e:?}");
+        }
+    }
+
+    /// Requests (or withdraws our request for) low-bandwidth mode in the current call.
+    pub fn set_local_low_bandwidth(&self, enabled: bool) {
+        log::info!("set_local_low_bandwidth: {enabled}");
+        let res = self
+            .service_command_tx
+            .send(RoomServiceCommand::SetLocalLowBandwidth(enabled));
+        if let Err(e) = res {
+            log::error!("set_local_low_bandwidth: Error sending command: {e:?}");
+        }
+    }
+
+    /// Sets the output size of the active screen capture (`None` when sharing stops),
+    /// so the screen share encoding can follow the bandwidth mode.
+    pub fn set_screen_capture_size(&self, size: Option<(u32, u32)>) {
+        log::info!("set_screen_capture_size: {size:?}");
+        let res = self
+            .service_command_tx
+            .send(RoomServiceCommand::SetScreenCaptureSize(size));
+        if let Err(e) = res {
+            log::error!("set_screen_capture_size: Error sending command: {e:?}");
         }
     }
 
@@ -1099,16 +1140,8 @@ async fn room_service_commands(
                         RtcVideoSource::Native(screen_source.clone()),
                     );
                     screen_track.mute();
-                    #[cfg(target_os = "macos")]
-                    let use_av1 = false;
-                    #[cfg(target_os = "windows")]
-                    let use_av1 = true;
-                    let max_bitrate = if use_av1 {
-                        AV1_BITRATE_DEFAULT
-                    } else {
-                        H264_BITRATE_DEFAULT
-                    };
-                    let video_codec = if use_av1 {
+                    let max_bitrate = default_screen_bitrate();
+                    let video_codec = if SCREEN_SHARE_USES_AV1 {
                         VideoCodec::AV1
                     } else {
                         VideoCodec::H264
@@ -1638,6 +1671,33 @@ async fn room_service_commands(
 
                 if let Err(e) = res {
                     log::error!("room_service_commands: Failed to publish drawing mode: {e:?}");
+                }
+            }
+            RoomServiceCommand::SetLocalLowBandwidth(enabled) => {
+                let (effective_changed, local_changed) = {
+                    let mut bandwidth = inner.bandwidth.lock().unwrap();
+                    let local_changed = bandwidth.local() != enabled;
+                    (bandwidth.set_local(enabled), local_changed)
+                };
+                if local_changed {
+                    publish_bandwidth_mode_request(&inner, enabled).await;
+                }
+                if effective_changed {
+                    apply_bandwidth_mode(&inner).await;
+                } else {
+                    send_bandwidth_mode_state(&inner);
+                }
+            }
+            RoomServiceCommand::RepublishBandwidthModeRequest => {
+                let local = inner.bandwidth.lock().unwrap().local();
+                if local {
+                    publish_bandwidth_mode_request(&inner, true).await;
+                }
+            }
+            RoomServiceCommand::SetScreenCaptureSize(size) => {
+                *inner.capture_size.lock().unwrap() = size;
+                if size.is_some() {
+                    apply_screen_share_encoding(&inner);
                 }
             }
             RoomServiceCommand::UnpublishAudioTrack => {
@@ -2296,6 +2356,90 @@ struct RoomEventContext {
     service_command_tx: mpsc::UnboundedSender<RoomServiceCommand>,
 }
 
+async fn publish_bandwidth_mode_request(inner: &RoomServiceInner, low_bandwidth: bool) {
+    let inner_room = inner.room.lock().await;
+    let Some(room) = inner_room.as_ref() else {
+        log::warn!("publish_bandwidth_mode_request: Room doesn't exist");
+        return;
+    };
+    let payload = serde_json::to_vec(&BandwidthModeRequest { low_bandwidth }).unwrap();
+    let res = room
+        .local_participant()
+        .publish_data(DataPacket {
+            payload,
+            reliable: true,
+            topic: Some(TOPIC_BANDWIDTH_MODE.to_string()),
+            ..Default::default()
+        })
+        .await;
+    if let Err(e) = res {
+        log::error!("publish_bandwidth_mode_request: Failed to publish: {e:?}");
+    }
+}
+
+/// Applies the effective bandwidth mode to the screen share encoding and the
+/// camera subscriptions, then reports the state to the UI.
+async fn apply_bandwidth_mode(inner: &RoomServiceInner) {
+    apply_screen_share_encoding(inner);
+    update_camera_quality(inner).await;
+    send_bandwidth_mode_state(inner);
+}
+
+fn apply_screen_share_encoding(inner: &RoomServiceInner) {
+    let Some((width, height)) = *inner.capture_size.lock().unwrap() else {
+        return;
+    };
+    let low = inner.bandwidth.lock().unwrap().effective();
+    let encoding = screen_encoding(low, width, height);
+    let screen_share_track = inner.screen_share_track.lock().unwrap();
+    let Some(track) = screen_share_track.as_ref() else {
+        return;
+    };
+    let res = track.set_encoding_parameters(VideoEncodingUpdate {
+        max_bitrate: Some(encoding.max_bitrate),
+        max_framerate: Some(encoding.max_framerate),
+        scale_resolution_down_by: Some(encoding.scale_down_by),
+        degradation_preference: Some(DegradationPreference::MaintainResolution),
+    });
+    match res {
+        Ok(()) => log::info!(
+            "apply_screen_share_encoding: low={low} capture={width}x{height} encoding={encoding:?}"
+        ),
+        Err(e) => log::error!("apply_screen_share_encoding: Failed to set encoding: {e:?}"),
+    }
+}
+
+fn send_bandwidth_mode_state(inner: &RoomServiceInner) {
+    let (active, local_requested, requesters) = {
+        let bandwidth = inner.bandwidth.lock().unwrap();
+        (
+            bandwidth.effective(),
+            bandwidth.local(),
+            bandwidth.requesters(),
+        )
+    };
+    let requested_by = {
+        let participants = inner.participants.read().unwrap();
+        requesters
+            .iter()
+            .map(|requester| {
+                participants
+                    .iter()
+                    .find(|(identity, _)| participant_identities_match(identity, requester))
+                    .map(|(_, info)| info.name().to_string())
+                    .unwrap_or_else(|| requester.clone())
+            })
+            .collect()
+    };
+    let state = socket_lib::BandwidthModeState {
+        active,
+        local_requested,
+        requested_by,
+    };
+    log::info!("send_bandwidth_mode_state: {state:?}");
+    inner.snapshot_sender.send_bandwidth_mode_state(state);
+}
+
 fn camera_quality(active: usize) -> VideoQuality {
     match active {
         0..=3 => VideoQuality::High,
@@ -2337,7 +2481,12 @@ async fn update_camera_quality(inner: &RoomServiceInner) {
             .collect::<Vec<_>>();
         (active, camera_publications)
     };
-    let quality = camera_quality(active);
+    let low_bandwidth = inner.bandwidth.lock().unwrap().effective();
+    let quality = if low_bandwidth {
+        VideoQuality::Low
+    } else {
+        camera_quality(active)
+    };
     let mut updated = 0;
     for publication in camera_publications {
         if publication.simulcasted() {
@@ -2346,7 +2495,7 @@ async fn update_camera_quality(inner: &RoomServiceInner) {
         }
     }
     log::info!(
-        "camera quality: active={active}, quality={quality:?}, updated_publications={updated}"
+        "camera quality: active={active}, low_bandwidth={low_bandwidth}, quality={quality:?}, updated_publications={updated}"
     );
 }
 
@@ -2418,6 +2567,46 @@ async fn handle_room_events(ctx: RoomEventContext) {
                                 "handle_room_events: Failed to send AppVeilSnapshot: {error:?}"
                             );
                         }
+                    }
+                    continue;
+                }
+
+                if topic.as_deref() == Some(TOPIC_BANDWIDTH_MODE) {
+                    let Some(participant) = participant else {
+                        log::warn!("handle_room_events: Bandwidth mode sender is missing");
+                        continue;
+                    };
+                    let sender = participant.identity().as_str().to_string();
+                    if sender == user_identity {
+                        continue;
+                    }
+                    let request = match serde_json::from_slice::<BandwidthModeRequest>(&payload) {
+                        Ok(request) => request,
+                        Err(error) => {
+                            log::warn!(
+                                "handle_room_events: Invalid bandwidth mode request: {error:?}"
+                            );
+                            continue;
+                        }
+                    };
+                    log::info!(
+                        "handle_room_events: Bandwidth mode request from {sender}: {}",
+                        request.low_bandwidth
+                    );
+                    let (effective_changed, requesters_changed) = {
+                        let mut bandwidth = inner.bandwidth.lock().unwrap();
+                        let requesters_before = bandwidth.requesters();
+                        let effective_changed =
+                            bandwidth.set_remote(&sender, request.low_bandwidth);
+                        (
+                            effective_changed,
+                            requesters_before != bandwidth.requesters(),
+                        )
+                    };
+                    if effective_changed {
+                        apply_bandwidth_mode(&inner).await;
+                    } else if requesters_changed {
+                        send_bandwidth_mode_state(&inner);
                     }
                     continue;
                 }
@@ -2581,6 +2770,9 @@ async fn handle_room_events(ctx: RoomEventContext) {
                     );
                 }
 
+                // Late joiners need our low-bandwidth request, nothing else replays it.
+                let _ = service_command_tx.send(RoomServiceCommand::RepublishBandwidthModeRequest);
+
                 snapshot_sender.send_participants_snapshot();
             }
             RoomEvent::ParticipantActive(_) => {
@@ -2636,7 +2828,25 @@ async fn handle_room_events(ctx: RoomEventContext) {
                         );
                     }
                 }
-                update_camera_quality(&inner).await;
+                let (bandwidth_changed, requesters_changed) = {
+                    let mut bandwidth = inner.bandwidth.lock().unwrap();
+                    let requesters_before = bandwidth.requesters();
+                    // A request is keyed by the user, so only their main identity leaving withdraws it.
+                    let effective_changed =
+                        !identity.ends_with(":video") && bandwidth.remove(&identity);
+                    (
+                        effective_changed,
+                        requesters_before != bandwidth.requesters(),
+                    )
+                };
+                if bandwidth_changed {
+                    apply_bandwidth_mode(&inner).await;
+                } else {
+                    update_camera_quality(&inner).await;
+                    if requesters_changed {
+                        send_bandwidth_mode_state(&inner);
+                    }
+                }
 
                 if let Err(e) = event_loop_proxy.send_event(UserEvent::ParticipantDisconnected(
                     ParticipantData { name, identity },

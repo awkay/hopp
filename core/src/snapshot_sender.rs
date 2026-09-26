@@ -36,6 +36,15 @@ impl SnapshotSender {
         }
     }
 
+    pub fn send_bandwidth_mode_state(&self, state: socket_lib::BandwidthModeState) {
+        if let Err(e) = self
+            .socket
+            .send(socket_lib::Message::BandwidthModeState(state))
+        {
+            log::error!("SnapshotSender: Failed to send bandwidth mode state: {e:?}");
+        }
+    }
+
     /// Builds and returns a participants snapshot without sending it.
     pub fn build_snapshot(&self) -> Vec<socket_lib::CoreParticipantState> {
         let guard = self.participants.read().unwrap();

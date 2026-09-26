@@ -912,6 +912,28 @@ fn set_screen_share_resolution(app: tauri::AppHandle, resolution: ScreenShareRes
 }
 
 #[tauri::command(async)]
+fn set_low_bandwidth_default(app: tauri::AppHandle, enabled: bool) {
+    log::info!("set_low_bandwidth_default: {enabled}");
+    let data = app.state::<Mutex<AppData>>();
+    let mut data = data.lock().unwrap();
+    data.app_state
+        .update_user_setting(|settings| settings.low_bandwidth_default = enabled);
+    if let Err(e) = data.sender.send(Message::SetLowBandwidthDefault(enabled)) {
+        log::error!("set_low_bandwidth_default: failed to send: {e:?}");
+    }
+}
+
+#[tauri::command(async)]
+fn set_call_low_bandwidth(app: tauri::AppHandle, enabled: bool) {
+    log::info!("set_call_low_bandwidth: {enabled}");
+    let data = app.state::<Mutex<AppData>>();
+    let data = data.lock().unwrap();
+    if let Err(e) = data.sender.send(Message::SetCallLowBandwidth(enabled)) {
+        log::error!("set_call_low_bandwidth: failed to send: {e:?}");
+    }
+}
+
+#[tauri::command(async)]
 fn set_screen_share_picker_mode(app: tauri::AppHandle, mode: ScreenSharePickerMode) {
     log::info!("set_screen_share_picker_mode: {mode:?}");
     let data = app.state::<Mutex<AppData>>();
@@ -1228,6 +1250,12 @@ fn forward_core_events(events_rx: std_mpsc::Receiver<Message>, app: tauri::AppHa
                     log::error!("forward_core_events: failed to emit mic audio level: {e:?}");
                 }
             }
+            Message::BandwidthModeState(state) => {
+                log::info!("forward_core_events: bandwidth mode state: {state:?}");
+                if let Err(e) = app.emit("core_bandwidth_mode_state", &state) {
+                    log::error!("forward_core_events: failed to emit bandwidth mode state: {e:?}");
+                }
+            }
             Message::StartScreenShareResult(Err(error)) => {
                 log::error!("forward_core_events: screen share failed: {error}");
                 if let Err(e) = app.emit("core_screenshare_failed", &error) {
@@ -1392,6 +1420,10 @@ fn main() {
             let screen_share_resolution = app_state.user_settings().screen_share_resolution;
             if let Err(e) = sender.send(Message::SetScreenShareResolution(screen_share_resolution)) {
                 log::error!("Failed to send initial screen_share_resolution: {e:?}");
+            }
+            let low_bandwidth_default = app_state.user_settings().low_bandwidth_default;
+            if let Err(e) = sender.send(Message::SetLowBandwidthDefault(low_bandwidth_default)) {
+                log::error!("Failed to send initial low_bandwidth_default: {e:?}");
             }
             let screen_share_picker_mode = app_state.user_settings().screen_share_picker_mode;
             if let Err(e) = sender.send(Message::SetScreenSharePickerMode(screen_share_picker_mode)) {
@@ -1733,6 +1765,8 @@ fn main() {
             toggle_mic,
             set_noise_cancellation,
             set_screen_share_resolution,
+            set_low_bandwidth_default,
+            set_call_low_bandwidth,
             set_screen_share_picker_mode,
             list_microphones,
             select_microphone,
