@@ -1,0 +1,12 @@
+{
+  "identifier": "com.dataico.hopp",
+  "bundle": {
+    "createUpdaterArtifacts": false,
+    "externalBin": ["../../core/target/release/hopp_core"]
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": []
+    }
+  }
+}
