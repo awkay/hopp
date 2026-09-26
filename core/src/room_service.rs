@@ -269,6 +269,8 @@ pub(crate) struct RoomServiceInner {
     connection_quality: Arc<std::sync::Mutex<Option<ConnectionQuality>>>,
     cancel_connect: std::sync::Mutex<Vec<oneshot::Sender<()>>>,
     snapshot_sender: SnapshotSender,
+    /// Pushes state into the native windows (e.g. the screen-share window).
+    event_loop_proxy: EventLoopProxy<UserEvent>,
     app_veil_snapshot: std::sync::Mutex<Option<AppVeilSnapshot>>,
     published_app_veil_snapshot: std::sync::Mutex<Option<AppVeilSnapshot>>,
     bandwidth: std::sync::Mutex<BandwidthNegotiation>,
@@ -410,6 +412,7 @@ impl RoomService {
     pub fn new(
         livekit_server_url: String,
         socket: socket_lib::SocketSender,
+        event_loop_proxy: EventLoopProxy<UserEvent>,
     ) -> Result<Self, std::io::Error> {
         livekit::webrtc::enable_zero_playout_delay().map_err(std::io::Error::other)?;
 
@@ -439,6 +442,7 @@ impl RoomService {
             connection_quality: Arc::new(std::sync::Mutex::new(None)),
             cancel_connect: std::sync::Mutex::new(Vec::new()),
             snapshot_sender,
+            event_loop_proxy,
             app_veil_snapshot: std::sync::Mutex::new(None),
             published_app_veil_snapshot: std::sync::Mutex::new(None),
             bandwidth: std::sync::Mutex::new(BandwidthNegotiation::default()),
@@ -673,6 +677,11 @@ impl RoomService {
         if let Err(e) = res {
             log::error!("publish_drawing_mode: Error sending command: {e:?}");
         }
+    }
+
+    /// Current low-bandwidth mode state, for windows opened mid-call.
+    pub fn bandwidth_mode_state(&self) -> socket_lib::BandwidthModeState {
+        bandwidth_mode_state(&self.inner)
     }
 
     /// Requests (or withdraws our request for) low-bandwidth mode in the current call.
@@ -2409,7 +2418,7 @@ fn apply_screen_share_encoding(inner: &RoomServiceInner) {
     }
 }
 
-fn send_bandwidth_mode_state(inner: &RoomServiceInner) {
+fn bandwidth_mode_state(inner: &RoomServiceInner) -> socket_lib::BandwidthModeState {
     let (active, local_requested, requesters) = {
         let bandwidth = inner.bandwidth.lock().unwrap();
         (
@@ -2431,12 +2440,22 @@ fn send_bandwidth_mode_state(inner: &RoomServiceInner) {
             })
             .collect()
     };
-    let state = socket_lib::BandwidthModeState {
+    socket_lib::BandwidthModeState {
         active,
         local_requested,
         requested_by,
-    };
+    }
+}
+
+fn send_bandwidth_mode_state(inner: &RoomServiceInner) {
+    let state = bandwidth_mode_state(inner);
     log::info!("send_bandwidth_mode_state: {state:?}");
+    if let Err(e) = inner
+        .event_loop_proxy
+        .send_event(UserEvent::BandwidthModeStateChanged(state.clone()))
+    {
+        log::error!("send_bandwidth_mode_state: Failed to send to event loop: {e:?}");
+    }
     inner.snapshot_sender.send_bandwidth_mode_state(state);
 }
 

@@ -1,3 +1,4 @@
+pub mod bandwidth_toggle;
 pub mod call_controls;
 pub mod dropdown;
 pub mod fonts;

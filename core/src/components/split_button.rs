@@ -1,6 +1,6 @@
 //! Split button: main action + optional chevron dropdown hit area (Iced).
 
-use iced::widget::{button, column, container, row, stack, text, Space};
+use iced::widget::{button, column, container, row, stack, svg, text, Space};
 use iced::{Alignment, Background, Border, Color, Length, Padding, Shadow, Theme};
 use iced_wgpu::core::widget::text as text_widget;
 
@@ -49,6 +49,11 @@ impl SplitButtonSize {
             chevron_size: 12.0,
         }
     }
+
+    /// Outer width of a button without a dropdown chevron.
+    pub const fn single_width(self) -> f32 {
+        self.inset * 2.0 + self.main_width
+    }
 }
 
 pub fn split_button_sized<'a, Message: Clone + 'a>(
@@ -59,17 +64,62 @@ pub fn split_button_sized<'a, Message: Clone + 'a>(
     dropdown_open: bool,
     size: SplitButtonSize,
 ) -> iced::Element<'a, Message, Theme, iced::Renderer> {
-    let hover_bg = {
-        let c = ColorToken::Gray600.to_color();
-        Color::from_rgba(c.r, c.g, c.b, 0.30)
-    };
-
     let icon = text(icon_char.to_string())
         .font(ICONS_FONT)
         .size(size.icon_size)
         .color(Color::WHITE)
         .align_x(Alignment::Center)
         .align_y(Alignment::Center);
+
+    split_button_with_icon(
+        icon.into(),
+        bg,
+        on_main_press,
+        on_dropdown_toggle,
+        dropdown_open,
+        size,
+    )
+}
+
+/// Same as [`split_button_sized`], but draws a white SVG icon (for glyphs
+/// missing from the icon font).
+pub fn split_button_svg_sized<'a, Message: Clone + 'a>(
+    icon_data: &'static [u8],
+    bg: Color,
+    on_main_press: Message,
+    on_dropdown_toggle: Option<Message>,
+    dropdown_open: bool,
+    size: SplitButtonSize,
+) -> iced::Element<'a, Message, Theme, iced::Renderer> {
+    let icon = svg(svg::Handle::from_memory(icon_data))
+        .width(Length::Fixed(size.icon_size))
+        .height(Length::Fixed(size.icon_size))
+        .style(|_theme: &Theme, _status| svg::Style {
+            color: Some(Color::WHITE),
+        });
+
+    split_button_with_icon(
+        icon.into(),
+        bg,
+        on_main_press,
+        on_dropdown_toggle,
+        dropdown_open,
+        size,
+    )
+}
+
+fn split_button_with_icon<'a, Message: Clone + 'a>(
+    icon: iced::Element<'a, Message, Theme, iced::Renderer>,
+    bg: Color,
+    on_main_press: Message,
+    on_dropdown_toggle: Option<Message>,
+    dropdown_open: bool,
+    size: SplitButtonSize,
+) -> iced::Element<'a, Message, Theme, iced::Renderer> {
+    let hover_bg = {
+        let c = ColorToken::Gray600.to_color();
+        Color::from_rgba(c.r, c.g, c.b, 0.30)
+    };
 
     let main_btn = button(
         container(icon)

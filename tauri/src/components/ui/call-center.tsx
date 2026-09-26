@@ -415,7 +415,7 @@ function CallParticipants() {
 }
 
 function DrawingEnableButton() {
-  const [drawingPermanent, setDrawingPermanent] = useState(false);
+  const [drawingPermanent, setDrawingPermanent] = useState(true);
   const [drawingEnabled, setDrawingEnabled] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [hintShown, setHintShown] = useState(false);

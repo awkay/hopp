@@ -28,14 +28,14 @@ pub enum CallControlsDensity {
 }
 
 impl CallControlsDensity {
-    const fn button_size(self) -> SplitButtonSize {
+    pub const fn button_size(self) -> SplitButtonSize {
         match self {
             Self::Regular => SplitButtonSize::regular(),
             Self::Compact => SplitButtonSize::compact(),
         }
     }
 
-    const fn spacing(self) -> f32 {
+    pub const fn spacing(self) -> f32 {
         match self {
             Self::Regular => 8.0,
             Self::Compact => 4.0,
