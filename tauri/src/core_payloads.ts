@@ -107,6 +107,7 @@ export interface UserSettings {
   noise_cancellation_enabled: boolean;
   screen_share_resolution: ScreenShareResolution;
   screen_share_picker_mode: ScreenSharePickerMode;
+  low_bandwidth_default: boolean;
   hopp_server_url: string | null;
   shortcut_toggle_mic: string;
   shortcut_toggle_camera: string;
@@ -115,6 +116,14 @@ export interface UserSettings {
   telemetry_enabled: boolean;
   auto_update_enabled: boolean;
   app_veil_applications: AppVeilApplication[];
+}
+
+/** Low-bandwidth mode state for the current call; active while anyone requests it. */
+export interface BandwidthModeState {
+  active: boolean;
+  local_requested: boolean;
+  /** Display names of the remote participants currently requesting the mode. */
+  requested_by: string[];
 }
 
 export type CoreRoleChange = "Sharer" | "Controller" | "None";
@@ -226,6 +235,8 @@ export interface CommandMap {
   toggle_mic: { args: void; return: void };
   set_noise_cancellation: { args: { enabled: boolean }; return: void };
   set_screen_share_resolution: { args: { resolution: ScreenShareResolution }; return: void };
+  set_low_bandwidth_default: { args: { enabled: boolean }; return: void };
+  set_call_low_bandwidth: { args: { enabled: boolean }; return: void };
   set_screen_share_picker_mode: { args: { mode: ScreenSharePickerMode }; return: void };
   list_microphones: { args: void; return: AudioDevice[] };
   select_microphone: { args: { deviceName: string }; return: void };

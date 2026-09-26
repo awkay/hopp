@@ -21,9 +21,10 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { appVersion, tauriUtils } from "@/windows/window-utils.ts";
 import { Constants, OS } from "@/constants";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { downloadAndRelaunch, hasPendingUpdate, installAndRelaunch } from "@/update";
-import { LuCircleFadingArrowUp } from "react-icons/lu";
+import { LuCircleFadingArrowUp, LuTurtle } from "react-icons/lu";
+import { typedInvoke } from "@/core_payloads";
 import { FiPhoneCall } from "react-icons/fi";
 import hotkeys from "hotkeys-js";
 
@@ -228,6 +229,33 @@ const TrialCountdownAvatarFill = ({ user }: { user: components["schemas"]["Priva
   );
 };
 
+// Persistent default: every call you join starts with low bandwidth requested.
+const LowBandwidthDefaultButton = () => {
+  const queryClient = useQueryClient();
+  // Same query key as the call center, so both read one cached copy of the settings.
+  const { data: userSettings } = useQuery({
+    queryKey: ["user-settings"],
+    queryFn: () => typedInvoke("get_user_settings"),
+    refetchOnWindowFocus: true,
+  });
+  const enabled = userSettings?.low_bandwidth_default ?? false;
+
+  return (
+    <SidebarButton
+      label="Low bandwidth for my calls"
+      active={enabled}
+      aria-pressed={enabled}
+      onClick={() =>
+        typedInvoke("set_low_bandwidth_default", { enabled: !enabled }).then(() =>
+          queryClient.invalidateQueries({ queryKey: ["user-settings"] }),
+        )
+      }
+    >
+      <LuTurtle className={clsx("size-4", enabled ? "text-teal-600" : "text-gray-500")} />
+    </SidebarButton>
+  );
+};
+
 const CallPageButton = () => {
   const { tab, setTab, callTokens } = useStore();
 
@@ -301,6 +329,11 @@ export const Sidebar = () => {
         </div>
         {/* Bottom user section */}
         <div className="flex flex-col gap-1 mt-auto">
+          {user && (
+            <div className="flex justify-center w-full">
+              <LowBandwidthDefaultButton />
+            </div>
+          )}
           <div className="flex justify-center w-full">
             <DownloadNewVersionButton />
           </div>

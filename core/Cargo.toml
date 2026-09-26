@@ -73,7 +73,7 @@ serde_json = "1.0"
 raw-window-handle = "0.6.2"
 env_logger = "0.11.5"
 log = "0.4.22"
-livekit = { git = "https://github.com/gethopp/rust-sdks", branch = "hopp", features = ["native-tls"] }
+livekit = { git = "https://github.com/awkay/rust-sdks", branch = "hopp-encoding-params", features = ["native-tls"] }
 tokio = { version = "1", features = ["full"] }
 tokio-stream = "0.1"
 dirs = "5.0.1"

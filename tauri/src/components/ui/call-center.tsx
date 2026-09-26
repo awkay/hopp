@@ -1,5 +1,5 @@
 import { formatDistanceToNow } from "date-fns";
-import { LuMicOff, LuVideo, LuVideoOff, LuScreenShare, LuScreenShareOff } from "react-icons/lu";
+import { LuMicOff, LuVideo, LuVideoOff, LuScreenShare, LuScreenShareOff, LuTurtle } from "react-icons/lu";
 import { PiScribbleLoopBold, PiCursorBold } from "react-icons/pi";
 import useStore, { CallState, ParticipantRole } from "@/store/store";
 import { Separator } from "@/components/ui/separator";
@@ -38,6 +38,14 @@ const Colors = {
   mic: { text: "text-blue-600", icon: "text-blue-600", ring: "ring-blue-600" },
   camera: { text: "text-green-600", icon: "text-green-600", ring: "ring-green-600" },
   screen: { text: "text-yellow-600", icon: "text-yellow-600", ring: "ring-yellow-600" },
+  lowBandwidth: {
+    text: "text-teal-600",
+    icon: "text-teal-600",
+    ring: "ring-teal-600",
+    // Active because someone else asked for it, not us.
+    subduedIcon: "text-teal-400",
+    subduedRing: "ring-teal-300",
+  },
 } as const;
 
 export function CallCenter() {
@@ -774,6 +782,48 @@ function ScreenShareIcon({ callTokens, shortcut }: { callTokens: CallState | nul
   );
 }
 
+function LowBandwidthIcon({ callTokens }: { callTokens: CallState | null }) {
+  const active = callTokens?.bandwidthMode?.active ?? false;
+  const localRequested = callTokens?.bandwidthMode?.local_requested ?? false;
+  const requestedBy = callTokens?.bandwidthMode?.requested_by ?? [];
+  const subdued = active && !localRequested;
+
+  const requesters = localRequested ? ["you", ...requestedBy] : requestedBy;
+  const tooltip = active ? `Low bandwidth — requested by ${requesters.join(", ")}` : "Low bandwidth off";
+
+  return (
+    <TooltipProvider>
+      <Tooltip delayDuration={100}>
+        <TooltipTrigger asChild>
+          <ToggleIconButton
+            onClick={() => typedInvoke("set_call_low_bandwidth", { enabled: !localRequested })}
+            icon={
+              <LuTurtle
+                className={clsx("size-4", {
+                  [Colors.lowBandwidth.icon]: active && !subdued,
+                  [Colors.lowBandwidth.subduedIcon]: subdued,
+                  [Colors.deactivatedIcon]: !active,
+                })}
+              />
+            }
+            state={active ? "active" : "neutral"}
+            size="unsized"
+            className={clsx("shrink-0 px-2.5", {
+              [Colors.deactivatedText]: !active,
+              [`${Colors.lowBandwidth.text} ${Colors.lowBandwidth.ring}`]: active && !subdued,
+              [Colors.lowBandwidth.subduedRing]: subdued,
+            })}
+            aria-label={tooltip}
+          />
+        </TooltipTrigger>
+        <TooltipContent sideOffset={0} side="bottom">
+          {tooltip}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
+
 function CameraIcon({ shortcut }: { shortcut?: string }) {
   const { updateCallTokens, callTokens } = useStore();
   const cameraEnabled = callTokens?.hasCameraEnabled || false;
@@ -950,6 +1000,7 @@ function MediaDevicesSettings({
       <MicrophoneIcon shortcut={micShortcut} />
       <CameraIcon shortcut={cameraShortcut} />
       <ScreenShareIcon callTokens={callTokens} shortcut={screenShareShortcut} />
+      <LowBandwidthIcon callTokens={callTokens} />
     </div>
   );
 }

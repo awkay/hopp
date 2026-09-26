@@ -13,6 +13,7 @@ pub mod livekit {
     pub mod video;
 }
 
+mod bandwidth_mode;
 pub mod room_service;
 mod snapshot_sender;
 
@@ -415,6 +416,8 @@ pub struct Application<'a> {
     start_camera_on_call: bool,
     screen_share_resolution: ScreenShareResolution,
     screen_share_picker_mode: ScreenSharePickerMode,
+    /// Persisted setting: request low-bandwidth mode in every call joined.
+    low_bandwidth_default: bool,
     remote_control_enabled: bool,
     clipboard_controller: Option<ClipboardController>,
     screen_selection: Option<ScreenSelectionState>,
@@ -505,6 +508,7 @@ impl<'a> Application<'a> {
             start_camera_on_call: false,
             screen_share_resolution: ScreenShareResolution::P4K,
             screen_share_picker_mode: ScreenSharePickerMode::Screen,
+            low_bandwidth_default: false,
             remote_control_enabled: true,
             clipboard_controller,
             screen_selection: None,
@@ -788,6 +792,7 @@ impl<'a> Application<'a> {
 
         room_service.unmute_screen_share_track();
         log::info!("screenshare: screen share track unmuted");
+        room_service.set_screen_capture_size(Some((extent.width as u32, extent.height as u32)));
 
         let capture_frame = screen_capturer.frame();
         let target_process_id = screen_capturer.target_process_id();
@@ -1007,6 +1012,7 @@ impl<'a> Application<'a> {
         drop(screen_capturer);
         if let Some(room_service) = self.room_service.as_ref() {
             room_service.mute_screen_share_track();
+            room_service.set_screen_capture_size(None);
         }
         self.destroy_overlay_window();
         self.set_screensharing_active(false);
@@ -1534,6 +1540,9 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                 match result {
                     Ok(snapshot) => {
                         let _ = self.socket.send(Message::ParticipantsSnapshot(snapshot));
+                        if let Some(room_service) = self.room_service.as_ref() {
+                            room_service.set_local_low_bandwidth(self.low_bandwidth_default);
+                        }
                         if self.start_camera_on_call {
                             self.start_camera_on_call = false;
                             let res = self.event_loop_proxy.send_event(UserEvent::StartCamera {
@@ -2195,6 +2204,18 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
             UserEvent::SetScreenShareResolution(resolution) => {
                 log::info!("user_event: SetScreenShareResolution({resolution:?})");
                 self.screen_share_resolution = resolution;
+            }
+            UserEvent::SetLowBandwidthDefault(enabled) => {
+                log::info!("user_event: SetLowBandwidthDefault({enabled})");
+                self.low_bandwidth_default = enabled;
+            }
+            UserEvent::SetCallLowBandwidth(enabled) => {
+                log::info!("user_event: SetCallLowBandwidth({enabled})");
+                if let Some(room_service) = self.room_service.as_ref() {
+                    room_service.set_local_low_bandwidth(enabled);
+                } else {
+                    log::warn!("user_event: SetCallLowBandwidth: room service not found");
+                }
             }
             UserEvent::SetScreenSharePickerMode(mode) => {
                 log::info!("user_event: SetScreenSharePickerMode({mode:?})");
@@ -3277,6 +3298,8 @@ pub enum UserEvent {
     AudioCaptureError,
     SetNoiseCancellation(bool),
     SetScreenShareResolution(ScreenShareResolution),
+    SetLowBandwidthDefault(bool),
+    SetCallLowBandwidth(bool),
     SetScreenSharePickerMode(ScreenSharePickerMode),
     SetTelemetryEnabled(bool),
     CreateRoomResult(Result<Vec<socket_lib::CoreParticipantState>, String>),
@@ -3430,6 +3453,12 @@ impl RenderEventLoop {
                     }
                     Message::SetScreenSharePickerMode(mode) => {
                         UserEvent::SetScreenSharePickerMode(mode)
+                    }
+                    Message::SetLowBandwidthDefault(enabled) => {
+                        UserEvent::SetLowBandwidthDefault(enabled)
+                    }
+                    Message::SetCallLowBandwidth(enabled) => {
+                        UserEvent::SetCallLowBandwidth(enabled)
                     }
                     Message::SetTelemetryEnabled(enabled) => {
                         UserEvent::SetTelemetryEnabled(enabled)
