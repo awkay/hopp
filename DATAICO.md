@@ -14,6 +14,8 @@ fork-only features (see below).
 | Telemetry | Sentry / PostHog keys from CI | all empty | no data to upstream's accounts |
 | Features | upstream releases | fork `main`, which carries typing text while drawing (PR #306), low-bandwidth mode, and "drawing persists" as the default draw mode | available to us before an upstream release; low-bandwidth mode is fork-only |
 | LiveKit Rust SDK | `gethopp/rust-sdks`, branch `hopp` | `awkay/rust-sdks`, branch `hopp-encoding-params` | adds `LocalVideoTrack::set_encoding_parameters`, which low-bandwidth mode needs |
+| Tauri ↔ core IPC | one `Mutex<AppData>` held across send + 10 s wait; replies matched by variant | `CoreClient`: one ordered non-blocking queue, request ids, pipelined async requests, call ids on call messages, `AppData` split into small locks/atomics, no locks or waits on the main thread (see `AGENTS.md` "Protocol rules") | fixes "Hopp is not responding" hangs/deadlocks, late call-end messages ending the next call, stale responses, preferred camera ignored |
+| Core restart (exit code 2) | swaps the socket, re-sends only the LiveKit URL | re-sends the full startup config (App Veil included), rebinds events, ends the call in the UI, backs off (max 3 per 10 min) | the old path silently dropped App Veil and other settings |
 
 The packaging layer lives in new files; it modifies no upstream file:
 
