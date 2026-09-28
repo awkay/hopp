@@ -27,11 +27,26 @@ const SUPPRESS_HIDE_AFTER_CALL_END_MS: u64 = 300;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct CallEndedPayload {
-    pub call_id: Option<CallId>,
+    pub call_id: CallId,
 }
 
 fn call_lock(data: &AppData) -> MutexGuard<'_, socket_lib::call::CallTracker> {
     data.call.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Publishes the current call id for lock-free readers (main-thread shortcut handlers).
+/// Call after every transition, with the call lock still held.
+fn publish_current_call(data: &AppData, call: &socket_lib::call::CallTracker) {
+    data.current_call_id
+        .store(call.current().unwrap_or(0), Ordering::SeqCst);
+}
+
+/// The current call id without taking any lock (0 is never a call id).
+pub fn current_call_id(data: &AppData) -> Option<CallId> {
+    match data.current_call_id.load(Ordering::SeqCst) {
+        0 => None,
+        call_id => Some(call_id),
+    }
 }
 
 /// Starts call `call_id`: records it and enqueues CallStart while holding the call lock, so
@@ -59,7 +74,9 @@ pub fn start_call(
 /// CallStart).
 pub fn begin_call(app: &AppHandle, call_id: CallId) {
     let data = app.state::<AppData>();
-    call_lock(&data).begin(call_id);
+    let mut call = call_lock(&data);
+    call.begin(call_id);
+    publish_current_call(&data, &call);
 }
 
 /// Handles core's answer to CallStart (dispatcher thread, before the command sees it).
@@ -171,7 +188,9 @@ pub fn end_call_from_ui(app: &AppHandle, call_id: Option<CallId>) {
     let data = app.state::<AppData>();
     let mut call = call_lock(&data);
     let current = call.current();
-    if call.end(call_id) {
+    let ended = call.end(call_id);
+    publish_current_call(&data, &call);
+    if ended {
         log::info!("end_call_from_ui: ending call {current:?}");
         apply_call_ended_effects(app, &data);
     } else {
@@ -183,11 +202,13 @@ pub fn end_call_from_ui(app: &AppHandle, call_id: Option<CallId>) {
 
 /// Handles core's CallEnded (dispatcher thread). Always forwards it to the UI with its id;
 /// the UI ignores ids that aren't its current call.
-pub fn on_call_ended(app: &AppHandle, call_id: Option<CallId>) {
+pub fn on_call_ended(app: &AppHandle, call_id: CallId) {
     let data = app.state::<AppData>();
     {
         let mut call = call_lock(&data);
-        if call.on_call_ended(call_id) {
+        let ended = call.on_call_ended(call_id);
+        publish_current_call(&data, &call);
+        if ended {
             log::info!("on_call_ended: call {call_id:?} ended by core");
             apply_call_ended_effects(app, &data);
         } else {
@@ -209,12 +230,13 @@ pub fn reset_for_core_restart(app: &AppHandle) {
     let ended = {
         let mut call = call_lock(&data);
         let ended = call.reset();
+        publish_current_call(&data, &call);
         apply_call_ended_effects(app, &data);
         ended
     };
     data.drawing_enabled.store(false, Ordering::Relaxed);
-    if ended.is_some() {
-        if let Err(e) = app.emit("core_call_ended", CallEndedPayload { call_id: ended }) {
+    if let Some(call_id) = ended {
+        if let Err(e) = app.emit("core_call_ended", CallEndedPayload { call_id }) {
             log::error!("reset_for_core_restart: failed to emit core_call_ended: {e:?}");
         }
     }

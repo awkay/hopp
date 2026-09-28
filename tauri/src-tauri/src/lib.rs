@@ -77,14 +77,10 @@ impl Settings {
     /// and after a restart, so the two can't drift apart (App Veil included).
     pub fn core_startup_config(&self) -> Vec<Message> {
         let settings = self.app_state.user_settings();
-        let app_veil_bundle_ids =
-            match app_state::enabled_app_veil_bundle_ids(&settings.app_veil_applications) {
-                Ok(ids) => ids,
-                Err(e) => {
-                    log::error!("core_startup_config: invalid App Veil settings: {e}");
-                    Vec::new()
-                }
-            };
+        // Privacy: never fail open. A malformed entry is skipped, the rest stay protected.
+        let app_veil_bundle_ids = app_state::enabled_app_veil_bundle_ids_skipping_invalid(
+            &settings.app_veil_applications,
+        );
         let mut messages = vec![
             Message::SetAppVeilBundleIds(app_veil_bundle_ids),
             Message::SetNoiseCancellation(settings.noise_cancellation_enabled),
@@ -167,6 +163,10 @@ pub struct AppData {
     /// Recent core restarts, for backoff.
     pub core_restarts: Mutex<RestartBackoff>,
 
+    /// Mirror of the current call id (0 = none) for lock-free readers such as main-thread
+    /// shortcut handlers. Written by `call_state` under the call lock.
+    pub current_call_id: std::sync::atomic::AtomicU64,
+
     /// Incremented for every core connection; lets a process monitor tell whether the
     /// connection it belongs to is still the current one.
     pub core_generation: AtomicUsize,
@@ -199,6 +199,7 @@ impl AppData {
             #[cfg(target_os = "macos")]
             sleep_prevention: Mutex::new(sleep_prevention::SleepPrevention::new()),
             core_restarts: Mutex::new(RestartBackoff::default()),
+            current_call_id: std::sync::atomic::AtomicU64::new(0),
             core_generation: AtomicUsize::new(0),
         }
     }

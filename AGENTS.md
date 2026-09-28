@@ -73,9 +73,11 @@ Tauri UI (React)  ←→  Tauri Backend (Rust)  ←→  Core Process (Rust)
   dispatcher thread handles incoming frames in wire order: `on_response` sees a response before its
   request completes, `on_event` gets events.
 - **Call ids.** The frontend assigns every call an id (`callTokens.callId`, `tauriUtils.callStarted`).
-  `CallStart`, `CallStartResult`, `CallEnd(Option<id>)`, `CallEnded(Option<id>)` and
+  `CallStart`, `CallStartResult`, `CallEnd(Option<id>)`, `CallEnded(id)` and
   `RoomConnectionFailed` carry it; each side ignores messages about a call that isn't its current one
-  (`socket_lib::call`). Tauri applies call side effects (shortcuts, dock icon, sleep prevention) when
+  (`socket_lib::call`). A `CallEnd` for a call core no longer has does no teardown, only an
+  acknowledging `CallEnded(id)`; `CallEnd(None)` (quit only) ends whatever is active. Hang-ups from
+  a core window or a shortcut name the call they were made in. Tauri applies call side effects (shortcuts, dock icon, sleep prevention) when
   the matching message is processed (`tauri/src-tauri/src/call_state.rs`), never after an `await` in a
   command.
 - **Core never asks Tauri and waits.** Anything core needs (e.g. the preferred camera) is pushed to it
