@@ -512,13 +512,11 @@ mod tests {
         client.shutdown();
         // Anything still arriving (or buffered) for a shut-down client is dropped.
         let _ = server_sender.send(Message::MicrophoneAudioLevel(0.5));
-        loop {
-            match seen.recv_timeout(Duration::from_secs(5)).unwrap() {
-                Seen::Disconnect => break,
-                Seen::Event(e) => panic!("stale event delivered after shutdown: {e}"),
-                Seen::Response(r) => panic!("stale response delivered after shutdown: {r}"),
-            }
-        }
+        assert_eq!(
+            seen.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Seen::Disconnect,
+            "nothing may be delivered after shutdown"
+        );
     }
 
     #[test]
