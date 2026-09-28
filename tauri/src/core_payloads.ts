@@ -126,9 +126,9 @@ export interface BandwidthModeState {
   requested_by: string[];
 }
 
-/** Payload of `core_call_ended`: the call core tore down (null if core had no call id). */
+/** Payload of `core_call_ended`: the call that is over. */
 export interface CoreCallEndedPayload {
-  call_id: number | null;
+  call_id: number;
 }
 
 /** Payload of `core_room_connection_failed`. */

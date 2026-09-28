@@ -135,9 +135,8 @@ export const ParticipantRow = (props: {
 
       try {
         await tauriUtils.callStarted(tokens.audioToken, tokens.videoToken);
-      } catch {
-        setCallTokens(null);
-        toast.error("Failed to start call");
+      } catch (error) {
+        if (tauriUtils.clearFailedCall(error)) toast.error("Failed to start call");
         return;
       }
       tauriUtils.showWindow("main");
@@ -302,8 +301,8 @@ export const ParticipantRow = (props: {
           });
           try {
             await tauriUtils.callStarted(data.payload.audioToken, data.payload.videoToken);
-          } catch {
-            setCallTokens(null);
+          } catch (error) {
+            tauriUtils.clearFailedCall(error);
           }
           break;
         }

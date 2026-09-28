@@ -91,7 +91,7 @@ export function CallCenter() {
       const { callTokens } = useStore.getState();
       if (!callTokens) return;
       // A late CallEnded for an earlier call must not end this one.
-      if (event.payload.call_id !== null && event.payload.call_id !== callTokens.callId) return;
+      if (event.payload.call_id !== callTokens.callId) return;
       handleEndCallRef.current();
     });
     return () => {

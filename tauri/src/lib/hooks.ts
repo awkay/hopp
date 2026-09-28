@@ -148,15 +148,18 @@ export function useEndCall() {
 
 export async function endCallAndWait(endCall: () => void) {
   const callId = useStore.getState().callTokens?.callId;
+  if (callId === undefined) {
+    // The call never reached core (no id yet): nothing to wait for.
+    endCall();
+    return;
+  }
   let resolveCallEnded = () => {};
   const callEnded = new Promise<void>((resolve) => {
     resolveCallEnded = () => resolve();
   });
   // Wait for core to confirm *this* call ended, not a late echo of an earlier one.
   const unlisten = await listen<CoreCallEndedPayload>("core_call_ended", (event) => {
-    if (callId === undefined || event.payload.call_id === null || event.payload.call_id === callId) {
-      resolveCallEnded();
-    }
+    if (event.payload.call_id === callId) resolveCallEnded();
   });
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
@@ -221,12 +224,16 @@ export function useJoinCall() {
 
         try {
           await tauriUtils.callStarted(tokens.audioToken, tokens.videoToken);
-        } catch {
-          socketService.send({ type: "call_end", payload: { participant_id: tokens.participant } });
-          // callStarted already ended the call in core; this closes the windows.
-          tauriUtils.endCallCleanup(useStore.getState().callTokens?.callId);
-          setCallTokens(null);
-          toast.error("Failed to start call");
+        } catch (error) {
+          // Only act if this is still the call on screen: a late failure of an earlier
+          // start must not end the call the user is in now.
+          if (tauriUtils.isFailedStartOfCurrentCall(error)) {
+            socketService.send({ type: "call_end", payload: { participant_id: tokens.participant } });
+            // callStarted already ended the call in core; this closes the windows.
+            tauriUtils.endCallCleanup(error.callId);
+            setCallTokens(null);
+            toast.error("Failed to start call");
+          }
           return false;
         }
 

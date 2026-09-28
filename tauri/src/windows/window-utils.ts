@@ -71,8 +71,13 @@ const closeScreenShareWindow = async () => {
   }
 };
 
-/** Ends call `callId` in Tauri and core. Core's CallEnd also stops screen sharing. */
+/**
+ * Ends call `callId` in Tauri and core. Core's CallEnd also stops screen sharing.
+ * Without an id there is no call in core to end (it never got a CallStart), so nothing is
+ * sent: an id-less CallEnd would end whatever call core has, possibly a newer one.
+ */
 const resetCoreProcess = async (callId?: number) => {
+  if (callId === undefined) return;
   await invoke("reset_core_process", { callId });
 };
 
@@ -201,15 +206,45 @@ const newCallId = () => {
  * event from an earlier call can be told apart. If starting fails, the call is also ended
  * in core (it may have started after Tauri gave up waiting).
  */
-const callStarted = async (audioToken: string, videoToken: string) => {
+/** Thrown by `callStarted`; `callId` identifies the call that failed to start. */
+export class CallStartError extends Error {
+  constructor(
+    readonly callId: number,
+    readonly reason: unknown,
+  ) {
+    super(`Failed to start call ${callId}: ${String(reason)}`);
+  }
+}
+
+const callStarted = async (audioToken: string, videoToken: string): Promise<number> => {
+  if (!useStore.getState().callTokens) {
+    // The call was ended before it could start; don't start one in core with no UI.
+    throw new Error("No call to start");
+  }
   const callId = newCallId();
   useStore.getState().updateCallTokens({ callId });
   try {
-    return await invoke("call_started", { callId, audioToken, videoToken });
+    await invoke("call_started", { callId, audioToken, videoToken });
+    return callId;
   } catch (error) {
     resetCoreProcess(callId).catch((e) => console.error("Failed to end call after start failure:", e));
-    throw error;
+    throw new CallStartError(callId, error);
   }
+};
+
+/**
+ * True when `error` (from `callStarted`) belongs to the call the store still shows. A start
+ * failure that arrives after the user already moved on to another call must not touch that
+ * call. Callers only clear call state when this is true.
+ */
+const isFailedStartOfCurrentCall = (error: unknown): error is CallStartError =>
+  error instanceof CallStartError && useStore.getState().callTokens?.callId === error.callId;
+
+/** Clears the call from the store if `error` is the failed start of the current call. */
+const clearFailedCall = (error: unknown): boolean => {
+  if (!isFailedStartOfCurrentCall(error)) return false;
+  useStore.getState().setCallTokens(null);
+  return true;
 };
 
 /**
@@ -352,6 +387,8 @@ export const tauriUtils = {
   getLivekitUrl,
   setSentryMetadata,
   callStarted,
+  isFailedStartOfCurrentCall,
+  clearFailedCall,
   loadCustomServerUrl,
   setHoppServerUrl,
   setCallFeedbackPopup,
