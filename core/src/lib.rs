@@ -109,6 +109,19 @@ use crate::utils::geometry::Position;
 
 /// Process exit code for errors
 const PROCESS_EXIT_CODE_ERROR: i32 = 1;
+
+/// Mirror of `Application::current_call` (0 = none) for the native call controls, which
+/// stamp a hang-up click with the call it was made in: a click queued behind a CallEnd
+/// must not end a call started later. Written and read on the winit thread.
+pub(crate) static CURRENT_CALL_ID: AtomicU64 = AtomicU64::new(0);
+
+/// The current call id, as seen by native windows.
+pub(crate) fn current_call_id() -> Option<CallId> {
+    match CURRENT_CALL_ID.load(Ordering::SeqCst) {
+        0 => None,
+        call_id => Some(call_id),
+    }
+}
 #[cfg(debug_assertions)]
 const SOCKET_MESSAGE_TIMEOUT_SECONDS: u64 = 300;
 #[cfg(not(debug_assertions))]
@@ -527,6 +540,11 @@ impl<'a> Application<'a> {
 
     fn call_active(&self) -> bool {
         self.current_call.is_some()
+    }
+
+    fn set_current_call(&mut self, call: Option<CallId>) {
+        self.current_call = call;
+        CURRENT_CALL_ID.store(call.unwrap_or(0), Ordering::SeqCst);
     }
 
     /// Sends `message` as the response to `request_id` (or as an event when `None`).
@@ -1511,7 +1529,9 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                         Ok(_) => {
                             self.reply(request_id, call_start_result(Ok(())));
                             self.start_camera_on_call = start_camera_on_call;
+                            // Field + mirror directly (room_service still borrows self).
                             self.current_call = Some(call_id);
+                            CURRENT_CALL_ID.store(call_id, Ordering::SeqCst);
 
                             // Open camera window immediately for snappiness
                             if start_camera_on_call {
@@ -1598,22 +1618,27 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     "user_event: CallEnd requested={requested_call:?} current={:?}",
                     self.current_call
                 );
-                let ended_call =
-                    match socket_lib::call::resolve_call_end(requested_call, self.current_call) {
-                        socket_lib::call::CallEndAction::Stale => {
-                            // A late CallEnd for an older call: never touch the current one.
-                            // Still echo CallEnded so a UI waiting for that id is released.
-                            log::info!(
-                                "user_event: CallEnd for stale call {requested_call:?}, ignoring"
+                let ended_call = match socket_lib::call::resolve_call_end(
+                    requested_call,
+                    self.current_call,
+                ) {
+                    socket_lib::call::CallEndAction::Acknowledge { requested } => {
+                        // An older call, one already torn down (e.g. the UI's CallEnd after
+                        // a hang-up in a core window), or no call: no teardown. Acknowledge
+                        // a named call so a UI waiting for that id is released.
+                        log::info!(
+                                "user_event: CallEnd for {requested:?}: not the current call, no teardown"
                             );
-                            if let Err(e) = self.socket.send(Message::CallEnded(requested_call)) {
+                        if let Some(call_id) = requested {
+                            if let Err(e) = self.socket.send(Message::CallEnded(call_id)) {
                                 log::error!("user_event: Error sending CallEnded: {e:?}");
                             }
-                            return;
                         }
-                        socket_lib::call::CallEndAction::TearDown { ended } => ended,
-                    };
-                self.current_call = None;
+                        return;
+                    }
+                    socket_lib::call::CallEndAction::TearDown { ended } => ended,
+                };
+                self.set_current_call(None);
                 self.start_camera_on_call = false;
                 self.cancel_screen_selection();
                 self.stop_mic();

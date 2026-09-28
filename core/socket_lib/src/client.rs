@@ -14,6 +14,7 @@
 
 use crate::{EventSocket, Frame, Message, RequestId, SocketSender};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,6 +102,9 @@ pub struct Client {
     outbound: mpsc::Sender<Outbound>,
     pending: Arc<Mutex<PendingRequests>>,
     socket: SocketSender,
+    /// Set by `shutdown`; the dispatcher then drops frames still buffered from this
+    /// connection instead of delivering them.
+    closed: Arc<AtomicBool>,
 }
 
 impl Client {
@@ -138,11 +142,17 @@ impl Client {
             .expect("failed to spawn core-ipc-writer");
 
         let dispatcher_pending = pending.clone();
+        let closed = Arc::new(AtomicBool::new(false));
+        let dispatcher_closed = closed.clone();
         std::thread::Builder::new()
             .name("core-ipc-dispatcher".into())
             .spawn(move || {
                 let incoming = event_socket.take_incoming();
                 for frame in incoming.iter() {
+                    if dispatcher_closed.load(Ordering::SeqCst) {
+                        log::info!("core-ipc-dispatcher: client shut down, dropping buffered frames");
+                        break;
+                    }
                     match frame.request_id {
                         None => handler.on_event(frame.message),
                         Some(id) => {
@@ -178,6 +188,7 @@ impl Client {
             outbound: outbound_tx,
             pending,
             socket: sender,
+            closed,
         })
     }
 
@@ -246,6 +257,7 @@ impl Client {
 
     /// Fails all pending requests now and closes the connection.
     pub fn shutdown(&self) {
+        self.closed.store(true, Ordering::SeqCst);
         let outstanding = self
             .pending
             .lock()
@@ -431,7 +443,7 @@ mod tests {
             .unwrap();
         let request = recv_frame(&server_events);
 
-        server_sender.send(Message::CallEnded(Some(8))).unwrap();
+        server_sender.send(Message::CallEnded(8)).unwrap();
         server_sender
             .send_with_id(
                 request.request_id,
@@ -441,15 +453,15 @@ mod tests {
                 }),
             )
             .unwrap();
-        server_sender.send(Message::CallEnded(Some(9))).unwrap();
+        server_sender.send(Message::CallEnded(9)).unwrap();
 
         let timeout = Duration::from_secs(5);
         let order: Vec<Seen> = (0..3)
             .map(|_| seen.recv_timeout(timeout).unwrap())
             .collect();
-        assert!(matches!(&order[0], Seen::Event(e) if e.contains("CallEnded(Some(8))")));
+        assert!(matches!(&order[0], Seen::Event(e) if e.contains("CallEnded(8)")));
         assert!(matches!(&order[1], Seen::Response(r) if r.contains("CallStartResult")));
-        assert!(matches!(&order[2], Seen::Event(e) if e.contains("CallEnded(Some(9))")));
+        assert!(matches!(&order[2], Seen::Event(e) if e.contains("CallEnded(9)")));
         assert!(rx.recv_timeout(timeout).unwrap().is_ok());
     }
 
@@ -492,6 +504,48 @@ mod tests {
             recv_frame(&server_events).message,
             Message::CallEnd(None)
         ));
+    }
+
+    #[test]
+    fn frames_buffered_before_shutdown_are_not_delivered() {
+        let (client, seen, server_sender, _server_events) = start_client();
+        client.shutdown();
+        // Anything still arriving (or buffered) for a shut-down client is dropped.
+        let _ = server_sender.send(Message::MicrophoneAudioLevel(0.5));
+        loop {
+            match seen.recv_timeout(Duration::from_secs(5)).unwrap() {
+                Seen::Disconnect => break,
+                Seen::Event(e) => panic!("stale event delivered after shutdown: {e}"),
+                Seen::Response(r) => panic!("stale response delivered after shutdown: {r}"),
+            }
+        }
+    }
+
+    #[test]
+    fn shutdown_does_not_wait_for_a_blocked_writer() {
+        // The peer end is never read, so the writer thread blocks in write_all while
+        // holding the writer mutex.
+        let (ours, _unread_peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let (sender, events) = crate::build_pair(ours).unwrap();
+        let (seen_tx, _seen_rx) = mpsc::channel();
+        let client = Client::start(sender, events, Recorder(seen_tx));
+        let big = "x".repeat(1024 * 1024);
+        for _ in 0..16 {
+            client
+                .send(Message::SetAppVeilBundleIds(vec![big.clone()]))
+                .unwrap();
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        let (done_tx, done_rx) = mpsc::channel();
+        let shutdown_client = client.clone();
+        std::thread::spawn(move || {
+            shutdown_client.shutdown();
+            let _ = done_tx.send(());
+        });
+        assert!(
+            done_rx.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "shutdown blocked behind the writer"
+        );
     }
 
     #[test]

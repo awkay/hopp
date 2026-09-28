@@ -251,8 +251,8 @@ pub enum Message {
     /// Response to `CallStart`.
     CallStartResult(CallStartResultMessage),
     /// End the call with this id. `None` ends whatever call is active (used on quit).
-    /// A `CallEnd` for a call that is not the active one is ignored by core, apart from
-    /// the `CallEnded` echo.
+    /// A `CallEnd` for a call that is not the active one (older, or already ended) does no
+    /// teardown; core only acknowledges it with `CallEnded(id)`.
     CallEnd(Option<CallId>),
     StartScreenShare(ScreenShareMessage),
     StartScreenShareResult(Result<(), String>),
@@ -290,9 +290,10 @@ pub enum Message {
     // Core → Tauri event forwarding
     ParticipantsSnapshot(Vec<CoreParticipantState>),
     RoleChange(CoreRoleEvent),
-    /// Core → Tauri: the call with this id was torn down (from `CallEnd`, or hang-up in a
-    /// core window). `None` only when core had no call id.
-    CallEnded(Option<CallId>),
+    /// Core → Tauri: the call with this id is over (torn down now, or already earlier when
+    /// a CallEnd names a call core no longer has; that is just an acknowledgement). Core
+    /// never sends it without an id.
+    CallEnded(CallId),
     RoomConnectionFailed(RoomConnectionFailedMessage),
     /// App Veil could not be initialized; protected apps may be visible while sharing.
     AppVeilFailed(String),
@@ -355,6 +356,9 @@ type Stream = TcpStream;
 #[derive(Clone)]
 pub struct SocketSender {
     stream: Arc<Mutex<Stream>>,
+    /// Separate handle for shutdown, so shutting down never waits for the writer mutex
+    /// (held by a `write_all` that can block while the peer isn't reading).
+    shutdown_handle: Arc<Stream>,
 }
 
 impl SocketSender {
@@ -384,8 +388,7 @@ impl SocketSender {
     /// see end-of-stream.
     pub fn shutdown(&self) {
         use std::net::Shutdown;
-        let stream = self.stream.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = stream.shutdown(Shutdown::Both);
+        let _ = self.shutdown_handle.shutdown(Shutdown::Both);
     }
 }
 
@@ -489,10 +492,12 @@ impl Drop for EventSocket {
 fn build_pair(stream: Stream) -> std::io::Result<(SocketSender, EventSocket)> {
     let write_stream = stream.try_clone()?;
     let read_stream = stream.try_clone()?;
+    let sender_shutdown_stream = stream.try_clone()?;
     let shutdown_stream = stream;
 
     let sender = SocketSender {
         stream: Arc::new(Mutex::new(write_stream)),
+        shutdown_handle: Arc::new(sender_shutdown_stream),
     };
 
     let event_socket = EventSocket::new(read_stream, shutdown_stream);
@@ -733,10 +738,10 @@ mod tests {
             serde_json::from_str::<Message>(&json).unwrap(),
             Message::CallEnd(Some(42))
         ));
-        let json = serde_json::to_string(&Message::CallEnded(None)).unwrap();
+        let json = serde_json::to_string(&Message::CallEnded(7)).unwrap();
         assert!(matches!(
             serde_json::from_str::<Message>(&json).unwrap(),
-            Message::CallEnded(None)
+            Message::CallEnded(7)
         ));
     }
 
@@ -798,11 +803,11 @@ mod tests {
         let ((_server_sender, server_events), (client_sender, _client_events)) = test_pair();
 
         for i in 0..10 {
-            client_sender.send(Message::CallEnded(Some(i))).unwrap();
+            client_sender.send(Message::CallEnded(i)).unwrap();
         }
         for i in 0..10 {
             match recv(&server_events).message {
-                Message::CallEnded(Some(id)) => assert_eq!(id, i),
+                Message::CallEnded(id) => assert_eq!(id, i),
                 other => panic!("unexpected {other:?}"),
             }
         }
@@ -859,7 +864,7 @@ mod tests {
         // A frame written in pieces with pauses (formerly longer than the 1 s read timeout)
         // must still decode.
         let ((server_sender, _server_events), (_client_sender, client_events)) = test_pair();
-        let bytes = encode_frame(&Frame::event(Message::CallEnded(Some(5)))).unwrap();
+        let bytes = encode_frame(&Frame::event(Message::CallEnded(5))).unwrap();
         let (head, tail) = bytes.split_at(3);
         {
             let mut stream = server_sender.stream.lock().unwrap();
@@ -873,7 +878,7 @@ mod tests {
         server_sender.send(Message::Ping).unwrap();
         assert!(matches!(
             recv(&client_events).message,
-            Message::CallEnded(Some(5))
+            Message::CallEnded(5)
         ));
         assert!(matches!(recv(&client_events).message, Message::Ping));
     }
