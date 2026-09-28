@@ -35,6 +35,78 @@ pub fn concerns_current_call(message_call: Option<CallId>, current: Option<CallI
     }
 }
 
+/// Tauri-side view of the call lifecycle. Every method is a pure state transition; the
+/// caller applies the side effects (shortcuts, dock icon, sleep prevention) when a method
+/// says so, while still holding the lock that guards the tracker, so effects are queued in
+/// the same order as the transitions.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct CallTracker {
+    current: Option<CallId>,
+    active: bool,
+}
+
+impl CallTracker {
+    pub fn current(&self) -> Option<CallId> {
+        self.current
+    }
+
+    /// True once core confirmed the current call started.
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+
+    /// The UI is starting call `call_id` (before CallStart is sent).
+    pub fn begin(&mut self, call_id: CallId) {
+        self.current = Some(call_id);
+        self.active = false;
+    }
+
+    /// Core answered CallStart for `call_id`. Returns true when the call just became active
+    /// (apply call-started effects); false for a stale or failed start.
+    pub fn on_start_result(&mut self, call_id: CallId, ok: bool) -> bool {
+        if self.current != Some(call_id) || !ok || self.active {
+            return false;
+        }
+        self.active = true;
+        true
+    }
+
+    /// The UI ended call `call_id` (`None`: whatever is current). Returns true when the
+    /// current call was cleared (apply call-ended effects); false when `call_id` names an
+    /// older call, which must not touch the current one.
+    pub fn end(&mut self, call_id: Option<CallId>) -> bool {
+        if let (Some(requested), Some(current)) = (call_id, self.current) {
+            if requested != current {
+                return false;
+            }
+        }
+        self.clear()
+    }
+
+    /// Core reported `CallEnded(call_id)`. Returns true when that was the current call.
+    pub fn on_call_ended(&mut self, call_id: Option<CallId>) -> bool {
+        if !concerns_current_call(call_id, self.current) {
+            return false;
+        }
+        self.clear()
+    }
+
+    /// Core went away (restart). Returns the call that was current, if any.
+    pub fn reset(&mut self) -> Option<CallId> {
+        let current = self.current;
+        self.clear();
+        current
+    }
+
+    fn clear(&mut self) -> bool {
+        let had_call = self.current.is_some() || self.active;
+        self.current = None;
+        self.active = false;
+        // Effects are idempotent; report whether there was anything to undo.
+        had_call
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,5 +156,67 @@ mod tests {
         assert!(!concerns_current_call(Some(5), None));
         assert!(concerns_current_call(None, Some(5)));
         assert!(!concerns_current_call(None, None));
+    }
+
+    #[test]
+    fn tracker_activates_only_on_a_successful_result_for_the_current_call() {
+        let mut tracker = CallTracker::default();
+        tracker.begin(1);
+        assert!(!tracker.on_start_result(1, false), "failed start");
+        assert!(!tracker.is_active());
+        assert!(!tracker.on_start_result(7, true), "result for another call");
+        assert!(tracker.on_start_result(1, true));
+        assert!(tracker.is_active());
+        assert!(!tracker.on_start_result(1, true), "effects applied once");
+    }
+
+    #[test]
+    fn late_call_ended_of_the_previous_call_does_not_end_the_new_one() {
+        // Wire order on a quick end-then-start: CallEnded(1), ..., CallStartResult(2).
+        let mut tracker = CallTracker::default();
+        tracker.begin(1);
+        tracker.on_start_result(1, true);
+        assert!(tracker.end(Some(1)), "UI hangs up call 1");
+        tracker.begin(2);
+        assert!(!tracker.on_call_ended(Some(1)));
+        assert!(tracker.on_start_result(2, true));
+        assert!(!tracker.on_call_ended(Some(1)));
+        assert_eq!(tracker.current(), Some(2));
+        assert!(tracker.is_active());
+    }
+
+    #[test]
+    fn ui_end_for_an_older_call_is_ignored() {
+        let mut tracker = CallTracker::default();
+        tracker.begin(2);
+        assert!(!tracker.end(Some(1)));
+        assert_eq!(tracker.current(), Some(2));
+    }
+
+    #[test]
+    fn start_result_after_the_ui_already_ended_the_call_is_ignored() {
+        let mut tracker = CallTracker::default();
+        tracker.begin(3);
+        assert!(tracker.end(Some(3)));
+        assert!(!tracker.on_start_result(3, true));
+        assert!(!tracker.is_active());
+    }
+
+    #[test]
+    fn hang_up_in_a_core_window_then_ui_cleanup_is_idempotent() {
+        let mut tracker = CallTracker::default();
+        tracker.begin(4);
+        tracker.on_start_result(4, true);
+        assert!(tracker.on_call_ended(Some(4)));
+        assert!(!tracker.end(Some(4)));
+        assert!(!tracker.on_call_ended(Some(4)), "second CallEnded echo");
+    }
+
+    #[test]
+    fn reset_returns_the_call_that_was_current() {
+        let mut tracker = CallTracker::default();
+        tracker.begin(5);
+        assert_eq!(tracker.reset(), Some(5));
+        assert_eq!(tracker.reset(), None);
     }
 }
