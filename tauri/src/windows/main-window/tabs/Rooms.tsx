@@ -311,9 +311,8 @@ export const Rooms = () => {
 
         try {
           await tauriUtils.callStarted(tokens.audioToken, tokens.videoToken);
-        } catch {
-          setCallTokens(null);
-          toast.error("Failed to start call");
+        } catch (error) {
+          if (tauriUtils.clearFailedCall(error)) toast.error("Failed to start call");
           return;
         }
       } catch (error: any) {
