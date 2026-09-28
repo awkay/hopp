@@ -1,5 +1,21 @@
 # Agent Development Guide for Hopp
 
+## Fork Policy (read first)
+
+This is the `awkay/hopp` fork, maintained for our own users (Dataico build, see `DATAICO.md`). It is
+not a staging area for upstream `gethopp/hopp` PRs.
+
+- **Optimize for shipping to our users quickly.** Fix things the way that works best for us, even if
+  it diverges from upstream's design. Don't shape a change around what upstream might accept.
+- **Don't preserve upstream mergeability** at the cost of a better or faster fix. Refactors of
+  upstream code (e.g. the Tauri `AppData` lock / core IPC) are fair game when they fix real problems.
+- **No upstream negotiation.** We don't open upstream PRs or discuss design with upstream by
+  default. Upstream is free to read and take our changes. Only prepare an upstream PR when explicitly asked.
+- **Pulling from upstream is opt-in.** Merge upstream changes when they're useful to us; resolving
+  conflicts in favor of our design is fine.
+- **Record divergence.** When a change alters upstream behavior or architecture, add a line to the
+  "What differs from upstream" section of `DATAICO.md` so the next person knows it's intentional.
+
 ## Project Overview
 
 Hopp is an open-source pair programming app with screen sharing, remote control, and multi-user rooms. Built with Tauri (desktop), Go (backend), and Rust (core engine).
