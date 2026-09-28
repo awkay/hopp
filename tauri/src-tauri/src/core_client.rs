@@ -56,6 +56,8 @@ impl CoreClient {
 
     /// Makes `client` the connection used from now on and shuts the previous one down.
     pub fn install(&self, client: Arc<Client>) {
+        // The write guard is a temporary dropped at the end of this statement, before the
+        // old connection is shut down.
         let previous = self
             .current
             .write()
@@ -68,12 +70,13 @@ impl CoreClient {
 
     /// Shuts the current connection down (pending requests fail) without replacing it.
     pub fn shutdown(&self) {
-        if let Some(client) = self
+        // Take it out first so the lock is released before shutting down.
+        let client = self
             .current
             .write()
             .unwrap_or_else(|e| e.into_inner())
-            .take()
-        {
+            .take();
+        if let Some(client) = client {
             client.shutdown();
         }
     }

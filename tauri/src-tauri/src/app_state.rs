@@ -35,6 +35,31 @@ pub fn enabled_app_veil_bundle_ids(
     Ok(enabled)
 }
 
+/// Enabled bundle ids, skipping (and logging) empty or duplicate entries instead of
+/// rejecting the whole list. Used for what is sent to core, where failing to an empty
+/// list would silently un-protect every app.
+pub fn enabled_app_veil_bundle_ids_skipping_invalid(
+    applications: &[AppVeilApplication],
+) -> Vec<String> {
+    let mut seen = HashSet::with_capacity(applications.len());
+    let mut enabled = Vec::new();
+    for application in applications {
+        let bundle_id = application.bundle_id.as_str();
+        if bundle_id.trim().is_empty() {
+            log::error!("App Veil: skipping entry with an empty bundle identifier");
+            continue;
+        }
+        if !seen.insert(bundle_id) {
+            log::error!("App Veil: skipping duplicate entry {bundle_id}");
+            continue;
+        }
+        if application.enabled {
+            enabled.push(application.bundle_id.clone());
+        }
+    }
+    enabled
+}
+
 fn default_true() -> bool {
     true
 }
@@ -615,6 +640,22 @@ mod app_veil_tests {
             bundle_id: bundle_id.to_string(),
             enabled,
         }
+    }
+
+    #[test]
+    fn app_veil_startup_list_skips_only_invalid_entries() {
+        let applications = vec![
+            row("com.example.a", true),
+            row("", true),
+            row("com.example.a", true),
+            row("com.example.b", true),
+            row("com.example.c", false),
+        ];
+        assert!(enabled_app_veil_bundle_ids(&applications).is_err());
+        assert_eq!(
+            enabled_app_veil_bundle_ids_skipping_invalid(&applications),
+            vec!["com.example.a".to_string(), "com.example.b".to_string()]
+        );
     }
 
     #[test]

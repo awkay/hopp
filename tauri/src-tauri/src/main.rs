@@ -472,7 +472,12 @@ fn set_sentry_metadata(app: tauri::AppHandle, user_id: String, app_version: Stri
     let _ = data.core.send(Message::SentryMetadata(metadata));
 }
 
-fn resolve_audio_device(last_used: Option<String>, devices: &[AudioDevice]) -> String {
+fn resolve_audio_device(last_used: Option<String>, devices: Option<&[AudioDevice]>) -> String {
+    // Device list unavailable (core slow, e.g. still tearing down the last call): trust the
+    // persisted last-used mic rather than falling back to the system default.
+    let Some(devices) = devices else {
+        return last_used.unwrap_or_default();
+    };
     // Resolve the audio device name: last used → default → first → ""
     if let Some(last) = last_used {
         if devices.iter().any(|d| d.name == last) {
@@ -512,17 +517,17 @@ async fn call_started(
         .request(Message::ListAudioDevices, REQUEST_TIMEOUT)
         .await
     {
-        Ok(Message::AudioDeviceList(devices)) => devices,
+        Ok(Message::AudioDeviceList(devices)) => Some(devices),
         Ok(other) => {
             log::error!("call_started: unexpected response to ListAudioDevices: {other:?}");
-            vec![]
+            None
         }
         Err(e) => {
             log::error!("call_started: failed to list audio devices: {e}");
-            vec![]
+            None
         }
     };
-    let audio_device_name = resolve_audio_device(last_used_mic, &devices);
+    let audio_device_name = resolve_audio_device(last_used_mic, devices.as_deref());
     log::info!("call_started: resolved audio_device_name={audio_device_name:?}");
 
     let pending = call_state::start_call(
@@ -1443,6 +1448,13 @@ fn main() {
     app.run(move |app_handle, event| match event {
         tauri::RunEvent::ExitRequested { .. } => {
             log::info!("Exit requested");
+            // Every quit path (tray menu, Cmd+Q, quit_app, core's ExitRequested) ends here:
+            // make sure core gets CallEnd before we go. Bounded (1 s) and normally instant,
+            // since the writer thread just has to drain the queue.
+            app_handle
+                .state::<AppData>()
+                .core
+                .send_before_exit(Message::CallEnd(None));
             sentry_utils::upload_logs_event("Tauri app quit".to_string());
             sentry_utils::flush(std::time::Duration::from_secs(2));
         }

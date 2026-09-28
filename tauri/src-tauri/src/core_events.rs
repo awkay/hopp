@@ -62,7 +62,7 @@ impl IncomingHandler for CoreEventHandler {
                 call_state::on_call_start_result(app, &result);
             }
             Message::CallEnded(call_id) => {
-                log::info!("core_events: call ended: {call_id:?}");
+                log::info!("core_events: call ended: {call_id}");
                 call_state::on_call_ended(app, call_id);
             }
             Message::ControllerDrawPersistChanged(persist) => {

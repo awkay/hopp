@@ -111,9 +111,13 @@ fn handle_camera(app: &tauri::AppHandle) {
 }
 
 fn handle_end_call(app: &tauri::AppHandle) {
-    // Core ends whatever call it has and reports CallEnded(id); the dispatcher then
-    // clears Tauri's state and the UI ends the call.
-    let _ = app.state::<AppData>().core.send(Message::CallEnd(None));
+    // Name the call the key press belongs to, so a repeated press (before the shortcut is
+    // unregistered) can't end a call started afterwards. Core reports CallEnded(id); the
+    // dispatcher then clears Tauri's state and the UI ends the call.
+    let data = app.state::<AppData>();
+    if let Some(call_id) = crate::call_state::current_call_id(&data) {
+        let _ = data.core.send(Message::CallEnd(Some(call_id)));
+    }
 }
 
 fn handle_screenshare(app: &tauri::AppHandle) {
