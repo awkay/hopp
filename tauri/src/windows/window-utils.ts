@@ -1,6 +1,7 @@
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { invoke } from "@tauri-apps/api/core";
 import { getVersion } from "@tauri-apps/api/app";
+import useStore from "@/store/store";
 const isTauri = typeof window !== "undefined" && window.__TAURI_INTERNALS__ !== undefined;
 
 export let appVersion: null | string = null;
@@ -70,12 +71,13 @@ const closeScreenShareWindow = async () => {
   }
 };
 
-const resetCoreProcess = async () => {
-  await invoke("reset_core_process");
+/** Ends call `callId` in Tauri and core. Core's CallEnd also stops screen sharing. */
+const resetCoreProcess = async (callId?: number) => {
+  await invoke("reset_core_process", { callId });
 };
 
-const endCallCleanup = async () => {
-  await resetCoreProcess();
+const endCallCleanup = async (callId?: number) => {
+  await resetCoreProcess(callId);
   await closeScreenShareWindow();
   await closeCameraWindow();
 };
@@ -186,8 +188,28 @@ const setSentryMetadata = async (userId: string) => {
   return await invoke("set_sentry_metadata", { userId, appVersion });
 };
 
+let lastCallId = 0;
+
+/** Unique, increasing call id (safe integer, fits core's u64). */
+const newCallId = () => {
+  lastCallId = Math.max(lastCallId + 1, Date.now());
+  return lastCallId;
+};
+
+/**
+ * Starts the call whose tokens are in the store. Assigns it a fresh call id first, so any
+ * event from an earlier call can be told apart. If starting fails, the call is also ended
+ * in core (it may have started after Tauri gave up waiting).
+ */
 const callStarted = async (audioToken: string, videoToken: string) => {
-  return await invoke("call_started", { audioToken, videoToken });
+  const callId = newCallId();
+  useStore.getState().updateCallTokens({ callId });
+  try {
+    return await invoke("call_started", { callId, audioToken, videoToken });
+  } catch (error) {
+    resetCoreProcess(callId).catch((e) => console.error("Failed to end call after start failure:", e));
+    throw error;
+  }
 };
 
 /**

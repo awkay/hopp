@@ -126,6 +126,17 @@ export interface BandwidthModeState {
   requested_by: string[];
 }
 
+/** Payload of `core_call_ended`: the call core tore down (null if core had no call id). */
+export interface CoreCallEndedPayload {
+  call_id: number | null;
+}
+
+/** Payload of `core_room_connection_failed`. */
+export interface CoreRoomConnectionFailedPayload {
+  call_id: number;
+  reason: string;
+}
+
 export type CoreRoleChange = "Sharer" | "Controller" | "None";
 
 export interface CoreRoleEvent {
@@ -152,7 +163,8 @@ export interface CommandMap {
   stop_sound: { args: { soundName: string }; return: void };
 
   // Core process
-  reset_core_process: { args: void; return: void };
+  /** Ends call `callId` in Tauri and core; an id that is not the current call is ignored. */
+  reset_core_process: { args: { callId?: number }; return: void };
 
   // Logs
   get_logs: { args: void; return: string };
@@ -203,8 +215,7 @@ export interface CommandMap {
   set_sentry_metadata: { args: { userId: string; appVersion: string }; return: void };
 
   // Call
-  call_started: { args: { audioToken: string; videoToken: string }; return: void };
-  end_call: { args: void; return: void };
+  call_started: { args: { callId: number; audioToken: string; videoToken: string }; return: void };
   toggle_call_sleep_prevention: { args: { enabled: boolean }; return: void };
 
   // Server

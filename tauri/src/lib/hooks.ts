@@ -1,5 +1,5 @@
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-import { once } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useState } from "react";
 import hotkeys from "hotkeys-js";
 import toast from "react-hot-toast";
@@ -9,6 +9,7 @@ import { usePostHog } from "posthog-js/react";
 import { socketService } from "@/services/socket";
 import { sounds } from "@/constants/sounds";
 import { useAPI, useFetchClient } from "@/services/query";
+import type { CoreCallEndedPayload } from "@/core_payloads";
 
 const appWindow = getCurrentWebviewWindow();
 const CALL_END_TIMEOUT_MS = 5_000;
@@ -85,7 +86,7 @@ export function useEndCall() {
   const endCall = useCallback(() => {
     if (!callTokens) return;
 
-    const { timeStarted, participant, room } = callTokens;
+    const { timeStarted, participant, room, callId } = callTokens;
 
     // Capture call info before clearing tokens for feedback
     const teamId = user?.team_id?.toString() || "";
@@ -120,11 +121,9 @@ export function useEndCall() {
     // Play end call sound
     sounds.callAccepted.play();
 
-    // Clear call tokens
-    if (callTokens.role === ParticipantRole.SHARER) {
-      tauriUtils.stopSharing();
-    }
-    tauriUtils.endCallCleanup();
+    // Core's CallEnd also stops screen sharing; a separate StopScreenshare sent from here
+    // could reach core after the CallEnd (and after a new call started).
+    tauriUtils.endCallCleanup(callId);
 
     setCallTokens(null);
 
@@ -148,11 +147,17 @@ export function useEndCall() {
 }
 
 export async function endCallAndWait(endCall: () => void) {
+  const callId = useStore.getState().callTokens?.callId;
   let resolveCallEnded = () => {};
   const callEnded = new Promise<void>((resolve) => {
     resolveCallEnded = () => resolve();
   });
-  const unlisten = await once("core_call_ended", resolveCallEnded);
+  // Wait for core to confirm *this* call ended, not a late echo of an earlier one.
+  const unlisten = await listen<CoreCallEndedPayload>("core_call_ended", (event) => {
+    if (callId === undefined || event.payload.call_id === null || event.payload.call_id === callId) {
+      resolveCallEnded();
+    }
+  });
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
   try {
@@ -218,7 +223,8 @@ export function useJoinCall() {
           await tauriUtils.callStarted(tokens.audioToken, tokens.videoToken);
         } catch {
           socketService.send({ type: "call_end", payload: { participant_id: tokens.participant } });
-          tauriUtils.endCallCleanup();
+          // callStarted already ended the call in core; this closes the windows.
+          tauriUtils.endCallCleanup(useStore.getState().callTokens?.callId);
           setCallTokens(null);
           toast.error("Failed to start call");
           return false;
