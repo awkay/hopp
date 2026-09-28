@@ -296,7 +296,7 @@ impl CallControlsState {
                 self.mic_dropdown_open = false;
                 send(UserEvent::StartAudioCapture {
                     msg: AudioCaptureMessage { device_name: name },
-                    from_socket: false,
+                    request_id: None,
                 });
             }
             CallControlsMessage::VideoToggle => send(if self.camera_active {
@@ -304,7 +304,7 @@ impl CallControlsState {
             } else {
                 UserEvent::StartCamera {
                     msg: CameraStartMessage { device_name: None },
-                    from_socket: false,
+                    request_id: None,
                 }
             }),
             CallControlsMessage::CameraDropdownToggle => {
@@ -321,7 +321,7 @@ impl CallControlsState {
                     msg: CameraStartMessage {
                         device_name: Some(name),
                     },
-                    from_socket: false,
+                    request_id: None,
                 });
             }
             CallControlsMessage::ScreenShare => {
@@ -341,7 +341,7 @@ impl CallControlsState {
                 });
             }
             CallControlsMessage::OpenScreenSharePicker => send(UserEvent::GetAvailableContent),
-            CallControlsMessage::EndCall => send(UserEvent::CallEnd),
+            CallControlsMessage::EndCall => send(UserEvent::CallEnd(None)),
         }
     }
 }

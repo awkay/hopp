@@ -78,8 +78,9 @@ use log::{debug, error};
 use overlay_window::OverlayWindow;
 use room_service::RoomService;
 use socket_lib::{
-    CallStartMessage, CameraStartMessage, Content, ContentType, Message, ScreenShareMessage,
-    ScreenSharePickerMode, ScreenShareResolution, SentryMetadata, SocketSender,
+    CallId, CallStartMessage, CallStartResultMessage, CameraStartMessage, Content, ContentType,
+    Message, RequestId, RoomConnectionFailedMessage, ScreenShareMessage, ScreenSharePickerMode,
+    ScreenShareResolution, SentryMetadata, SocketSender,
 };
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -396,7 +397,6 @@ pub struct Application<'a> {
     //screen_capturer: Arc<Mutex<ScreenCapturer>>,
     screen_capturer: Arc<Mutex<Capturer>>,
     socket: SocketSender,
-    socket_responses: std::sync::mpsc::Receiver<socket_lib::Message>,
     room_service: Option<RoomService>,
     event_loop_proxy: EventLoopProxy<UserEvent>,
     controller_draw_persist: bool,
@@ -422,9 +422,13 @@ pub struct Application<'a> {
     clipboard_controller: Option<ClipboardController>,
     screen_selection: Option<ScreenSelectionState>,
     pending_overlay_repair: Option<MonitorId>,
-    /// True between a dispatched CallStart and CallEnd. Room teardown is async,
-    /// so late room events asking to open windows are dropped while this is false.
-    call_active: bool,
+    /// Id of the call between a dispatched CallStart and CallEnd (`None` = no call).
+    /// Room teardown is async, so late room events asking to open windows are dropped
+    /// while there is no call, and a CallEnd / CreateRoomResult for another call id is stale.
+    current_call: Option<CallId>,
+    /// Camera used when a start-camera request names none. Pushed by Tauri
+    /// (`SetPreferredCamera`) and updated when the user picks a camera in a core window.
+    preferred_camera: Option<String>,
     #[cfg(target_os = "macos")]
     app_veil_host: Option<AppVeilHost>,
 }
@@ -461,7 +465,6 @@ impl<'a> Application<'a> {
     /// - Event loop proxy is invalid
     pub fn new(
         socket: SocketSender,
-        socket_responses: std::sync::mpsc::Receiver<socket_lib::Message>,
         event_loop_proxy: EventLoopProxy<UserEvent>,
         hang_protection_counter: Arc<AtomicU64>,
     ) -> Result<Self, ApplicationError> {
@@ -491,7 +494,6 @@ impl<'a> Application<'a> {
             remote_control: None,
             screen_capturer: screencapturer,
             socket,
-            socket_responses,
             room_service: None,
             event_loop_proxy,
             controller_draw_persist: true,
@@ -516,10 +518,22 @@ impl<'a> Application<'a> {
             clipboard_controller,
             screen_selection: None,
             pending_overlay_repair: None,
-            call_active: false,
+            current_call: None,
+            preferred_camera: None,
             #[cfg(target_os = "macos")]
             app_veil_host: None,
         })
+    }
+
+    fn call_active(&self) -> bool {
+        self.current_call.is_some()
+    }
+
+    /// Sends `message` as the response to `request_id` (or as an event when `None`).
+    fn reply(&self, request_id: Option<RequestId>, message: Message) {
+        if let Err(e) = self.socket.send_with_id(request_id, message) {
+            error!("reply: failed to send response: {e:?}");
+        }
     }
 
     fn start_screen_selection(&mut self, event_loop: &ActiveEventLoop) {
@@ -1445,18 +1459,17 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                 log::debug!("user_event: GetAvailableContent -> screen selection");
                 self.start_screen_selection(event_loop);
             }
-            UserEvent::CallStart(call_start) => {
-                log::info!("user_event: CallStart");
+            UserEvent::CallStart(call_start, request_id) => {
+                let call_id = call_start.call_id;
+                log::info!("user_event: CallStart call_id={call_id}");
+                let call_start_result = |result: Result<(), String>| {
+                    Message::CallStartResult(CallStartResultMessage { call_id, result })
+                };
                 let start_camera_on_call = call_start.start_camera_on_call.unwrap_or(false);
                 if let Err(e) = self.audio_player.start() {
                     log::error!("Failed to start audio player: {e}");
                     sentry_utils::upload_logs_event(format!("Failed to start audio player: {e}"));
-                    if let Err(e) = self
-                        .socket
-                        .send(Message::CallStartResult(Err(e.to_string())))
-                    {
-                        error!("user_event: Error sending CallStartResult: {e:?}");
-                    }
+                    self.reply(request_id, call_start_result(Err(e.to_string())));
                     return;
                 }
                 let audio_capture_result = (|| -> Result<(u32, tokio::sync::mpsc::UnboundedReceiver<Vec<i16>>, crate::audio::mixer::SharedProcessor), String> {
@@ -1476,9 +1489,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     Err(e) => {
                         log::error!("user_event: CallStart audio capture failed: {e}");
                         self.audio_player.stop();
-                        if let Err(send_err) = self.socket.send(Message::CallStartResult(Err(e))) {
-                            error!("user_event: Error sending CallStartResult: {send_err:?}");
-                        }
+                        self.reply(request_id, call_start_result(Err(e)));
                         return;
                     }
                 };
@@ -1495,13 +1506,12 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                         noise_cancellation_enabled: self.noise_cancellation_enabled.clone(),
                         start_mic_on_call,
                         start_camera_on_call,
+                        call_id,
                     }) {
                         Ok(_) => {
-                            if let Err(e) = self.socket.send(Message::CallStartResult(Ok(()))) {
-                                error!("user_event: Error sending CallStartResult ack: {e:?}");
-                            }
+                            self.reply(request_id, call_start_result(Ok(())));
                             self.start_camera_on_call = start_camera_on_call;
-                            self.call_active = true;
+                            self.current_call = Some(call_id);
 
                             // Open camera window immediately for snappiness
                             if start_camera_on_call {
@@ -1513,26 +1523,27 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                             log::error!("user_event: Failed to dispatch create room: {e:?}");
                             self.stop_mic();
                             self.audio_player.stop();
-                            if let Err(e) = self
-                                .socket
-                                .send(Message::CallStartResult(Err(e.to_string())))
-                            {
-                                error!("user_event: Error sending CallStartResult: {e:?}");
-                            }
+                            self.reply(request_id, call_start_result(Err(e.to_string())));
                         }
                     }
                 } else {
                     log::error!("user_event: Room service not found for CallStart");
                     self.stop_mic();
                     self.audio_player.stop();
-                    if let Err(e) = self.socket.send(Message::CallStartResult(Err(
-                        ServerError::RoomServiceNotFound.to_string(),
-                    ))) {
-                        error!("user_event: Error sending CallStartResult: {e:?}");
-                    }
+                    self.reply(
+                        request_id,
+                        call_start_result(Err(ServerError::RoomServiceNotFound.to_string())),
+                    );
                 }
             }
-            UserEvent::CreateRoomResult(result) => {
+            UserEvent::CreateRoomResult(call_id, result) => {
+                if self.current_call != Some(call_id) {
+                    log::info!(
+                        "user_event: dropping stale CreateRoomResult for call {call_id} (current {:?})",
+                        self.current_call
+                    );
+                    return;
+                }
                 match &result {
                     Ok(snapshot) => {
                         let summary = snapshot
@@ -1559,7 +1570,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                             self.start_camera_on_call = false;
                             let res = self.event_loop_proxy.send_event(UserEvent::StartCamera {
                                 msg: CameraStartMessage { device_name: None },
-                                from_socket: false,
+                                request_id: None,
                             });
                             if res.is_err() {
                                 log::error!("user_event: CreateRoomResult failed to queue StartCamera: {res:?}");
@@ -1571,18 +1582,39 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                         self.stop_mic();
                         self.audio_player.stop();
                         self.close_camera_window();
-                        if let Err(e) = self
-                            .socket
-                            .send(Message::RoomConnectionFailed(reason.clone()))
-                        {
+                        if let Err(e) = self.socket.send(Message::RoomConnectionFailed(
+                            RoomConnectionFailedMessage {
+                                call_id,
+                                reason: reason.clone(),
+                            },
+                        )) {
                             error!("user_event: Error sending RoomConnectionFailed: {e:?}");
                         }
                     }
                 }
             }
-            UserEvent::CallEnd => {
-                log::info!("user_event: CallEnd");
-                self.call_active = false;
+            UserEvent::CallEnd(requested_call) => {
+                log::info!(
+                    "user_event: CallEnd requested={requested_call:?} current={:?}",
+                    self.current_call
+                );
+                let ended_call =
+                    match socket_lib::call::resolve_call_end(requested_call, self.current_call) {
+                        socket_lib::call::CallEndAction::Stale => {
+                            // A late CallEnd for an older call: never touch the current one.
+                            // Still echo CallEnded so a UI waiting for that id is released.
+                            log::info!(
+                                "user_event: CallEnd for stale call {requested_call:?}, ignoring"
+                            );
+                            if let Err(e) = self.socket.send(Message::CallEnded(requested_call)) {
+                                log::error!("user_event: Error sending CallEnded: {e:?}");
+                            }
+                            return;
+                        }
+                        socket_lib::call::CallEndAction::TearDown { ended } => ended,
+                    };
+                self.current_call = None;
+                self.start_camera_on_call = false;
                 self.cancel_screen_selection();
                 self.stop_mic();
                 self.audio_player.stop();
@@ -1635,7 +1667,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                 self.close_drawing_window();
                 self.stats_window = None;
 
-                if let Err(e) = self.socket.send(Message::CallEnded) {
+                if let Err(e) = self.socket.send(Message::CallEnded(ended_call)) {
                     log::error!("user_event: Error sending CallEnded: {e:?}");
                 }
 
@@ -1676,8 +1708,11 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
             }
             UserEvent::StopScreenShare => {
                 self.stop_screenshare();
-                if let Some(room_service) = self.room_service.as_ref() {
-                    room_service.send_participants_snapshot();
+                // A StopScreenshare racing a CallEnd must not push a stale snapshot.
+                if self.call_active() {
+                    if let Some(room_service) = self.room_service.as_ref() {
+                        room_service.send_participants_snapshot();
+                    }
                 }
             }
             UserEvent::RequestRedraw => {
@@ -2153,14 +2188,13 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     }
                 }
             }
-            UserEvent::ListAudioDevices => {
+            UserEvent::ListAudioDevices(request_id) => {
                 log::debug!("user_event: ListAudioDevices");
                 let devices = self.audio_capturer.list_sources();
-                if let Err(e) = self.socket.send(Message::AudioDeviceList(devices)) {
-                    error!("user_event: Error sending audio device list: {e:?}");
-                }
+                self.reply(request_id, Message::AudioDeviceList(devices));
             }
-            UserEvent::StartAudioCapture { msg, from_socket } => {
+            UserEvent::StartAudioCapture { msg, request_id } => {
+                let from_socket = request_id.is_some();
                 log::info!(
                     "user_event: StartAudioCapture device_name={}",
                     msg.device_name
@@ -2191,9 +2225,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                 }
 
                 if from_socket {
-                    if let Err(e) = self.socket.send(Message::StartAudioCaptureResult(result)) {
-                        error!("user_event: Error sending StartAudioCaptureResult: {e:?}");
-                    }
+                    self.reply(request_id, Message::StartAudioCaptureResult(result));
                 }
             }
 
@@ -2258,35 +2290,19 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     }
                 }
             }
-            UserEvent::ListCameras => {
+            UserEvent::ListCameras(request_id) => {
                 log::debug!("user_event: ListCameras");
                 let devices = CameraCapturer::list_devices();
-                if let Err(e) = self.socket.send(Message::CameraList(devices)) {
-                    error!("user_event: Error sending camera list: {e:?}");
-                }
+                self.reply(request_id, Message::CameraList(devices));
             }
-            UserEvent::StartCamera { msg, from_socket } => {
-                let device_name = if msg.device_name.is_some() {
-                    msg.device_name
-                } else if let Err(e) = self.socket.send(Message::QueryPreferredCamera) {
-                    log::error!("user_event: StartCamera: failed to query preferred camera: {e:?}");
-                    None
-                } else {
-                    match self
-                        .socket_responses
-                        .recv_timeout(std::time::Duration::from_millis(500))
-                    {
-                        Ok(Message::PreferredCamera(name)) => name,
-                        Ok(other) => {
-                            log::warn!("user_event: StartCamera: unexpected response to QueryPreferredCamera: {other:?}");
-                            None
-                        }
-                        Err(_) => {
-                            log::warn!("user_event: StartCamera: timeout waiting for preferred camera, using default");
-                            None
-                        }
-                    }
-                };
+            UserEvent::SetPreferredCamera(name) => {
+                log::info!("user_event: SetPreferredCamera({name:?})");
+                self.preferred_camera = name;
+            }
+            UserEvent::StartCamera { msg, request_id } => {
+                let from_socket = request_id.is_some();
+                // No round trip to Tauri: it pushes the preferred camera ahead of time.
+                let device_name = msg.device_name.or_else(|| self.preferred_camera.clone());
 
                 log::info!("user_event: StartCamera device='{device_name:?}'");
 
@@ -2294,9 +2310,10 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     Some(rs) => rs,
                     None => {
                         if from_socket {
-                            let _ = self.socket.send(Message::StartCameraResult(Err(
-                                "Room service not found".to_string(),
-                            )));
+                            self.reply(
+                                request_id,
+                                Message::StartCameraResult(Err("Room service not found".into())),
+                            );
                         }
                         return;
                     }
@@ -2307,9 +2324,10 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     None => {
                         log::error!("user_event: StartCamera: no camera buffer source available");
                         if from_socket {
-                            let _ = self.socket.send(Message::StartCameraResult(Err(
-                                "Camera not ready".to_string(),
-                            )));
+                            self.reply(
+                                request_id,
+                                Message::StartCameraResult(Err("Camera not ready".into())),
+                            );
                         }
                         return;
                     }
@@ -2340,10 +2358,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                         cam.show_error_toast("Failed to start camera");
                     }
                     if from_socket {
-                        if let Err(e) = self.socket.send(Message::StartCameraResult(Err(e.clone())))
-                        {
-                            error!("user_event: Error sending StartCameraResult: {e:?}");
-                        }
+                        self.reply(request_id, Message::StartCameraResult(Err(e.clone())));
                     }
                     room_service.send_participants_snapshot();
                     return;
@@ -2351,9 +2366,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
 
                 // Send success result via socket
                 if from_socket {
-                    if let Err(e) = self.socket.send(Message::StartCameraResult(Ok(()))) {
-                        error!("user_event: Error sending StartCameraResult: {e:?}");
-                    }
+                    self.reply(request_id, Message::StartCameraResult(Ok(())));
                 }
 
                 // Unmute camera track (fire-and-forget)
@@ -2364,6 +2377,9 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     capturer.active_device_name().map(|s| s.to_string())
                 };
 
+                if actual_name.is_some() {
+                    self.preferred_camera = actual_name.clone();
+                }
                 if !from_socket {
                     if let Some(name) = &actual_name {
                         if let Err(e) = self.socket.send(Message::ActiveCameraChanged(name.clone()))
@@ -2394,7 +2410,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
             }
             UserEvent::OpenCamera => {
                 log::info!("user_event: OpenCamera");
-                if !self.call_active {
+                if !self.call_active() {
                     log::warn!("user_event: no active call, ignoring OpenCamera");
                     return;
                 }
@@ -2424,7 +2440,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                 redraw_tx,
             } => {
                 log::info!("user_event: OpenScreenShareWindow");
-                if !self.call_active {
+                if !self.call_active() {
                     log::warn!("user_event: no active call, ignoring OpenScreenShareWindow");
                     return;
                 }
@@ -2499,7 +2515,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                 log::info!("user_event: CloseCameraWindow");
                 self.close_camera_window();
             }
-            UserEvent::BringWindowsToFront => {
+            UserEvent::BringWindowsToFront(request_id) => {
                 log::info!("user_event: BringWindowsToFront");
                 let mut focused = false;
                 if let Some(screen_sharing_window) = &mut self.screensharing_window {
@@ -2514,12 +2530,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                         focused = true;
                     }
                 }
-                if let Err(e) = self
-                    .socket
-                    .send(Message::BringWindowsToFrontResult(focused))
-                {
-                    log::error!("user_event: Error sending BringWindowsToFrontResult: {e:?}");
-                }
+                self.reply(request_id, Message::BringWindowsToFrontResult(focused));
             }
             // TODO(@konsalex): We need to rethink how to tackle this,
             // as a new-joiner in a Room will not have access to this
@@ -3251,8 +3262,11 @@ pub enum UserEvent {
     GetAvailableContent,
     Terminate,
     HangProtection,
-    CallStart(CallStartMessage),
-    CallEnd,
+    /// A Tauri CallStart request (answered with CallStartResult).
+    CallStart(CallStartMessage, Option<RequestId>),
+    /// End the call with this id, or whatever call is active when `None`
+    /// (hang-up in a core window, quit).
+    CallEnd(Option<CallId>),
     ScreenShare(ScreenShareMessage),
     StopScreenShare,
     RequestRedraw,
@@ -3286,19 +3300,25 @@ pub enum UserEvent {
     SharerDrawPersistChanged(bool),
     ControllerDrawPersistChanged(bool),
     LastModeChanged(socket_lib::StoredMode),
-    ListAudioDevices,
+    /// Carries the request id to answer (`None` when not from a Tauri request).
+    ListAudioDevices(Option<RequestId>),
+    /// `request_id` is set for Tauri requests (answered with StartAudioCaptureResult);
+    /// `None` for core-originated switches (reported with ActiveMicChanged).
     StartAudioCapture {
         msg: socket_lib::AudioCaptureMessage,
-        from_socket: bool,
+        request_id: Option<RequestId>,
     },
     StopAudioCapture,
     MuteAudio,
     UnmuteAudio,
     ToggleMic,
-    ListCameras,
+    ListCameras(Option<RequestId>),
+    SetPreferredCamera(Option<String>),
+    /// `request_id` is set for Tauri requests (answered with StartCameraResult);
+    /// `None` for core-originated or fire-and-forget starts (reported with ActiveCameraChanged).
     StartCamera {
         msg: CameraStartMessage,
-        from_socket: bool,
+        request_id: Option<RequestId>,
     },
     StopCamera,
     OpenCamera,
@@ -3322,7 +3342,7 @@ pub enum UserEvent {
     CloseScreenShareWindow,
     CloseCameraWindow,
     OpenStatsWindow,
-    BringWindowsToFront,
+    BringWindowsToFront(Option<RequestId>),
     SharerControlEnabled(bool),
     DefaultOutputDeviceChanged,
     DefaultInputDeviceChanged,
@@ -3335,7 +3355,11 @@ pub enum UserEvent {
     BandwidthModeStateChanged(socket_lib::BandwidthModeState),
     SetScreenSharePickerMode(ScreenSharePickerMode),
     SetTelemetryEnabled(bool),
-    CreateRoomResult(Result<Vec<socket_lib::CoreParticipantState>, String>),
+    /// Room connect outcome for the call with this id (stale ids are dropped).
+    CreateRoomResult(
+        CallId,
+        Result<Vec<socket_lib::CoreParticipantState>, String>,
+    ),
     ExitRequested,
 }
 
@@ -3385,56 +3409,56 @@ impl RenderEventLoop {
             log::error!("Error creating socket: {e:?}");
             RenderLoopError::SocketError(e)
         })?;
-        let socket_responses = event_socket.take_responses();
+        let incoming = event_socket.take_incoming();
 
         let event_loop_proxy = self.event_loop.create_proxy();
         /*
          * Thread for dispatching socket events to the winit event loop.
          */
         std::thread::spawn(move || {
+            // Keep the EventSocket alive for as long as we read from it.
+            let _event_socket = event_socket;
             loop {
-                let message =
-                    match event_socket
-                        .events
-                        .recv_timeout(std::time::Duration::from_secs(
-                            SOCKET_MESSAGE_TIMEOUT_SECONDS,
-                        )) {
-                        Ok(msg) => msg,
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let socket_lib::Frame {
+                    request_id,
+                    message,
+                } = match incoming.recv_timeout(std::time::Duration::from_secs(
+                    SOCKET_MESSAGE_TIMEOUT_SECONDS,
+                )) {
+                    Ok(frame) => frame,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        log::error!("RenderEventLoop::run Socket message timeout, terminating.");
+                        let res = event_loop_proxy.send_event(UserEvent::Terminate);
+                        if res.is_err() {
                             log::error!(
-                                "RenderEventLoop::run Socket message timeout, terminating."
+                                "RenderEventLoop::run Error sending terminate event: {:?}",
+                                res.err()
                             );
-                            let res = event_loop_proxy.send_event(UserEvent::Terminate);
-                            if res.is_err() {
-                                log::error!(
-                                    "RenderEventLoop::run Error sending terminate event: {:?}",
-                                    res.err()
-                                );
-                            }
-                            std::thread::sleep(std::time::Duration::from_secs(1));
-                            std::process::exit(PROCESS_EXIT_CODE_ERROR);
                         }
-                        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        std::process::exit(PROCESS_EXIT_CODE_ERROR);
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        log::error!(
+                            "RenderEventLoop::run Socket event channel closed, terminating."
+                        );
+                        let res = event_loop_proxy.send_event(UserEvent::Terminate);
+                        if res.is_err() {
                             log::error!(
-                                "RenderEventLoop::run Socket event channel closed, terminating."
+                                "RenderEventLoop::run Error sending terminate event: {:?}",
+                                res.err()
                             );
-                            let res = event_loop_proxy.send_event(UserEvent::Terminate);
-                            if res.is_err() {
-                                log::error!(
-                                    "RenderEventLoop::run Error sending terminate event: {:?}",
-                                    res.err()
-                                );
-                            }
-                            std::thread::sleep(std::time::Duration::from_secs(1));
-                            std::process::exit(PROCESS_EXIT_CODE_ERROR);
                         }
-                    };
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        std::process::exit(PROCESS_EXIT_CODE_ERROR);
+                    }
+                };
                 let user_event = match message {
                     Message::GetAvailableContent => UserEvent::GetAvailableContent,
                     Message::CallStart(call_start_message) => {
-                        UserEvent::CallStart(call_start_message)
+                        UserEvent::CallStart(call_start_message, request_id)
                     }
-                    Message::CallEnd => UserEvent::CallEnd,
+                    Message::CallEnd(call_id) => UserEvent::CallEnd(call_id),
                     Message::StartScreenShare(screen_share_message) => {
                         UserEvent::ScreenShare(screen_share_message)
                     }
@@ -3450,20 +3474,17 @@ impl RenderEventLoop {
                         UserEvent::ControllerDrawPersistChanged(persist)
                     }
                     Message::LastModeChanged(mode) => UserEvent::LastModeChanged(mode),
-                    Message::ListAudioDevices => UserEvent::ListAudioDevices,
-                    Message::StartAudioCapture(msg) => UserEvent::StartAudioCapture {
-                        msg,
-                        from_socket: true,
-                    },
+                    Message::ListAudioDevices => UserEvent::ListAudioDevices(request_id),
+                    Message::StartAudioCapture(msg) => {
+                        UserEvent::StartAudioCapture { msg, request_id }
+                    }
                     Message::StopAudioCapture => UserEvent::StopAudioCapture,
                     Message::MuteAudio => UserEvent::MuteAudio,
                     Message::UnmuteAudio => UserEvent::UnmuteAudio,
                     Message::ToggleMic => UserEvent::ToggleMic,
-                    Message::ListCameras => UserEvent::ListCameras,
-                    Message::StartCamera(msg) => UserEvent::StartCamera {
-                        msg,
-                        from_socket: true,
-                    },
+                    Message::ListCameras => UserEvent::ListCameras(request_id),
+                    Message::StartCamera(msg) => UserEvent::StartCamera { msg, request_id },
+                    Message::SetPreferredCamera(name) => UserEvent::SetPreferredCamera(name),
                     Message::StopCamera => UserEvent::StopCamera,
                     Message::OpenCamera => UserEvent::OpenCamera,
                     Message::OpenScreensharing => UserEvent::OpenScreensharing,
@@ -3477,7 +3498,7 @@ impl RenderEventLoop {
                     },
                     Message::CloseScreenShareWindow => UserEvent::CloseScreenShareWindow,
                     Message::OpenStatsWindow => UserEvent::OpenStatsWindow,
-                    Message::BringWindowsToFront => UserEvent::BringWindowsToFront,
+                    Message::BringWindowsToFront => UserEvent::BringWindowsToFront(request_id),
                     Message::SetNoiseCancellation(enabled) => {
                         UserEvent::SetNoiseCancellation(enabled)
                     }
@@ -3550,8 +3571,7 @@ impl RenderEventLoop {
         });
 
         let proxy = self.event_loop.create_proxy();
-        let mut application =
-            Application::new(sender, socket_responses, proxy, hang_protection_counter)?;
+        let mut application = Application::new(sender, proxy, hang_protection_counter)?;
         self.event_loop.run_app(&mut application).map_err(|e| {
             log::error!("Error running application: {e:?}");
             RenderLoopError::EventLoopError(e)

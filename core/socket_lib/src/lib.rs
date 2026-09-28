@@ -6,6 +6,7 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
+pub mod call;
 pub mod client;
 
 /// Identifies a request sent by Tauri; core echoes it on the matching response.
