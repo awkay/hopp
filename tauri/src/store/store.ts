@@ -20,6 +20,12 @@ export enum ParticipantRole {
 }
 
 export type CallState = {
+  /**
+   * Id of this call, set just before `call_started` is invoked. Core events about a call
+   * (`core_call_ended`, `core_room_connection_failed`) carry it; events for another id are
+   * about an older call and must be ignored.
+   */
+  callId?: number;
   timeStarted: Date;
   hasAudioEnabled: boolean;
   hasCameraEnabled: boolean;

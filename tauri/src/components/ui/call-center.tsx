@@ -26,7 +26,7 @@ import toast from "react-hot-toast";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Constants } from "@/constants";
 import { useEndCall } from "@/lib/hooks";
-import { typedInvoke } from "@/core_payloads";
+import { typedInvoke, type CoreCallEndedPayload, type CoreRoomConnectionFailedPayload } from "@/core_payloads";
 import { useQuery } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { getAllWindows } from "@tauri-apps/api/window";
@@ -86,10 +86,12 @@ export function CallCenter() {
   }, [callTokens?.role, userSettings]);
 
   useEffect(() => {
-    const unlisten = listen("core_call_ended", () => {
-      console.log("core_call_ended event received");
+    const unlisten = listen<CoreCallEndedPayload>("core_call_ended", (event) => {
+      console.log("core_call_ended event received", event.payload);
       const { callTokens } = useStore.getState();
       if (!callTokens) return;
+      // A late CallEnded for an earlier call must not end this one.
+      if (event.payload.call_id !== null && event.payload.call_id !== callTokens.callId) return;
       handleEndCallRef.current();
     });
     return () => {
@@ -98,10 +100,11 @@ export function CallCenter() {
   }, []);
 
   useEffect(() => {
-    const unlisten = listen("core_room_connection_failed", () => {
-      console.log("core_call_ended event received");
+    const unlisten = listen<CoreRoomConnectionFailedPayload>("core_room_connection_failed", (event) => {
+      console.log("core_room_connection_failed event received", event.payload);
       const { callTokens } = useStore.getState();
       if (!callTokens) return;
+      if (event.payload.call_id !== callTokens.callId) return;
       handleEndCallRef.current();
       toast.error("Failed to establish connection");
     });
