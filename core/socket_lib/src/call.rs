@@ -9,30 +9,26 @@ use crate::CallId;
 /// What to do with a `CallEnd(requested)` given the current call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallEndAction {
-    /// The request names a call other than the current one: leave the current call alone.
-    Stale,
-    /// Tear down (idempotent when no call is active) and report `ended` in `CallEnded`.
-    TearDown { ended: Option<CallId> },
+    /// Tear down the current call and report it in `CallEnded(ended)`.
+    TearDown { ended: CallId },
+    /// Nothing to tear down: `requested` is an older call, one that already ended, or there
+    /// is no call. Only acknowledge a named call with `CallEnded(id)`.
+    Acknowledge { requested: Option<CallId> },
 }
 
 pub fn resolve_call_end(requested: Option<CallId>, current: Option<CallId>) -> CallEndAction {
     match (requested, current) {
-        (Some(requested), Some(current)) if requested != current => CallEndAction::Stale,
-        (_, Some(current)) => CallEndAction::TearDown {
-            ended: Some(current),
+        (Some(requested), Some(current)) if requested != current => CallEndAction::Acknowledge {
+            requested: Some(requested),
         },
-        (requested, None) => CallEndAction::TearDown { ended: requested },
+        (_, Some(current)) => CallEndAction::TearDown { ended: current },
+        (requested, None) => CallEndAction::Acknowledge { requested },
     }
 }
 
-/// Whether a message tagged `message_call` (from `CallEnded`) concerns the `current` call.
-/// `None` on the message means "whatever call core had" and matches any current call.
-pub fn concerns_current_call(message_call: Option<CallId>, current: Option<CallId>) -> bool {
-    match (message_call, current) {
-        (_, None) => false,
-        (None, Some(_)) => true,
-        (Some(message_call), Some(current)) => message_call == current,
-    }
+/// Whether `CallEnded(message_call)` concerns the `current` call.
+pub fn concerns_current_call(message_call: CallId, current: Option<CallId>) -> bool {
+    current == Some(message_call)
 }
 
 /// Tauri-side view of the call lifecycle. Every method is a pure state transition; the
@@ -84,7 +80,7 @@ impl CallTracker {
     }
 
     /// Core reported `CallEnded(call_id)`. Returns true when that was the current call.
-    pub fn on_call_ended(&mut self, call_id: Option<CallId>) -> bool {
+    pub fn on_call_ended(&mut self, call_id: CallId) -> bool {
         if !concerns_current_call(call_id, self.current) {
             return false;
         }
@@ -115,47 +111,48 @@ mod tests {
     fn call_end_for_the_current_call_tears_it_down() {
         assert_eq!(
             resolve_call_end(Some(2), Some(2)),
-            CallEndAction::TearDown { ended: Some(2) }
+            CallEndAction::TearDown { ended: 2 }
         );
     }
 
     #[test]
-    fn call_end_for_an_older_call_is_stale() {
-        assert_eq!(resolve_call_end(Some(1), Some(2)), CallEndAction::Stale);
+    fn call_end_for_an_older_call_only_acknowledges() {
+        assert_eq!(
+            resolve_call_end(Some(1), Some(2)),
+            CallEndAction::Acknowledge { requested: Some(1) }
+        );
     }
 
     #[test]
     fn call_end_without_id_ends_whatever_is_active() {
         assert_eq!(
             resolve_call_end(None, Some(3)),
-            CallEndAction::TearDown { ended: Some(3) }
+            CallEndAction::TearDown { ended: 3 }
         );
     }
 
     #[test]
-    fn call_end_with_no_active_call_is_an_idempotent_teardown_tagged_with_the_request() {
-        // e.g. the second CallEnd after a hang-up in a core window, or a CallEnd after a
-        // failed CallStart: cleanup is harmless and the CallEnded echo carries the id.
+    fn call_end_with_no_active_call_does_no_teardown() {
+        // e.g. the UI's CallEnd after a hang-up in a core window already ended the call,
+        // or a CallEnd after a failed CallStart.
         assert_eq!(
             resolve_call_end(Some(4), None),
-            CallEndAction::TearDown { ended: Some(4) }
+            CallEndAction::Acknowledge { requested: Some(4) }
         );
         assert_eq!(
             resolve_call_end(None, None),
-            CallEndAction::TearDown { ended: None }
+            CallEndAction::Acknowledge { requested: None }
         );
     }
 
     #[test]
     fn call_ended_only_concerns_the_matching_call() {
-        assert!(concerns_current_call(Some(5), Some(5)));
+        assert!(concerns_current_call(5, Some(5)));
         assert!(
-            !concerns_current_call(Some(4), Some(5)),
+            !concerns_current_call(4, Some(5)),
             "late CallEnded of an older call"
         );
-        assert!(!concerns_current_call(Some(5), None));
-        assert!(concerns_current_call(None, Some(5)));
-        assert!(!concerns_current_call(None, None));
+        assert!(!concerns_current_call(5, None));
     }
 
     #[test]
@@ -178,9 +175,9 @@ mod tests {
         tracker.on_start_result(1, true);
         assert!(tracker.end(Some(1)), "UI hangs up call 1");
         tracker.begin(2);
-        assert!(!tracker.on_call_ended(Some(1)));
+        assert!(!tracker.on_call_ended(1));
         assert!(tracker.on_start_result(2, true));
-        assert!(!tracker.on_call_ended(Some(1)));
+        assert!(!tracker.on_call_ended(1));
         assert_eq!(tracker.current(), Some(2));
         assert!(tracker.is_active());
     }
@@ -207,9 +204,9 @@ mod tests {
         let mut tracker = CallTracker::default();
         tracker.begin(4);
         tracker.on_start_result(4, true);
-        assert!(tracker.on_call_ended(Some(4)));
+        assert!(tracker.on_call_ended(4));
         assert!(!tracker.end(Some(4)));
-        assert!(!tracker.on_call_ended(Some(4)), "second CallEnded echo");
+        assert!(!tracker.on_call_ended(4), "second CallEnded echo");
     }
 
     #[test]

@@ -341,7 +341,12 @@ impl CallControlsState {
                 });
             }
             CallControlsMessage::OpenScreenSharePicker => send(UserEvent::GetAvailableContent),
-            CallControlsMessage::EndCall => send(UserEvent::CallEnd(None)),
+            // Stamp the click with the call it belongs to; with no call there is nothing to end.
+            CallControlsMessage::EndCall => {
+                if let Some(call_id) = crate::current_call_id() {
+                    send(UserEvent::CallEnd(Some(call_id)));
+                }
+            }
         }
     }
 }
