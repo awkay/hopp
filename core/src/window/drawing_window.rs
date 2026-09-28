@@ -382,10 +382,21 @@ impl DrawingWindow {
     }
 
     pub fn stop_redraw_thread(&mut self) {
-        if let Err(e) = self.redraw_tx.send(RedrawCommand::Stop) {
-            log::error!("DrawingWindow::stop_redraw_thread: failed to send Stop: {e:?}");
+        if self.redraw_thread.take().is_some() {
+            if let Err(e) = self.redraw_tx.send(RedrawCommand::Stop) {
+                log::error!("DrawingWindow::stop_redraw_thread: failed to send Stop: {e:?}");
+            }
         }
-        self.redraw_thread.take();
+    }
+
+    /// Respawns the redraw thread on a fresh channel if it was stopped on close.
+    fn ensure_redraw_thread(&mut self) {
+        if self.redraw_thread.is_some() {
+            return;
+        }
+        let (redraw_tx, redraw_rx) = std::sync::mpsc::channel();
+        self.redraw_thread = Some(spawn_redraw_thread(redraw_rx, self.window.clone()));
+        self.redraw_tx = redraw_tx;
     }
 
     pub fn hide(&self) {
@@ -422,6 +433,7 @@ impl DrawingWindow {
         self.participants_manager = participants_manager;
 
         self.cache = Some(Cache::default());
+        self.ensure_redraw_thread();
         self.window.set_visible(true);
         self.window.focus_window();
         self.update_draw_y_transform();
