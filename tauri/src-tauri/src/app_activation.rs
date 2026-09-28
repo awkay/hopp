@@ -1,3 +1,4 @@
+use crate::core_client::REQUEST_TIMEOUT;
 use crate::AppData;
 use objc2::rc::Retained;
 use objc2::runtime::ProtocolObject;
@@ -51,11 +52,11 @@ impl AppActivationObserver {
                 }
 
                 // Regular mode is either when permissions/notification windows are open, or when we are in a call.
+                // This runs on the main thread: only atomics here, never a lock or a wait.
                 if app_handle
-                    .state::<Mutex<AppData>>()
-                    .lock()
-                    .unwrap()
+                    .state::<AppData>()
                     .activation_policy_regular
+                    .load(Ordering::Relaxed)
                 {
                     log::info!("app_activation: activation_policy_regular is true, showing permissions window if exists");
                     if let Some(window) = app_handle.get_webview_window("permissions") {
@@ -75,31 +76,7 @@ impl AppActivationObserver {
                         );
                     } else {
                         bringing_to_front.store(true, Ordering::Relaxed);
-                        let data = app_handle.state::<Mutex<AppData>>();
-                        let data = data.lock().unwrap();
-                        if let Err(e) = data.sender.send(Message::BringWindowsToFront) {
-                            log::error!(
-                                "app_activation: failed to send BringWindowsToFront: {e:?}"
-                            );
-                        } else {
-                            let focused = crate::recv_expected_response(
-                                &data.event_socket,
-                                |msg| match msg {
-                                    Message::BringWindowsToFrontResult(f) => Ok(f),
-                                    other => Err(other),
-                                },
-                            )
-                            .unwrap_or(false);
-
-                            if !focused {
-                                log::info!("app_activation: BringWindowsToFront returned false, showing main window");
-                                if let Some(window) = app_handle.get_webview_window("main") {
-                                    let _ = window.show();
-                                    let _ = window.set_focus();
-                                }
-                            }
-                        }
-                        bringing_to_front.store(false, Ordering::Relaxed);
+                        Self::bring_windows_to_front(app_handle.clone(), bringing_to_front.clone());
                     }
                     return;
                 } else {
@@ -155,6 +132,49 @@ impl AppActivationObserver {
         Self {
             _observer: SendSyncObserver(observer),
         }
+    }
+
+    /// Asks core to focus its windows and shows the main window if none was focused.
+    /// Asynchronous: the observer (main thread) never waits for core. `in_flight` is cleared
+    /// on every outcome (answer, error, timeout).
+    fn bring_windows_to_front(app_handle: tauri::AppHandle, in_flight: Arc<AtomicBool>) {
+        tauri::async_runtime::spawn(async move {
+            struct ClearOnDrop(Arc<AtomicBool>);
+            impl Drop for ClearOnDrop {
+                fn drop(&mut self) {
+                    self.0.store(false, Ordering::Relaxed);
+                }
+            }
+            let _clear = ClearOnDrop(in_flight);
+
+            let response = app_handle
+                .state::<AppData>()
+                .core
+                .request(Message::BringWindowsToFront, REQUEST_TIMEOUT)
+                .await;
+            let focused = match response {
+                Ok(Message::BringWindowsToFrontResult(focused)) => focused,
+                Ok(other) => {
+                    log::error!("app_activation: unexpected response: {other:?}");
+                    false
+                }
+                Err(e) => {
+                    log::error!("app_activation: BringWindowsToFront failed: {e}");
+                    false
+                }
+            };
+            if focused {
+                return;
+            }
+            log::info!("app_activation: BringWindowsToFront returned false, showing main window");
+            let app_main = app_handle.clone();
+            let _ = app_handle.run_on_main_thread(move || {
+                if let Some(window) = app_main.get_webview_window("main") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            });
+        });
     }
 
     fn reset_reopen_requested_after_delay(reopen_in_progress: Arc<Mutex<bool>>) {

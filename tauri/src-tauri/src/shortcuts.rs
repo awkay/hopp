@@ -1,9 +1,12 @@
-use hopp::AppData;
+use crate::AppData;
 use socket_lib::{CameraStartMessage, Message};
-use std::sync::Mutex;
+use std::sync::atomic::Ordering;
 use tauri::Manager;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
+// Rules (see AppData): (un)register only on the main thread, where the plugin's
+// run-on-main-thread round trip runs inline; handlers run on the main thread while the
+// plugin holds its shortcut map lock, so they only read atomics and enqueue to core.
 pub struct CallShortcuts {
     pub mic: String,
     pub camera: String,
@@ -81,54 +84,44 @@ pub fn unregister_call_shortcuts(app: &tauri::AppHandle) {
     }
 }
 
-fn handle_mic(app: &tauri::AppHandle) {
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    if let Err(e) = data.sender.send(Message::ToggleMic) {
-        log::error!("handle_mic shortcut: {e}");
+pub fn resolved_call_shortcuts(app_state: &crate::app_state::AppState) -> CallShortcuts {
+    let mut settings = app_state.user_settings();
+    settings.resolve_shortcuts();
+    CallShortcuts {
+        mic: settings.shortcut_toggle_mic.unwrap_or_default(),
+        camera: settings.shortcut_toggle_camera.unwrap_or_default(),
+        screenshare: settings.shortcut_toggle_screenshare.unwrap_or_default(),
+        end_call: settings.shortcut_end_call.unwrap_or_default(),
     }
+}
+
+fn handle_mic(app: &tauri::AppHandle) {
+    let _ = app.state::<AppData>().core.send(Message::ToggleMic);
 }
 
 fn handle_camera(app: &tauri::AppHandle) {
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    if data.is_camera_on {
-        if let Err(e) = data.sender.send(Message::StopCamera) {
-            log::error!("handle_camera shortcut (stop): {e}");
-        }
+    let data = app.state::<AppData>();
+    let message = if data.is_camera_on.load(Ordering::Relaxed) {
+        Message::StopCamera
     } else {
-        let device_name = data.app_state.last_used_camera();
-        if let Err(e) = data
-            .sender
-            .send(Message::StartCamera(CameraStartMessage { device_name }))
-        {
-            log::error!("handle_camera shortcut (start): {e}");
-        }
-    }
+        // Core falls back to the preferred camera Tauri pushed to it.
+        Message::StartCamera(CameraStartMessage { device_name: None })
+    };
+    let _ = data.core.send(message);
 }
 
 fn handle_end_call(app: &tauri::AppHandle) {
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    if let Err(e) = data.sender.send(Message::CallEnd) {
-        log::error!("handle_end_call shortcut: {e}");
-    }
+    // Core ends whatever call it has and reports CallEnded(id); the dispatcher then
+    // clears Tauri's state and the UI ends the call.
+    let _ = app.state::<AppData>().core.send(Message::CallEnd(None));
 }
 
 fn handle_screenshare(app: &tauri::AppHandle) {
-    let (is_screensharing, sender) = {
-        let data = app.state::<Mutex<AppData>>();
-        let data = data.lock().unwrap();
-        (data.is_screensharing, data.sender.clone())
-    };
-
-    let message = if is_screensharing {
+    let data = app.state::<AppData>();
+    let message = if data.is_screensharing.load(Ordering::Relaxed) {
         Message::StopScreenshare
     } else {
         Message::GetAvailableContent
     };
-
-    if let Err(e) = sender.send(message) {
-        log::error!("handle_screenshare shortcut: {e}");
-    }
+    let _ = data.core.send(message);
 }

@@ -4,10 +4,9 @@
 use hopp::sounds::{self, SoundConfig};
 use log::LevelFilter;
 use socket_lib::{
-    AudioCaptureMessage, AudioDevice, CameraDevice, DrawingEnabled, Message, ScreenSharePickerMode,
-    ScreenShareResolution, SentryMetadata,
+    AudioCaptureMessage, AudioDevice, CallId, CameraDevice, DrawingEnabled, Message,
+    ScreenSharePickerMode, ScreenShareResolution, SentryMetadata,
 };
-use std::sync::mpsc as std_mpsc;
 use tauri::Manager;
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
@@ -21,58 +20,67 @@ use tauri_plugin_log::{Target, TargetKind};
 use hopp::{
     app_state::{AppState, AppVeilApplication, UserSettings},
     application_catalog::InstalledApplication,
-    create_core_process, get_log_level, get_log_path, get_sentry_dsn, permissions, ping_frontend,
-    recv_expected_response, setup_start_on_launch, setup_tray_icon, AppData,
+    call_state, connect_core,
+    core_client::{CoreError, REQUEST_TIMEOUT},
+    get_log_level, get_log_path, get_sentry_dsn, permissions, ping_core, ping_frontend,
+    setup_start_on_launch, setup_tray_icon, AppData,
 };
-mod shortcuts;
 #[cfg(target_os = "macos")]
 use hopp::{disable_app_nap, set_window_corner_radius_and_decorations, CORNER_RADIUS};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::Duration;
 use std::{env, sync::Arc};
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use tauri::PhysicalPosition;
 
+/// CallStart only dispatches the room connect in core, so its answer is quick.
+const CALL_START_TIMEOUT: Duration = Duration::from_secs(10);
+
+/*
+ * Command rules: commands never hold a lock while waiting for core. Requests are
+ * `async fn`s that enqueue through `AppData::core` and await the response with no lock
+ * held; fire-and-forget commands only enqueue. Setters that persist a value and forward it
+ * to core do both under the settings lock (see `hopp::Settings`).
+ */
+
+fn core_send(app: &tauri::AppHandle, message: Message) {
+    let _ = app.state::<AppData>().core.send(message);
+}
+
+fn core_error_message(error: CoreError) -> String {
+    match error {
+        CoreError::Timeout => "Failed to receive message from hopp_core".to_string(),
+        _ => "Failed to send message to hopp_core".to_string(),
+    }
+}
+
 #[tauri::command(async)]
-async fn open_stats_window(app: tauri::AppHandle) {
+fn open_stats_window(app: tauri::AppHandle) {
     log::info!("open_stats_window");
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    if let Err(e) = data.sender.send(Message::OpenStatsWindow) {
-        log::error!("open_stats_window: failed to send message: {e:?}");
-    }
+    core_send(&app, Message::OpenStatsWindow);
 }
 
 #[tauri::command(async)]
-async fn stop_sharing(app: tauri::AppHandle) {
+fn stop_sharing(app: tauri::AppHandle) {
     log::info!("stop_sharing");
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    if let Err(e) = data.sender.send(Message::StopScreenshare) {
-        log::error!("stop_sharing: failed to send message: {e:?}");
-    }
+    core_send(&app, Message::StopScreenshare);
 }
 
 #[tauri::command(async)]
-async fn get_available_content(app: tauri::AppHandle) -> Result<(), String> {
+fn get_available_content(app: tauri::AppHandle) -> Result<(), String> {
     log::info!("get_available_content: open core screen selection");
 
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-
-    let remote_control_enabled = data.app_state.user_settings().remote_control_enabled;
-    data.sender
+    let data = app.state::<AppData>();
+    let settings = data.settings();
+    let remote_control_enabled = settings.app_state.user_settings().remote_control_enabled;
+    data.core
         .send(Message::ControllerCursorEnabled(remote_control_enabled))
-        .map_err(|e| {
-            log::error!("get_available_content: failed to apply remote control setting: {e:?}");
-            "Failed to apply remote control setting".to_string()
-        })?;
-
-    data.sender.send(Message::GetAvailableContent).map_err(|e| {
-        log::error!("get_available_content: failed to send message: {e:?}");
-        "Failed to start screen selection".to_string()
-    })
+        .map_err(|_| "Failed to apply remote control setting".to_string())?;
+    data.core
+        .send(Message::GetAvailableContent)
+        .map_err(|_| "Failed to start screen selection".to_string())
 }
 
 #[tauri::command(async)]
@@ -81,30 +89,6 @@ fn play_sound(app: tauri::AppHandle, sound_name: String) {
     let tmp_sound_name = sound_name.split("/").last();
     if let Some(tmp_sound_name) = tmp_sound_name {
         log::info!("Playing sound: {}", tmp_sound_name);
-    }
-    /*
-     * Check if the sound is already playing, if it has finished we
-     * remove the entry from the sound_entries vector.
-     */
-    {
-        let data = app.state::<Mutex<AppData>>();
-        let mut data = data.lock().unwrap();
-        let mut i = 0;
-        while i < data.sound_entries.len() {
-            if data.sound_entries[i].name == sound_name {
-                /* Send a message to see if the sound is still playing */
-                let res = data.sound_entries[i].tx.send(sounds::SoundCommand::Ping);
-                if res.is_err() {
-                    log::debug!("play_sound: found closed channel for {sound_name}");
-                    data.sound_entries.remove(i);
-                    break;
-                }
-                log::warn!("play_sound: Sound is already playing");
-                return;
-            } else {
-                i += 1;
-            }
-        }
     }
 
     let sounds = hopp::sounds::get_all_sounds();
@@ -127,19 +111,30 @@ fn play_sound(app: tauri::AppHandle, sound_name: String) {
         return;
     }
 
+    /*
+     * Check-and-register atomically: if the sound is already playing (its playback
+     * thread still holds the receiver) do nothing; drop entries whose playback ended.
+     */
     let (tx, rx) = std::sync::mpsc::channel();
-    tauri::async_runtime::spawn(async move {
-        let res = hopp::sounds::play_sound(sound_path, sound_config, rx);
-        if res.is_err() {
-            log::error!("play_sound: Failed to play sound: {:?}", res.err());
+    {
+        let data = app.state::<AppData>();
+        let mut entries = data.sound_entries.lock().unwrap_or_else(|e| e.into_inner());
+        entries.retain(|entry| entry.tx.send(sounds::SoundCommand::Ping).is_ok());
+        if entries.iter().any(|entry| entry.name == sound_name) {
+            log::warn!("play_sound: Sound is already playing");
+            return;
         }
-    });
+        entries.push(sounds::SoundEntry {
+            name: sound_name,
+            tx,
+        });
+    }
 
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    data.sound_entries.push(sounds::SoundEntry {
-        name: sound_name,
-        tx,
+    // Playback blocks until the sound ends (or forever when looped): own thread.
+    std::thread::spawn(move || {
+        if let Err(e) = hopp::sounds::play_sound(sound_path, sound_config, rx) {
+            log::error!("play_sound: Failed to play sound: {e:?}");
+        }
     });
 }
 
@@ -150,36 +145,30 @@ fn stop_sound(app: tauri::AppHandle, sound_name: String) {
     if let Some(tmp_sound_name) = tmp_sound_name {
         log::info!("Stopping sound: {}", tmp_sound_name);
     }
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    let mut i = 0;
-    while i < data.sound_entries.len() {
-        if data.sound_entries[i].name == sound_name {
-            let _ = data.sound_entries[i].tx.send(sounds::SoundCommand::Stop);
-            data.sound_entries.remove(i);
-            break;
-        } else {
-            i += 1;
-        }
+    let data = app.state::<AppData>();
+    let mut entries = data.sound_entries.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(index) = entries.iter().position(|entry| entry.name == sound_name) {
+        let _ = entries[index].tx.send(sounds::SoundCommand::Stop);
+        entries.remove(index);
     }
-    log::debug!("stop_sound: entries left: {}", data.sound_entries.len());
+    log::debug!("stop_sound: entries left: {}", entries.len());
 }
 
+/// Ends call `call_id` in Tauri and core (`None`: whatever call is current). Core's
+/// CallEnd also stops screen sharing, so a StopScreenshare is not needed first.
 #[tauri::command(async)]
-fn reset_core_process(app: tauri::AppHandle) {
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    if let Err(e) = data.sender.send(Message::CallEnd) {
-        log::error!("reset_core_process: failed to send message: {e:?}");
-    }
+fn reset_core_process(app: tauri::AppHandle, call_id: Option<CallId>) {
+    log::info!("reset_core_process: call_id={call_id:?}");
+    call_state::end_call_from_ui(&app, call_id);
 }
 
 #[tauri::command(async)]
 fn store_token_cmd(app: tauri::AppHandle, token: String) {
     log::info!("store_token_cmd");
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    data.app_state.set_user_jwt(Some(token.clone()));
+    app.state::<AppData>()
+        .settings()
+        .app_state
+        .set_user_jwt(Some(token.clone()));
 
     if let Err(e) = app.emit("token_changed", token) {
         log::error!("Failed to emit token_changed event: {e:?}");
@@ -189,9 +178,7 @@ fn store_token_cmd(app: tauri::AppHandle, token: String) {
 #[tauri::command(async)]
 fn get_stored_token(app: tauri::AppHandle) -> Option<String> {
     log::info!("get_stored_token");
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    let token = data.app_state.user_jwt().clone();
+    let token = app.state::<AppData>().settings().app_state.user_jwt();
     log::debug!("get_stored_token: {token:?}");
     token
 }
@@ -199,9 +186,10 @@ fn get_stored_token(app: tauri::AppHandle) -> Option<String> {
 #[tauri::command(async)]
 fn delete_stored_token(app: tauri::AppHandle) {
     log::info!("Deleting stored token");
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    data.app_state.set_user_jwt(None);
+    app.state::<AppData>()
+        .settings()
+        .app_state
+        .set_user_jwt(None);
 
     if let Err(e) = app.emit("token_changed", "".to_string()) {
         log::error!("Failed to emit token_changed event: {e:?}");
@@ -223,20 +211,17 @@ fn get_logs(_app: tauri::AppHandle) -> String {
 #[tauri::command(async)]
 fn set_deactivate_hiding(app: tauri::AppHandle, deactivate: bool) {
     log::debug!("set_deactivate_hiding: {deactivate}");
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    let mut deactivate_hiding = data.deactivate_hiding.lock().unwrap();
-    *deactivate_hiding = deactivate;
+    let data = app.state::<AppData>();
+    *data
+        .deactivate_hiding
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = deactivate;
 }
 
 #[tauri::command(async)]
 fn set_controller_cursor(app: tauri::AppHandle, enabled: bool) {
     log::info!("set_controller_cursor: {enabled}");
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    if let Err(e) = data.sender.send(Message::ControllerCursorEnabled(enabled)) {
-        log::error!("set_controller_cursor: failed to send message: {e:?}");
-    }
+    core_send(&app, Message::ControllerCursorEnabled(enabled));
 }
 
 #[tauri::command(async)]
@@ -308,17 +293,16 @@ fn get_camera_permission(_app: tauri::AppHandle) -> bool {
 #[tauri::command(async)]
 fn skip_tray_notification_selection_window(app: tauri::AppHandle) {
     log::info!("executing skip_tray_notification_selection_window");
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    data.app_state.set_tray_notification(false);
+    app.state::<AppData>()
+        .settings()
+        .app_state
+        .set_tray_notification(false);
 }
 
 #[tauri::command(async)]
 fn get_last_used_mic(app: tauri::AppHandle) -> Option<String> {
     log::info!("get_last_used_mic");
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    let value = data.app_state.last_used_mic();
+    let value = app.state::<AppData>().settings().app_state.last_used_mic();
     log::info!("get_last_used_mic: {value:?}");
     value
 }
@@ -326,17 +310,20 @@ fn get_last_used_mic(app: tauri::AppHandle) -> Option<String> {
 #[tauri::command(async)]
 fn set_last_used_mic(app: tauri::AppHandle, mic: String) {
     log::info!("set_last_used_mic: {mic}");
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    data.app_state.set_last_used_mic(mic);
+    app.state::<AppData>()
+        .settings()
+        .app_state
+        .set_last_used_mic(mic);
 }
 
 #[tauri::command(async)]
 fn get_last_used_camera(app: tauri::AppHandle) -> Option<String> {
     log::info!("get_last_used_camera");
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    let value = data.app_state.last_used_camera();
+    let value = app
+        .state::<AppData>()
+        .settings()
+        .app_state
+        .last_used_camera();
     log::info!("get_last_used_camera: {value:?}");
     value
 }
@@ -344,17 +331,20 @@ fn get_last_used_camera(app: tauri::AppHandle) -> Option<String> {
 #[tauri::command(async)]
 fn set_last_used_camera(app: tauri::AppHandle, camera: String) {
     log::info!("set_last_used_camera: {camera}");
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    data.app_state.set_last_used_camera(camera);
+    let data = app.state::<AppData>();
+    let mut settings = data.settings();
+    settings.app_state.set_last_used_camera(camera.clone());
+    let _ = data.core.send(Message::SetPreferredCamera(Some(camera)));
 }
 
 #[tauri::command(async)]
 fn get_sharer_draw_persist(app: tauri::AppHandle) -> bool {
     log::info!("get_sharer_draw_persist");
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    let value = data.app_state.sharer_draw_persist();
+    let value = app
+        .state::<AppData>()
+        .settings()
+        .app_state
+        .sharer_draw_persist();
     log::info!("get_sharer_draw_persist: {value}");
     value
 }
@@ -362,23 +352,22 @@ fn get_sharer_draw_persist(app: tauri::AppHandle) -> bool {
 #[tauri::command(async)]
 fn set_sharer_draw_persist(app: tauri::AppHandle, persist: bool) {
     log::info!("set_sharer_draw_persist: {persist}");
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    data.app_state.set_sharer_draw_persist(persist);
-
-    if data.drawing_enabled {
-        if let Err(e) = data.sender.send(Message::SharerDrawPersistChanged(persist)) {
-            log::error!("set_sharer_draw_persist: failed to send message: {e:?}");
-        }
+    let data = app.state::<AppData>();
+    let mut settings = data.settings();
+    settings.app_state.set_sharer_draw_persist(persist);
+    if data.drawing_enabled.load(Ordering::Relaxed) {
+        let _ = data.core.send(Message::SharerDrawPersistChanged(persist));
     }
 }
 
 #[tauri::command(async)]
 fn get_drawing_hint_shown(app: tauri::AppHandle) -> bool {
     log::info!("get_drawing_hint_shown");
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    let value = data.app_state.drawing_hint_shown();
+    let value = app
+        .state::<AppData>()
+        .settings()
+        .app_state
+        .drawing_hint_shown();
     log::info!("get_drawing_hint_shown: {value}");
     value
 }
@@ -386,39 +375,37 @@ fn get_drawing_hint_shown(app: tauri::AppHandle) -> bool {
 #[tauri::command(async)]
 fn set_drawing_hint_shown(app: tauri::AppHandle, shown: bool) {
     log::info!("set_drawing_hint_shown: {shown}");
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    data.app_state.set_drawing_hint_shown(shown);
+    app.state::<AppData>()
+        .settings()
+        .app_state
+        .set_drawing_hint_shown(shown);
 }
 
 #[tauri::command(async)]
 fn get_drawing_enabled(app: tauri::AppHandle) -> bool {
     log::info!("get_drawing_enabled");
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    data.drawing_enabled
+    app.state::<AppData>()
+        .drawing_enabled
+        .load(Ordering::Relaxed)
 }
 
 #[tauri::command(async)]
 fn set_drawing_enabled(app: tauri::AppHandle, enabled: bool, permanent: bool) {
     log::info!("set_drawing_enabled: enabled={enabled} permanent={permanent}");
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
+    let data = app.state::<AppData>();
 
-    if data.drawing_enabled == enabled {
+    if data.drawing_enabled.swap(enabled, Ordering::Relaxed) == enabled {
         return;
     }
 
-    if let Err(e) = data
-        .sender
+    if data
+        .core
         .send(Message::DrawingEnabled(DrawingEnabled { permanent }))
+        .is_err()
     {
-        log::error!("set_drawing_enabled: failed to send message: {e:?}");
+        data.drawing_enabled.store(!enabled, Ordering::Relaxed);
         return;
     }
-
-    data.drawing_enabled = enabled;
-    drop(data);
 
     if let Some(window) = app.get_webview_window("main") {
         #[cfg(not(target_os = "macos"))]
@@ -435,12 +422,7 @@ fn set_drawing_enabled(app: tauri::AppHandle, enabled: bool, permanent: bool) {
 #[tauri::command(async)]
 fn quit_app(app: tauri::AppHandle) {
     log::info!("quit_app");
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    if let Err(e) = data.sender.send(Message::CallEnd) {
-        log::error!("quit_app: failed to send CallEnd: {e:?}");
-    }
-    drop(data);
+    core_send(&app, Message::CallEnd(None));
     app.exit(0);
 }
 
@@ -459,126 +441,111 @@ fn minimize_main_window(app: tauri::AppHandle) {
 #[tauri::command(async)]
 fn set_livekit_url(app: tauri::AppHandle, url: String) {
     log::info!("set_livekit_url");
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    if data.livekit_server_url != url {
-        data.livekit_server_url = url.clone();
-        if let Err(e) = data.sender.send(Message::LivekitServerUrl(url)) {
-            log::error!("set_livekit_url: failed to send message: {e:?}");
-        }
+    let data = app.state::<AppData>();
+    // Same lock as a core restart, which re-sends the URL and swaps the connection.
+    let mut settings = data.settings();
+    if settings.livekit_server_url != url {
+        settings.livekit_server_url = url.clone();
+        let _ = data.core.send(Message::LivekitServerUrl(url));
     }
 }
 
 #[tauri::command(async)]
 fn get_livekit_url(app: tauri::AppHandle) -> String {
     log::info!("get_livekit_url");
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    data.livekit_server_url.clone()
+    app.state::<AppData>().settings().livekit_server_url.clone()
 }
 
 #[tauri::command(async)]
 fn set_sentry_metadata(app: tauri::AppHandle, user_id: String, app_version: String) {
     log::info!("set_sentry_metadata");
     sentry_utils::init_metadata(user_id.clone(), app_version.clone());
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    if let Err(e) = data.sender.send(Message::SentryMetadata(SentryMetadata {
+    let data = app.state::<AppData>();
+    let metadata = SentryMetadata {
         user_id,
         app_version,
-    })) {
-        log::error!("set_sentry_metadata: failed to send message: {e:?}");
-    }
+    };
+    let mut settings = data.settings();
+    settings.sentry_metadata = Some(metadata.clone());
+    let _ = data.core.send(Message::SentryMetadata(metadata));
 }
 
-#[tauri::command(async)]
-fn call_started(
+fn resolve_audio_device(last_used: Option<String>, devices: &[AudioDevice]) -> String {
+    // Resolve the audio device name: last used → default → first → ""
+    if let Some(last) = last_used {
+        if devices.iter().any(|d| d.name == last) {
+            return last;
+        }
+    }
+    devices
+        .iter()
+        .find(|d| d.default)
+        .or_else(|| devices.first())
+        .map(|d| d.name.clone())
+        .unwrap_or_default()
+}
+
+/// Starts call `call_id` in core. Call-state effects (shortcuts, dock icon) are applied by
+/// the core dispatcher when CallStartResult arrives, not here, so they are ordered with
+/// CallEnded events.
+#[tauri::command]
+async fn call_started(
     app: tauri::AppHandle,
+    call_id: CallId,
     audio_token: String,
     video_token: String,
 ) -> Result<(), String> {
-    log::info!("call_started");
-    let data = app.state::<Mutex<AppData>>();
-    #[allow(unused_mut)]
-    let mut data = data.lock().unwrap();
-    let user_settings = data.app_state.user_settings();
-    #[cfg(target_os = "macos")]
+    log::info!("call_started: call_id={call_id}");
+    call_state::begin_call(&app, call_id);
+    let data = app.state::<AppData>();
+    let (user_settings, last_used_mic) = {
+        let settings = data.settings();
+        (
+            settings.app_state.user_settings(),
+            settings.app_state.last_used_mic(),
+        )
+    };
+    let devices = match data
+        .core
+        .request(Message::ListAudioDevices, REQUEST_TIMEOUT)
+        .await
     {
-        if user_settings.show_dock_icon_in_call {
-            let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
-            data.activation_policy_regular = true;
-        }
-    }
-    // Resolve the audio device name: last used → default → first → ""
-    let audio_device_name = {
-        let last_used = data.app_state.last_used_mic();
-        let devices: Vec<AudioDevice> = if let Err(e) = data.sender.send(Message::ListAudioDevices)
-        {
-            log::error!("call_started: failed to list audio devices: {e:?}");
+        Ok(Message::AudioDeviceList(devices)) => devices,
+        Ok(other) => {
+            log::error!("call_started: unexpected response to ListAudioDevices: {other:?}");
             vec![]
-        } else {
-            match recv_expected_response(&data.event_socket, |msg| match msg {
-                Message::AudioDeviceList(d) => Ok(d),
-                other => Err(other),
-            }) {
-                Ok(d) => d,
-                Err(e) => {
-                    log::error!("call_started: failed to receive audio device list: {e:?}");
-                    vec![]
-                }
-            }
-        };
-        if let Some(last) = last_used {
-            if devices.iter().any(|d| d.name == last) {
-                last
-            } else {
-                devices
-                    .iter()
-                    .find(|d| d.default)
-                    .or_else(|| devices.first())
-                    .map(|d| d.name.clone())
-                    .unwrap_or_default()
-            }
-        } else {
-            devices
-                .iter()
-                .find(|d| d.default)
-                .or_else(|| devices.first())
-                .map(|d| d.name.clone())
-                .unwrap_or_default()
+        }
+        Err(e) => {
+            log::error!("call_started: failed to list audio devices: {e}");
+            vec![]
         }
     };
+    let audio_device_name = resolve_audio_device(last_used_mic, &devices);
     log::info!("call_started: resolved audio_device_name={audio_device_name:?}");
-    if let Err(e) = data
-        .sender
-        .send(Message::CallStart(socket_lib::CallStartMessage {
-            audio_token: audio_token.clone(),
-            video_token: video_token.clone(),
+
+    let pending = call_state::start_call(
+        &app,
+        call_id,
+        Message::CallStart(socket_lib::CallStartMessage {
+            call_id,
+            audio_token,
+            video_token,
             audio_device_name,
             start_mic_on_call: Some(user_settings.start_mic_on_call),
             start_camera_on_call: Some(user_settings.start_camera_on_call),
-        }))
-    {
-        log::error!("call_started: failed to send: {e:?}");
-        return Err("Failed to send message to hopp_core".to_string());
-    }
-    let result = match recv_expected_response(&data.event_socket, |msg| match msg {
-        Message::CallStartResult(r) => Ok(r),
-        other => Err(other),
-    }) {
-        Ok(result) => result,
-        Err(e) => {
-            log::error!("call_started: recv failed: {e:?}");
-            Err("Failed to receive message from hopp_core".to_string())
+        }),
+    )?;
+    match pending.wait(CALL_START_TIMEOUT).await {
+        Ok(Message::CallStartResult(result)) => result.result,
+        Ok(other) => {
+            log::error!("call_started: unexpected response: {other:?}");
+            Err(core_error_message(CoreError::UnexpectedResponse))
         }
-    };
-    if result.is_ok() {
-        data.call_active = true;
-        data.is_camera_on = false;
-        data.is_screensharing = false;
-        shortcuts::register_call_shortcuts(&app, resolved_call_shortcuts(&data.app_state));
+        Err(e) => {
+            log::error!("call_started: recv failed: {e}");
+            Err(core_error_message(e))
+        }
     }
-    result
 }
 
 /// When enabled=true, shows the notification variant of the icon.
@@ -586,13 +553,14 @@ fn call_started(
 ///
 /// NOTE: must NOT be `async`. The macOS implementation manipulates AppKit/CALayer,
 /// which has to run on the main thread; an async command would run off-thread and
-/// the notification dot would silently never update.
+/// the notification dot would silently never update. It only takes the main-thread-only
+/// tray lock.
 #[tauri::command]
 fn set_tray_notification(app: tauri::AppHandle, enabled: bool) {
     log::info!("set_tray_notification: enabled={}", enabled);
-    let data = app.state::<std::sync::Mutex<hopp::AppData>>();
-    let mut data = data.lock().unwrap();
-    if let Some(ref mut tray) = data.tray_state {
+    let data = app.state::<AppData>();
+    let mut tray_state = data.tray_state.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(ref mut tray) = *tray_state {
         tray.set_notification_enabled(enabled);
     }
 }
@@ -600,9 +568,12 @@ fn set_tray_notification(app: tauri::AppHandle, enabled: bool) {
 #[tauri::command(async)]
 fn get_hopp_server_url(app: tauri::AppHandle) -> Option<String> {
     log::info!("get_hopp_server_url");
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    let url = data.app_state.user_settings().hopp_server_url;
+    let url = app
+        .state::<AppData>()
+        .settings()
+        .app_state
+        .user_settings()
+        .hopp_server_url;
     log::debug!("get_hopp_server_url: {url:?}");
     url
 }
@@ -610,9 +581,9 @@ fn get_hopp_server_url(app: tauri::AppHandle) -> Option<String> {
 #[tauri::command(async)]
 fn set_hopp_server_url(app: tauri::AppHandle, url: Option<String>) {
     log::info!("set_hopp_server_url: {url:?}");
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    data.app_state
+    app.state::<AppData>()
+        .settings()
+        .app_state
         .update_user_setting(|s| s.hopp_server_url = url.clone());
     let _ = app.emit("hopp_server_url_changed", &url);
 }
@@ -673,23 +644,10 @@ async fn create_settings_window(app: tauri::AppHandle) -> Result<(), String> {
     )
 }
 
-fn resolved_call_shortcuts(app_state: &hopp::app_state::AppState) -> shortcuts::CallShortcuts {
-    let mut settings = app_state.user_settings();
-    settings.resolve_shortcuts();
-    shortcuts::CallShortcuts {
-        mic: settings.shortcut_toggle_mic.unwrap_or_default(),
-        camera: settings.shortcut_toggle_camera.unwrap_or_default(),
-        screenshare: settings.shortcut_toggle_screenshare.unwrap_or_default(),
-        end_call: settings.shortcut_end_call.unwrap_or_default(),
-    }
-}
-
 #[tauri::command(async)]
 fn get_user_settings(app: tauri::AppHandle) -> UserSettings {
     log::info!("get_user_settings");
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    let mut settings = data.app_state.user_settings();
+    let mut settings = app.state::<AppData>().settings().app_state.user_settings();
     settings.resolve_shortcuts();
     settings
 }
@@ -704,10 +662,10 @@ fn set_app_veil_applications(
     app: tauri::AppHandle,
     applications: Vec<AppVeilApplication>,
 ) -> Result<(), String> {
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    let enabled_bundle_ids = data.app_state.set_app_veil_applications(applications)?;
-    data.sender
+    let data = app.state::<AppData>();
+    let mut settings = data.settings();
+    let enabled_bundle_ids = settings.app_state.set_app_veil_applications(applications)?;
+    data.core
         .send(Message::SetAppVeilBundleIds(enabled_bundle_ids))
         .map_err(|error| {
             log::error!("set_app_veil_applications: failed to send settings: {error:?}");
@@ -718,583 +676,333 @@ fn set_app_veil_applications(
         })
 }
 
+fn set_shortcut(
+    app: &tauri::AppHandle,
+    accel: String,
+    apply: impl FnOnce(&mut UserSettings, Option<String>),
+) {
+    let value = if accel.is_empty() { None } else { Some(accel) };
+    app.state::<AppData>()
+        .settings()
+        .app_state
+        .update_user_setting(|s| apply(s, value));
+    call_state::refresh_call_shortcuts(app);
+}
+
 #[tauri::command(async)]
 fn set_shortcut_toggle_mic(app: tauri::AppHandle, accel: String) {
     log::info!("set_shortcut_toggle_mic: {accel}");
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    let value = if accel.is_empty() { None } else { Some(accel) };
-    data.app_state
-        .update_user_setting(|s| s.shortcut_toggle_mic = value);
-    if data.call_active {
-        shortcuts::unregister_call_shortcuts(&app);
-        shortcuts::register_call_shortcuts(&app, resolved_call_shortcuts(&data.app_state));
-    }
+    set_shortcut(&app, accel, |s, v| s.shortcut_toggle_mic = v);
 }
 
 #[tauri::command(async)]
 fn set_shortcut_toggle_camera(app: tauri::AppHandle, accel: String) {
     log::info!("set_shortcut_toggle_camera: {accel}");
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    let value = if accel.is_empty() { None } else { Some(accel) };
-    data.app_state
-        .update_user_setting(|s| s.shortcut_toggle_camera = value);
-    if data.call_active {
-        shortcuts::unregister_call_shortcuts(&app);
-        shortcuts::register_call_shortcuts(&app, resolved_call_shortcuts(&data.app_state));
-    }
+    set_shortcut(&app, accel, |s, v| s.shortcut_toggle_camera = v);
 }
 
 #[tauri::command(async)]
 fn set_shortcut_toggle_screenshare(app: tauri::AppHandle, accel: String) {
     log::info!("set_shortcut_toggle_screenshare: {accel}");
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    let value = if accel.is_empty() { None } else { Some(accel) };
-    data.app_state
-        .update_user_setting(|s| s.shortcut_toggle_screenshare = value);
-    if data.call_active {
-        shortcuts::unregister_call_shortcuts(&app);
-        shortcuts::register_call_shortcuts(&app, resolved_call_shortcuts(&data.app_state));
-    }
+    set_shortcut(&app, accel, |s, v| s.shortcut_toggle_screenshare = v);
 }
 
 #[tauri::command(async)]
 fn set_shortcut_end_call(app: tauri::AppHandle, accel: String) {
     log::info!("set_shortcut_end_call: {accel}");
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    let value = if accel.is_empty() { None } else { Some(accel) };
-    data.app_state
-        .update_user_setting(|s| s.shortcut_end_call = value);
-    if data.call_active {
-        shortcuts::unregister_call_shortcuts(&app);
-        shortcuts::register_call_shortcuts(&app, resolved_call_shortcuts(&data.app_state));
-    }
+    set_shortcut(&app, accel, |s, v| s.shortcut_end_call = v);
 }
 
 #[tauri::command(async)]
 fn set_is_camera_on(app: tauri::AppHandle, value: bool) {
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    data.is_camera_on = value;
+    app.state::<AppData>()
+        .is_camera_on
+        .store(value, Ordering::Relaxed);
 }
 
 #[tauri::command(async)]
 fn set_is_screensharing(app: tauri::AppHandle, value: bool) {
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    data.is_screensharing = value;
+    app.state::<AppData>()
+        .is_screensharing
+        .store(value, Ordering::Relaxed);
+}
+
+fn update_user_setting(app: &tauri::AppHandle, f: impl FnOnce(&mut UserSettings)) {
+    app.state::<AppData>()
+        .settings()
+        .app_state
+        .update_user_setting(f);
+}
+
+/// Saves a user setting and forwards it to core in one critical section.
+fn update_user_setting_and_send(
+    app: &tauri::AppHandle,
+    f: impl FnOnce(&mut UserSettings),
+    message: Message,
+) {
+    let data = app.state::<AppData>();
+    let mut settings = data.settings();
+    settings.app_state.update_user_setting(f);
+    let _ = data.core.send(message);
 }
 
 #[tauri::command(async)]
 fn set_call_feedback_popup(app: tauri::AppHandle, enabled: bool) {
     log::info!("set_call_feedback_popup: {enabled}");
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    data.app_state
-        .update_user_setting(|s| s.call_feedback_popup = enabled);
+    update_user_setting(&app, |s| s.call_feedback_popup = enabled);
 }
 
 #[tauri::command(async)]
 fn set_telemetry_enabled(app: tauri::AppHandle, enabled: bool) {
     log::info!("set_telemetry_enabled: {enabled}");
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    data.app_state
-        .update_user_setting(|s| s.telemetry_enabled = enabled);
     sentry_utils::set_telemetry_enabled(enabled);
-    if let Err(e) = data.sender.send(Message::SetTelemetryEnabled(enabled)) {
-        log::error!("set_telemetry_enabled: failed to send: {e:?}");
-    }
+    update_user_setting_and_send(
+        &app,
+        |s| s.telemetry_enabled = enabled,
+        Message::SetTelemetryEnabled(enabled),
+    );
     let _ = app.emit("telemetry_enabled_changed", enabled);
 }
 
 #[tauri::command(async)]
 fn set_show_dock_icon_in_call(app: tauri::AppHandle, enabled: bool) {
     log::info!("set_show_dock_icon_in_call: {enabled}");
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    data.app_state
-        .update_user_setting(|s| s.show_dock_icon_in_call = enabled);
+    update_user_setting(&app, |s| s.show_dock_icon_in_call = enabled);
 }
 
 #[tauri::command(async)]
 fn set_auto_update_enabled(app: tauri::AppHandle, enabled: bool) {
     log::info!("set_auto_update_enabled: {enabled}");
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    data.app_state
-        .update_user_setting(|s| s.auto_update_enabled = enabled);
+    update_user_setting(&app, |s| s.auto_update_enabled = enabled);
 }
 
 #[tauri::command(async)]
 fn set_start_camera_on_call(app: tauri::AppHandle, enabled: bool) {
     log::info!("set_start_camera_on_call: {enabled}");
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    data.app_state
-        .update_user_setting(|s| s.start_camera_on_call = enabled);
+    update_user_setting(&app, |s| s.start_camera_on_call = enabled);
 }
 
 #[tauri::command(async)]
 fn set_start_mic_on_call(app: tauri::AppHandle, enabled: bool) {
     log::info!("set_start_mic_on_call: {enabled}");
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    data.app_state
-        .update_user_setting(|s| s.start_mic_on_call = enabled);
+    update_user_setting(&app, |s| s.start_mic_on_call = enabled);
 }
 
 #[tauri::command(async)]
 fn set_remote_control_enabled(app: tauri::AppHandle, enabled: bool) {
     log::info!("set_remote_control_enabled: {enabled}");
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    data.app_state
-        .update_user_setting(|s| s.remote_control_enabled = enabled);
-    drop(data);
-    set_controller_cursor(app, enabled);
+    update_user_setting_and_send(
+        &app,
+        |s| s.remote_control_enabled = enabled,
+        Message::ControllerCursorEnabled(enabled),
+    );
 }
 
 #[tauri::command(async)]
 fn mute_mic(app: tauri::AppHandle) {
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    if let Err(e) = data.sender.send(Message::MuteAudio) {
-        log::error!("mute_mic: failed to send: {e:?}");
-    }
+    core_send(&app, Message::MuteAudio);
 }
 
 #[tauri::command(async)]
 fn unmute_mic(app: tauri::AppHandle) {
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    if let Err(e) = data.sender.send(Message::UnmuteAudio) {
-        log::error!("unmute_mic: failed to send: {e:?}");
-    }
+    core_send(&app, Message::UnmuteAudio);
 }
 
 #[tauri::command(async)]
 fn toggle_mic(app: tauri::AppHandle) {
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    if let Err(e) = data.sender.send(Message::ToggleMic) {
-        log::error!("toggle_mic: failed to send: {e:?}");
-    }
+    core_send(&app, Message::ToggleMic);
 }
 
 #[tauri::command(async)]
 fn set_noise_cancellation(app: tauri::AppHandle, enabled: bool) {
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    data.app_state
-        .update_user_setting(|settings| settings.noise_cancellation_enabled = enabled);
-    if let Err(e) = data.sender.send(Message::SetNoiseCancellation(enabled)) {
-        log::error!("set_noise_cancellation: failed to send: {e:?}");
-    }
+    update_user_setting_and_send(
+        &app,
+        |settings| settings.noise_cancellation_enabled = enabled,
+        Message::SetNoiseCancellation(enabled),
+    );
 }
 
 #[tauri::command(async)]
 fn set_screen_share_resolution(app: tauri::AppHandle, resolution: ScreenShareResolution) {
     log::info!("set_screen_share_resolution: {resolution:?}");
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    data.app_state
-        .update_user_setting(|settings| settings.screen_share_resolution = resolution);
-    if let Err(e) = data
-        .sender
-        .send(Message::SetScreenShareResolution(resolution))
-    {
-        log::error!("set_screen_share_resolution: failed to send: {e:?}");
-    }
+    update_user_setting_and_send(
+        &app,
+        |settings| settings.screen_share_resolution = resolution,
+        Message::SetScreenShareResolution(resolution),
+    );
 }
 
 #[tauri::command(async)]
 fn set_low_bandwidth_default(app: tauri::AppHandle, enabled: bool) {
     log::info!("set_low_bandwidth_default: {enabled}");
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    data.app_state
-        .update_user_setting(|settings| settings.low_bandwidth_default = enabled);
-    if let Err(e) = data.sender.send(Message::SetLowBandwidthDefault(enabled)) {
-        log::error!("set_low_bandwidth_default: failed to send: {e:?}");
-    }
+    update_user_setting_and_send(
+        &app,
+        |settings| settings.low_bandwidth_default = enabled,
+        Message::SetLowBandwidthDefault(enabled),
+    );
 }
 
 #[tauri::command(async)]
 fn set_call_low_bandwidth(app: tauri::AppHandle, enabled: bool) {
     log::info!("set_call_low_bandwidth: {enabled}");
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    if let Err(e) = data.sender.send(Message::SetCallLowBandwidth(enabled)) {
-        log::error!("set_call_low_bandwidth: failed to send: {e:?}");
-    }
+    core_send(&app, Message::SetCallLowBandwidth(enabled));
 }
 
 #[tauri::command(async)]
 fn set_screen_share_picker_mode(app: tauri::AppHandle, mode: ScreenSharePickerMode) {
     log::info!("set_screen_share_picker_mode: {mode:?}");
-    let data = app.state::<Mutex<AppData>>();
-    let mut data = data.lock().unwrap();
-    data.app_state
-        .update_user_setting(|settings| settings.screen_share_picker_mode = mode);
-    if let Err(e) = data.sender.send(Message::SetScreenSharePickerMode(mode)) {
-        log::error!("set_screen_share_picker_mode: failed to send: {e:?}");
-    }
+    update_user_setting_and_send(
+        &app,
+        |settings| settings.screen_share_picker_mode = mode,
+        Message::SetScreenSharePickerMode(mode),
+    );
 }
 
-#[tauri::command(async)]
-fn start_camera(app: tauri::AppHandle, device_name: Option<String>) -> Result<(), String> {
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    if let Err(e) = data
-        .sender
-        .send(Message::StartCamera(socket_lib::CameraStartMessage {
-            device_name,
-        }))
-    {
-        log::error!("start_camera: failed to send: {e:?}");
-        return Err("Failed to send message to hopp_core".to_string());
-    }
-    match recv_expected_response(&data.event_socket, |msg| match msg {
-        Message::StartCameraResult(r) => Ok(r),
-        other => Err(other),
-    }) {
-        Ok(result) => result,
+#[tauri::command]
+async fn start_camera(app: tauri::AppHandle, device_name: Option<String>) -> Result<(), String> {
+    let data = app.state::<AppData>();
+    // Resolve the preferred camera here so core never has to ask back.
+    let device_name = device_name.or_else(|| data.settings().app_state.last_used_camera());
+    let response = data
+        .core
+        .request(
+            Message::StartCamera(socket_lib::CameraStartMessage { device_name }),
+            REQUEST_TIMEOUT,
+        )
+        .await;
+    match response {
+        Ok(Message::StartCameraResult(result)) => result,
+        Ok(other) => {
+            log::error!("start_camera: unexpected response: {other:?}");
+            Err(core_error_message(CoreError::UnexpectedResponse))
+        }
         Err(e) => {
-            log::error!("start_camera: recv failed: {e:?}");
-            Err("Failed to receive message from hopp_core".to_string())
+            log::error!("start_camera: {e}");
+            Err(core_error_message(e))
         }
     }
 }
 
 #[tauri::command(async)]
 fn stop_camera(app: tauri::AppHandle) {
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    if let Err(e) = data.sender.send(Message::StopCamera) {
-        log::error!("stop_camera: failed to send: {e:?}");
-    }
+    core_send(&app, Message::StopCamera);
 }
 
 #[tauri::command(async)]
 fn open_camera_preview(app: tauri::AppHandle) {
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    if let Err(e) = data.sender.send(Message::OpenCamera) {
-        log::error!("open_camera_preview: failed to send: {e:?}");
-    }
+    core_send(&app, Message::OpenCamera);
 }
 
 #[tauri::command(async)]
 fn open_screenshare_viewer(app: tauri::AppHandle) {
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    if let Err(e) = data.sender.send(Message::OpenScreenShareWindow) {
-        log::error!("open_screenshare_viewer: failed to send: {e:?}");
-    }
+    core_send(&app, Message::OpenScreenShareWindow);
 }
 
 #[tauri::command(async)]
 fn close_screenshare_viewer(app: tauri::AppHandle) {
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    if let Err(e) = data.sender.send(Message::CloseScreenShareWindow) {
-        log::error!("close_screenshare_viewer: failed to send: {e:?}");
-    }
+    core_send(&app, Message::CloseScreenShareWindow);
 }
 
-#[tauri::command(async)]
-fn list_microphones(app: tauri::AppHandle) -> Vec<AudioDevice> {
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    if let Err(e) = data.sender.send(Message::ListAudioDevices) {
-        log::error!("list_microphones: failed to send: {e:?}");
-        return vec![];
-    }
-    match recv_expected_response(&data.event_socket, |msg| match msg {
-        Message::AudioDeviceList(d) => Ok(d),
-        other => Err(other),
-    }) {
-        Ok(devices) => devices,
+#[tauri::command]
+async fn list_microphones(app: tauri::AppHandle) -> Vec<AudioDevice> {
+    let response = app
+        .state::<AppData>()
+        .core
+        .request(Message::ListAudioDevices, REQUEST_TIMEOUT)
+        .await;
+    match response {
+        Ok(Message::AudioDeviceList(devices)) => devices,
+        Ok(other) => {
+            log::error!("list_microphones: unexpected response: {other:?}");
+            vec![]
+        }
         Err(e) => {
-            log::error!("list_microphones: recv failed: {e:?}");
+            log::error!("list_microphones: {e}");
             vec![]
         }
     }
 }
 
-#[tauri::command(async)]
-fn select_microphone(app: tauri::AppHandle, device_name: String) {
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    if let Err(e) = data
-        .sender
-        .send(Message::StartAudioCapture(AudioCaptureMessage {
-            device_name,
-        }))
-    {
-        log::error!("select_microphone: failed to send: {e:?}");
-        return;
-    }
-    match recv_expected_response(&data.event_socket, |msg| match msg {
-        Message::StartAudioCaptureResult(r) => Ok(r),
-        other => Err(other),
-    }) {
-        Ok(Err(e)) => log::error!("select_microphone: core failed: {e}"),
-        Err(e) => log::error!("select_microphone: no result: {e:?}"),
-        Ok(Ok(())) => {}
+#[tauri::command]
+async fn select_microphone(app: tauri::AppHandle, device_name: String) {
+    let response = app
+        .state::<AppData>()
+        .core
+        .request(
+            Message::StartAudioCapture(AudioCaptureMessage { device_name }),
+            REQUEST_TIMEOUT,
+        )
+        .await;
+    match response {
+        Ok(Message::StartAudioCaptureResult(Ok(()))) => {}
+        Ok(Message::StartAudioCaptureResult(Err(e))) => {
+            log::error!("select_microphone: core failed: {e}")
+        }
+        Ok(other) => log::error!("select_microphone: unexpected response: {other:?}"),
+        Err(e) => log::error!("select_microphone: no result: {e}"),
     }
 }
 
-#[tauri::command(async)]
-fn list_webcams(app: tauri::AppHandle) -> Vec<CameraDevice> {
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    if let Err(e) = data.sender.send(Message::ListCameras) {
-        log::error!("list_webcams: failed to send: {e:?}");
-        return vec![];
-    }
-    match recv_expected_response(&data.event_socket, |msg| match msg {
-        Message::CameraList(d) => Ok(d),
-        other => Err(other),
-    }) {
-        Ok(devices) => devices,
+#[tauri::command]
+async fn list_webcams(app: tauri::AppHandle) -> Vec<CameraDevice> {
+    let response = app
+        .state::<AppData>()
+        .core
+        .request(Message::ListCameras, REQUEST_TIMEOUT)
+        .await;
+    match response {
+        Ok(Message::CameraList(devices)) => devices,
+        Ok(other) => {
+            log::error!("list_webcams: unexpected response: {other:?}");
+            vec![]
+        }
         Err(e) => {
-            log::error!("list_webcams: recv failed: {e:?}");
+            log::error!("list_webcams: {e}");
             vec![]
         }
     }
 }
 
-#[tauri::command(async)]
-fn bring_windows_to_front(app: tauri::AppHandle) -> bool {
+#[tauri::command]
+async fn bring_windows_to_front(app: tauri::AppHandle) -> bool {
     log::info!("bring_windows_to_front");
-    let data = app.state::<Mutex<AppData>>();
-    let data = data.lock().unwrap();
-    if let Err(e) = data.sender.send(Message::BringWindowsToFront) {
-        log::error!("bring_windows_to_front: failed to send: {e:?}");
-        return false;
-    }
-    match recv_expected_response(&data.event_socket, |msg| match msg {
-        Message::BringWindowsToFrontResult(f) => Ok(f),
-        other => Err(other),
-    }) {
-        Ok(focused) => focused,
+    let response = app
+        .state::<AppData>()
+        .core
+        .request(Message::BringWindowsToFront, REQUEST_TIMEOUT)
+        .await;
+    match response {
+        Ok(Message::BringWindowsToFrontResult(focused)) => focused,
+        Ok(other) => {
+            log::error!("bring_windows_to_front: unexpected response: {other:?}");
+            false
+        }
         Err(e) => {
-            log::error!("bring_windows_to_front: recv failed: {e:?}");
+            log::error!("bring_windows_to_front: {e}");
             false
         }
     }
 }
 
 #[tauri::command(async)]
-fn end_call(app: tauri::AppHandle) {
-    let state = app.state::<Mutex<AppData>>();
-    #[allow(unused_mut)]
-    let mut data = state.lock().unwrap();
-    if let Err(e) = data.sender.send(Message::CallEnd) {
-        log::error!("end_call: failed to send: {e:?}");
-    }
-    data.call_active = false;
-    data.is_camera_on = false;
-    data.is_screensharing = false;
-    #[cfg(target_os = "macos")]
-    {
-        data.sleep_prevention.disable();
-        let suppress = data.suppress_hide_on_call_end.clone();
-        suppress.store(true, Ordering::Relaxed);
-        let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-        data.activation_policy_regular = false;
-        tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            suppress.store(false, Ordering::Relaxed);
-        });
-    }
-    shortcuts::unregister_call_shortcuts(&app);
-}
-
-#[tauri::command(async)]
 fn toggle_call_sleep_prevention(app: tauri::AppHandle, enabled: bool) {
     #[cfg(target_os = "macos")]
     {
-        let data = app.state::<Mutex<AppData>>();
-        let mut data = data.lock().unwrap();
+        let data = app.state::<AppData>();
+        let mut sleep_prevention = data
+            .sleep_prevention
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if enabled {
-            data.sleep_prevention.enable();
+            sleep_prevention.enable();
         } else {
-            data.sleep_prevention.disable();
+            sleep_prevention.disable();
         }
     }
     #[cfg(not(target_os = "macos"))]
     {
         let _ = (app, enabled);
     }
-}
-
-fn forward_core_events(events_rx: std_mpsc::Receiver<Message>, app: tauri::AppHandle) {
-    log::info!("forward_core_events: starting event forwarding thread");
-    for message in events_rx.iter() {
-        match message {
-            Message::ParticipantsSnapshot(snapshot) => {
-                log::info!(
-                    "forward_core_events: participants snapshot ({} participants)",
-                    snapshot.len()
-                );
-                if let Err(e) = app.emit("core_participants_snapshot", &snapshot) {
-                    log::error!("forward_core_events: failed to emit participants snapshot: {e:?}");
-                }
-            }
-            Message::RoleChange(event) => {
-                log::info!("forward_core_events: role change: {event:?}");
-                if let Err(e) = app.emit("core_role_change", &event) {
-                    log::error!("forward_core_events: failed to emit role change: {e:?}");
-                }
-            }
-            Message::CameraFailed(error) => {
-                log::error!("forward_core_events: camera failed: {error}");
-                if let Err(e) = app.emit("core_camera_failed", &error) {
-                    log::error!("forward_core_events: failed to emit camera failed: {e:?}");
-                }
-            }
-            Message::CallEnded => {
-                log::info!("forward_core_events: call ended");
-                let data = app.state::<Mutex<AppData>>();
-                let mut data = data.lock().unwrap();
-                data.call_active = false;
-                data.is_camera_on = false;
-                data.is_screensharing = false;
-                #[cfg(target_os = "macos")]
-                {
-                    let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-                    data.sleep_prevention.disable();
-                    data.activation_policy_regular = false;
-                    let suppress = data.suppress_hide_on_call_end.clone();
-                    drop(data);
-                    suppress.store(true, Ordering::Relaxed);
-                    tauri::async_runtime::spawn(async move {
-                        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-                        suppress.store(false, Ordering::Relaxed);
-                    });
-                }
-                #[cfg(not(target_os = "macos"))]
-                drop(data);
-                shortcuts::unregister_call_shortcuts(&app);
-                if let Err(e) = app.emit("core_call_ended", &()) {
-                    log::error!("forward_core_events: failed to emit call ended: {e:?}");
-                }
-            }
-            Message::ControllerDrawPersistChanged(persist) => {
-                log::info!("forward_core_events: controller draw persist changed: {persist}");
-                let data = app.state::<Mutex<AppData>>();
-                let mut data = data.lock().unwrap();
-                data.app_state.set_controller_draw_persist(persist);
-            }
-            Message::LastModeChanged(mode) => {
-                log::info!("forward_core_events: last mode changed: {mode:?}");
-                let data = app.state::<Mutex<AppData>>();
-                let mut data = data.lock().unwrap();
-                data.app_state.set_last_mode(mode);
-            }
-            Message::RoomConnectionFailed(reason) => {
-                log::error!("forward_core_events: room connection failed: {reason}");
-                if let Err(e) = app.emit("core_room_connection_failed", &reason) {
-                    log::error!(
-                        "forward_core_events: failed to emit room connection failed: {e:?}"
-                    );
-                }
-            }
-            Message::AppVeilFailed(reason) => {
-                log::error!("forward_core_events: app veil failed: {reason}");
-                if let Err(e) = app.emit("core_app_veil_failed", &reason) {
-                    log::error!("forward_core_events: failed to emit app veil failed: {e:?}");
-                }
-            }
-            Message::QueryPreferredCamera => {
-                log::info!("forward_core_events: query preferred camera");
-                let data = app.state::<Mutex<AppData>>();
-                let data = data.lock().unwrap();
-                let preferred = data.app_state.last_used_camera();
-                if let Err(e) = data.sender.send(Message::PreferredCamera(preferred)) {
-                    log::error!("forward_core_events: failed to send preferred camera: {e:?}");
-                }
-            }
-            Message::ActiveMicChanged(device_name) => {
-                log::info!("forward_core_events: active mic changed to: {device_name}");
-                let data = app.state::<Mutex<AppData>>();
-                let mut data = data.lock().unwrap();
-                data.app_state.set_last_used_mic(device_name.clone());
-                drop(data);
-                if let Err(e) = app.emit("core_active_mic_changed", &device_name) {
-                    log::error!(
-                        "forward_core_events: failed to emit core_active_mic_changed: {e:?}"
-                    );
-                }
-            }
-            Message::ActiveCameraChanged(device_name) => {
-                log::info!("forward_core_events: active camera changed to: {device_name}");
-                let data = app.state::<Mutex<AppData>>();
-                let mut data = data.lock().unwrap();
-                data.app_state.set_last_used_camera(device_name.clone());
-                drop(data);
-                if let Err(e) = app.emit("core_active_camera_changed", &device_name) {
-                    log::error!(
-                        "forward_core_events: failed to emit core_active_camera_changed: {e:?}"
-                    );
-                }
-            }
-            Message::MicrophoneAudioLevel(level) => {
-                if let Err(e) = app.emit("core_mic_audio_level", &level) {
-                    log::error!("forward_core_events: failed to emit mic audio level: {e:?}");
-                }
-            }
-            Message::BandwidthModeState(state) => {
-                log::info!("forward_core_events: bandwidth mode state: {state:?}");
-                if let Err(e) = app.emit("core_bandwidth_mode_state", &state) {
-                    log::error!("forward_core_events: failed to emit bandwidth mode state: {e:?}");
-                }
-            }
-            Message::StartScreenShareResult(Err(error)) => {
-                log::error!("forward_core_events: screen share failed: {error}");
-                if let Err(e) = app.emit("core_screenshare_failed", &error) {
-                    log::error!("forward_core_events: failed to emit screen share failed: {e:?}");
-                }
-            }
-            Message::StartScreenShareResult(Ok(())) => {
-                log::info!("forward_core_events: screen share started");
-            }
-            Message::DrawingDisabled => {
-                log::info!("forward_core_events: drawing disabled");
-                let data = app.state::<Mutex<AppData>>();
-                let mut data = data.lock().unwrap();
-                data.drawing_enabled = false;
-                drop(data);
-                #[cfg(not(target_os = "macos"))]
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.set_always_on_top(false);
-                }
-                if let Err(e) = app.emit("core_drawing_disabled", &()) {
-                    log::error!("forward_core_events: failed to emit core_drawing_disabled: {e:?}");
-                }
-            }
-            Message::ExitRequested => {
-                log::info!("forward_core_events: exit requested from core");
-                let data = app.state::<Mutex<AppData>>();
-                let data = data.lock().unwrap();
-                if let Err(e) = data.sender.send(Message::CallEnd) {
-                    log::error!("forward_core_events: failed to send CallEnd: {e:?}");
-                }
-                drop(data);
-                app.exit(0);
-            }
-            other => {
-                log::error!("forward_core_events: unhandled event: {other:?}");
-            }
-        }
-    }
-    log::info!("forward_core_events: event forwarding thread exiting");
 }
 
 fn main() {
@@ -1407,67 +1115,19 @@ fn main() {
                 }
             }
 
-            let (_core_process, sender, mut event_socket) =
-                create_core_process(app.handle()).expect("Failed to create core process");
-
-            let core_events_rx = event_socket.take_events();
-
             let app_state = AppState::new(&app_data_dir);
-            let noise_cancellation_enabled = app_state.user_settings().noise_cancellation_enabled;
-            if let Err(e) = sender.send(Message::SetNoiseCancellation(noise_cancellation_enabled)) {
-                log::error!("Failed to send initial noise_cancellation_enabled: {e:?}");
-            }
-            let screen_share_resolution = app_state.user_settings().screen_share_resolution;
-            if let Err(e) = sender.send(Message::SetScreenShareResolution(screen_share_resolution)) {
-                log::error!("Failed to send initial screen_share_resolution: {e:?}");
-            }
-            let low_bandwidth_default = app_state.user_settings().low_bandwidth_default;
-            if let Err(e) = sender.send(Message::SetLowBandwidthDefault(low_bandwidth_default)) {
-                log::error!("Failed to send initial low_bandwidth_default: {e:?}");
-            }
-            let screen_share_picker_mode = app_state.user_settings().screen_share_picker_mode;
-            if let Err(e) = sender.send(Message::SetScreenSharePickerMode(screen_share_picker_mode)) {
-                log::error!("Failed to send initial screen_share_picker_mode: {e:?}");
-            }
-            let app_veil_bundle_ids = app_state
-                .user_settings()
-                .app_veil_applications
-                .into_iter()
-                .filter(|application| application.enabled)
-                .map(|application| application.bundle_id)
-                .collect();
-            if let Err(e) = sender.send(Message::SetAppVeilBundleIds(app_veil_bundle_ids)) {
-                log::error!("Failed to send initial App Veil settings: {e:?}");
-            }
-            if let Err(e) = sender.send(Message::ControllerDrawPersistChanged(app_state.controller_draw_persist())) {
-                log::error!("Failed to send initial controller_draw_persist: {e:?}");
-            }
-            if let Some(mode) = app_state.last_mode() {
-                if let Err(e) = sender.send(Message::LastModeChanged(mode)) {
-                    log::error!("Failed to send initial last_mode: {e:?}");
-                }
-            }
-            {
-                let telemetry_enabled = app_state.user_settings().telemetry_enabled;
-                sentry_utils::set_telemetry_enabled(telemetry_enabled);
-                if let Err(e) = sender.send(Message::SetTelemetryEnabled(telemetry_enabled)) {
-                    log::error!("Failed to send initial telemetry_enabled: {e:?}");
-                }
-            }
-            let data = Mutex::new(AppData::new(
-                sender,
-                event_socket,
+            sentry_utils::set_telemetry_enabled(app_state.user_settings().telemetry_enabled);
+            app.manage(AppData::new(
                 deactivate_hiding_clone,
                 app_state,
                 suppress_hide_on_call_end.clone(),
             ));
-            app.manage(data);
 
-            // Background thread to forward core events to the frontend
-            let event_app_handle = app.handle().clone();
-            std::thread::spawn(move || {
-                forward_core_events(core_events_rx, event_app_handle);
-            });
+            // Spawns core, connects, sends the full startup configuration (same code path as
+            // a restart) and installs the connection. Core events are handled on the
+            // connection's dispatcher thread.
+            connect_core(app.handle()).expect("Failed to create core process");
+            tauri::async_runtime::spawn(ping_core(app.handle().clone()));
 
             std::thread::spawn(|| {
                 sentry_utils::upload_latest_crash();
@@ -1505,21 +1165,16 @@ fn main() {
                 ping_frontend(app_handle);
             });
 
-            let first_run = {
-                let data = app.state::<Mutex<AppData>>();
-                let data = data.lock().unwrap();
-                data.app_state.first_run()
-            };
+            let first_run = app.state::<AppData>().settings().app_state.first_run();
 
             setup_start_on_launch(&app.autolaunch(), first_run);
 
             /* Set first run to false after checking the start on launch. */
-            {
-                let data = app.state::<Mutex<AppData>>();
-                let mut data = data.lock().unwrap();
-                if first_run {
-                    data.app_state.set_first_run(false);
-                }
+            if first_run {
+                app.state::<AppData>()
+                    .settings()
+                    .app_state
+                    .set_first_run(false);
             }
 
             /* Main window configuration on windows */
@@ -1561,11 +1216,8 @@ fn main() {
                  * menubar. Then show the permissions window if needed.
                  */
                 let mut show_dock = false;
-                let show_tray_notification_selection = {
-                    let data = app.state::<Mutex<AppData>>();
-                    let data = data.lock().unwrap();
-                    data.app_state.tray_notification()
-                };
+                let show_tray_notification_selection =
+                    app.state::<AppData>().settings().app_state.tray_notification();
                 if show_tray_notification_selection {
                     let height = 250.;
                     let width = 450.;
@@ -1645,13 +1297,15 @@ fn main() {
                     app.set_activation_policy(tauri::ActivationPolicy::Regular);
                 }
                 {
-                    let data = app.state::<Mutex<AppData>>();
-                    let mut data = data.lock().unwrap();
+                    let data = app.state::<AppData>();
                     if show_dock {
-                        data.activation_policy_regular = true;
+                        data.activation_policy_regular.store(true, Ordering::Relaxed);
                     }
                     if !cfg!(debug_assertions) {
-                        data.activation_observer =
+                        *data
+                            .activation_observer
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner()) =
                             Some(hopp::app_activation::AppActivationObserver::new(
                                 app.handle().clone(),
                                 location_set_setup.clone(),
@@ -1776,7 +1430,6 @@ fn main() {
             open_camera_preview,
             open_screenshare_viewer,
             close_screenshare_viewer,
-            end_call,
             toggle_call_sleep_prevention,
             bring_windows_to_front,
             open_stats_window,
@@ -1810,10 +1463,9 @@ fn main() {
                         let _ =
                             app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
                         app_handle
-                            .state::<Mutex<AppData>>()
-                            .lock()
-                            .unwrap()
-                            .activation_policy_regular = false;
+                            .state::<AppData>()
+                            .activation_policy_regular
+                            .store(false, Ordering::Relaxed);
                     }
                 }
             } else if label == "permissions" {
@@ -1821,10 +1473,9 @@ fn main() {
                 {
                     let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
                     app_handle
-                        .state::<Mutex<AppData>>()
-                        .lock()
-                        .unwrap()
-                        .activation_policy_regular = false;
+                        .state::<AppData>()
+                        .activation_policy_regular
+                        .store(false, Ordering::Relaxed);
                 }
             }
         }

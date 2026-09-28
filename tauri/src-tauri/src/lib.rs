@@ -2,7 +2,11 @@
 pub mod app_activation;
 pub mod app_state;
 pub mod application_catalog;
+pub mod call_state;
+pub mod core_client;
+pub mod core_events;
 pub mod permissions;
+pub mod shortcuts;
 #[cfg(target_os = "macos")]
 pub mod sleep_prevention;
 pub mod sounds;
@@ -11,14 +15,15 @@ pub mod tray;
 use log::LevelFilter;
 use rand::{distributions::Alphanumeric, Rng};
 use sounds::SoundEntry;
+use std::collections::VecDeque;
 use std::env;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
 #[cfg(target_os = "macos")]
 use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Mutex};
-#[cfg(target_os = "macos")]
 use std::time::Duration;
+use std::time::Instant;
 use tauri::async_runtime::Receiver;
 #[cfg(target_os = "macos")]
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -28,7 +33,8 @@ use tauri::{Rect, TitleBarStyle, WebviewWindow};
 use tauri_plugin_autostart::AutoLaunchManager;
 use tauri_plugin_shell::{process::CommandChild, process::CommandEvent, ShellExt};
 
-use socket_lib::{EventSocket, Message, SocketSender};
+use socket_lib::call::CallTracker;
+use socket_lib::{EventSocket, Message, SentryMetadata, SocketSender};
 #[cfg(target_os = "macos")]
 use tauri::{LogicalPosition, PhysicalPosition, PhysicalSize};
 
@@ -52,128 +58,193 @@ pub struct CoreProcess {
     pub process: CommandChild,
 }
 
-/// Central application data structure that holds all the runtime state and resources
-/// needed by the Tauri application.
-pub struct AppData {
-    /// Send half of the socket connection to the core process.
-    pub sender: SocketSender,
+/// Persistent settings plus the runtime values that must be re-sent to a restarted core.
+///
+/// Lock rule: a setter saves and enqueues the matching message to core inside one critical
+/// section (enqueueing never blocks), so the order of saves and sends always agrees, and a
+/// core restart (which re-sends everything from here and swaps the connection under this
+/// lock) can never lose or reorder an update. Never held across awaits.
+pub struct Settings {
+    pub app_state: app_state::AppState,
+    /// Livekit server URL.
+    pub livekit_server_url: String,
+    /// Last metadata from the frontend, re-sent to a restarted core.
+    pub sentry_metadata: Option<SentryMetadata>,
+}
 
-    /// Receive half that routes messages into `events` and `responses` channels.
-    pub event_socket: EventSocket,
+impl Settings {
+    /// Everything a freshly started core needs to match the user's settings. Used at startup
+    /// and after a restart, so the two can't drift apart (App Veil included).
+    pub fn core_startup_config(&self) -> Vec<Message> {
+        let settings = self.app_state.user_settings();
+        let app_veil_bundle_ids =
+            match app_state::enabled_app_veil_bundle_ids(&settings.app_veil_applications) {
+                Ok(ids) => ids,
+                Err(e) => {
+                    log::error!("core_startup_config: invalid App Veil settings: {e}");
+                    Vec::new()
+                }
+            };
+        let mut messages = vec![
+            Message::SetAppVeilBundleIds(app_veil_bundle_ids),
+            Message::SetNoiseCancellation(settings.noise_cancellation_enabled),
+            Message::SetScreenShareResolution(settings.screen_share_resolution),
+            Message::SetLowBandwidthDefault(settings.low_bandwidth_default),
+            Message::SetScreenSharePickerMode(settings.screen_share_picker_mode),
+            Message::SetTelemetryEnabled(settings.telemetry_enabled),
+            Message::ControllerCursorEnabled(settings.remote_control_enabled),
+            Message::ControllerDrawPersistChanged(self.app_state.controller_draw_persist()),
+            Message::SetPreferredCamera(self.app_state.last_used_camera()),
+        ];
+        if let Some(mode) = self.app_state.last_mode() {
+            messages.push(Message::LastModeChanged(mode));
+        }
+        if let Some(metadata) = &self.sentry_metadata {
+            messages.push(Message::SentryMetadata(metadata.clone()));
+        }
+        if !self.livekit_server_url.is_empty() {
+            messages.push(Message::LivekitServerUrl(self.livekit_server_url.clone()));
+        }
+        messages
+    }
+}
+
+/// Runtime state shared by commands, the core event dispatcher and the main thread.
+///
+/// There is no global lock. Each part has its own synchronization, and the rules are:
+/// - Nothing is held across I/O to core or across a wait for a response: requests go
+///   through `core` (non-blocking enqueue) and are awaited with no lock held.
+/// - The main thread (sync commands, activation observer, window events, shortcut
+///   handlers) never blocks and only touches atomics, `tray_state`, and tiny locks that
+///   are never held across I/O or waits.
+/// - Global shortcuts are (un)registered only on the main thread, fire-and-forget.
+/// - Lock order when nesting is unavoidable: `call` before `settings`.
+pub struct AppData {
+    /// The connection to core. All messages go through its single ordered queue.
+    pub core: core_client::CoreClient,
+
+    pub settings: Mutex<Settings>,
+
+    /// Call lifecycle keyed by call id. Transitions and the queuing of their side effects
+    /// (main-thread closures, CallStart/CallEnd enqueue) happen under this lock.
+    pub call: Mutex<CallTracker>,
+
+    /// Whether the local camera is currently on (pushed from frontend snapshots).
+    pub is_camera_on: AtomicBool,
+
+    /// Whether the local participant is currently screensharing (pushed from frontend snapshots).
+    pub is_screensharing: AtomicBool,
+
+    /// Whether drawing mode is currently enabled (runtime state).
+    pub drawing_enabled: AtomicBool,
 
     /// Active sound entries currently being played by the application.
-    /// Each entry contains the sound name and a channel transmitter to control playback.
     /// Used to prevent duplicate sounds and manage sound lifecycle.
-    pub sound_entries: Vec<SoundEntry>,
+    pub sound_entries: Mutex<Vec<SoundEntry>>,
 
     /// Flag to control whether the main window should hide when it loses focus.
     /// This is set to true when the user is writing feedback.
     pub deactivate_hiding: Arc<Mutex<bool>>,
 
-    /// Persistent application state that survives across app restarts.
-    /// Manages settings like first run status, tray notifications, and user preferences.
-    pub app_state: app_state::AppState,
-
-    /// Livekit server URL.
-    pub livekit_server_url: String,
-
-    /// Tray icon state. On macOS, contains the actual tray state.
-    pub tray_state: Option<tray::TrayState>,
-
     /// Suppresses main window hide when activation policy is switched to Accessory after a call ends.
     pub suppress_hide_on_call_end: Arc<AtomicBool>,
 
-    /// Whether drawing mode is currently enabled (runtime state).
-    pub drawing_enabled: bool,
+    /// Tracks whether the activation policy is currently Regular (true) or Accessory (false).
+    /// Written on the main thread together with the policy switch.
+    pub activation_policy_regular: Arc<AtomicBool>,
 
-    /// Whether a call is currently active.
-    pub call_active: bool,
-
-    /// Whether the local camera is currently on (pushed from frontend snapshots).
-    pub is_camera_on: bool,
-
-    /// Whether the local participant is currently screensharing (pushed from frontend snapshots).
-    pub is_screensharing: bool,
+    /// Tray icon state. Only touched on the main thread.
+    pub tray_state: Mutex<Option<tray::TrayState>>,
 
     /// macOS app activation observer — keeps the NSNotificationCenter observer alive.
     #[cfg(target_os = "macos")]
-    pub activation_observer: Option<app_activation::AppActivationObserver>,
-
-    /// Tracks whether the activation policy is currently Regular (true) or Accessory (false).
-    #[cfg(target_os = "macos")]
-    pub activation_policy_regular: bool,
+    pub activation_observer: Mutex<Option<app_activation::AppActivationObserver>>,
 
     /// macOS sleep prevention state — holds an activity assertion while a call is active.
     #[cfg(target_os = "macos")]
-    pub sleep_prevention: sleep_prevention::SleepPrevention,
+    pub sleep_prevention: Mutex<sleep_prevention::SleepPrevention>,
+
+    /// Recent core restarts, for backoff.
+    pub core_restarts: Mutex<RestartBackoff>,
+
+    /// Incremented for every core connection; lets a process monitor tell whether the
+    /// connection it belongs to is still the current one.
+    pub core_generation: AtomicUsize,
 }
 
 impl AppData {
     pub fn new(
-        sender: SocketSender,
-        event_socket: EventSocket,
         deactivate_hiding: Arc<Mutex<bool>>,
         app_state: app_state::AppState,
         suppress_hide_on_call_end: Arc<AtomicBool>,
     ) -> Self {
         AppData {
-            sender,
-            event_socket,
-            sound_entries: Vec::new(),
+            core: core_client::CoreClient::new(),
+            settings: Mutex::new(Settings {
+                app_state,
+                livekit_server_url: String::new(),
+                sentry_metadata: None,
+            }),
+            call: Mutex::new(CallTracker::default()),
+            is_camera_on: AtomicBool::new(false),
+            is_screensharing: AtomicBool::new(false),
+            drawing_enabled: AtomicBool::new(false),
+            sound_entries: Mutex::new(Vec::new()),
             deactivate_hiding,
-            app_state,
-            livekit_server_url: "".to_string(),
-            tray_state: None,
-            #[cfg(target_os = "macos")]
-            activation_observer: None,
-            #[cfg(target_os = "macos")]
-            activation_policy_regular: false,
             suppress_hide_on_call_end,
-            drawing_enabled: false,
-            call_active: false,
-            is_camera_on: false,
-            is_screensharing: false,
+            activation_policy_regular: Arc::new(AtomicBool::new(false)),
+            tray_state: Mutex::new(None),
             #[cfg(target_os = "macos")]
-            sleep_prevention: sleep_prevention::SleepPrevention::new(),
+            activation_observer: Mutex::new(None),
+            #[cfg(target_os = "macos")]
+            sleep_prevention: Mutex::new(sleep_prevention::SleepPrevention::new()),
+            core_restarts: Mutex::new(RestartBackoff::default()),
+            core_generation: AtomicUsize::new(0),
         }
+    }
+
+    pub fn settings(&self) -> std::sync::MutexGuard<'_, Settings> {
+        self.settings.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
-/// Receive a response from core, retrying if a stale response from a
-/// previous timed-out request arrives first. The `extract` closure returns
-/// `Ok(T)` for the expected variant or `Err(Message)` for unexpected ones.
-pub fn recv_expected_response<T>(
-    event_socket: &EventSocket,
-    extract: impl Fn(Message) -> Result<T, Message>,
-) -> Result<T, std::sync::mpsc::RecvTimeoutError> {
-    // TODO: 10 seconds is too much. We should make our calls to be as fast as possible
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    loop {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
-            return Err(std::sync::mpsc::RecvTimeoutError::Timeout);
+/// Limits restarts of a core that keeps exiting with code 2.
+#[derive(Debug, Default)]
+pub struct RestartBackoff {
+    recent: VecDeque<Instant>,
+}
+
+impl RestartBackoff {
+    pub const WINDOW: Duration = Duration::from_secs(10 * 60);
+    pub const MAX_RESTARTS: usize = 3;
+
+    /// Records a restart attempt at `now`. Returns the delay to wait before restarting, or
+    /// `None` when too many restarts happened within `WINDOW` (give up).
+    pub fn next_delay(&mut self, now: Instant) -> Option<Duration> {
+        while let Some(oldest) = self.recent.front() {
+            if now.duration_since(*oldest) > Self::WINDOW {
+                self.recent.pop_front();
+            } else {
+                break;
+            }
         }
-        match event_socket.responses.recv_timeout(remaining) {
-            Ok(msg) => match extract(msg) {
-                Ok(val) => return Ok(val),
-                Err(other) => {
-                    let t = std::any::type_name::<T>();
-                    log::error!(
-                        "recv_expected_response<{t}>: unexpected response (stale?): {other:?}"
-                    );
-                    sentry_utils::upload_logs_event(format!(
-                        "recv_expected_response<{t}>: unexpected response: {other:?}"
-                    ));
-                }
-            },
-            Err(e) => return Err(e),
+        if self.recent.len() >= Self::MAX_RESTARTS {
+            return None;
         }
+        let delay = Duration::from_secs(1u64 << self.recent.len());
+        self.recent.push_back(now);
+        Some(delay)
     }
 }
 
 /// Monitors core process output and emits crash events.
-async fn show_stdout(mut receiver: Receiver<CommandEvent>, app_handle: AppHandle) {
+async fn show_stdout(
+    mut receiver: Receiver<CommandEvent>,
+    app_handle: AppHandle,
+    generation: usize,
+) {
     let mut crash_msg = String::new();
+    let mut restart = false;
     while let Some(event) = receiver.recv().await {
         match event {
             CommandEvent::Stdout(line) => {
@@ -191,28 +262,8 @@ async fn show_stdout(mut receiver: Receiver<CommandEvent>, app_handle: AppHandle
                             crash_msg = "Core process terminated because it failed to receive messages from tauri, please restart the app".to_string();
                         } else if code == 2 {
                             // When hopp_core is terminated because capturing failed from the OS
-                            // and couldn't be recovered, we restart it and say to the user to select
-                            // a screen again.
-                            match create_core_process(&app_handle) {
-                                Err(_) => {
-                                    crash_msg = "Core process terminated because capturing failed from the OS and couldn't be recovered, please restart the app".to_string();
-                                }
-                                Ok((_core_process, sender, event_socket)) => {
-                                    crash_msg = "Core process restarted because capturing failed from the OS and couldn't be recovered, please select screen again".to_string();
-
-                                    let data = app_handle.state::<Mutex<AppData>>();
-                                    let mut data = data.lock().unwrap();
-                                    if let Err(e) = sender.send(Message::LivekitServerUrl(
-                                        data.livekit_server_url.clone(),
-                                    )) {
-                                        log::error!(
-                                            "show_stdout: Failed to send livekit server url: {e:?}"
-                                        );
-                                    }
-                                    data.sender = sender;
-                                    data.event_socket = event_socket;
-                                }
-                            }
+                            // and couldn't be recovered, we restart it.
+                            restart = true;
                         } else if code == 3 {
                             crash_msg = "Core process terminated because the event loop stopped responding, please restart the app".to_string();
                             sentry_utils::upload_logs_event(
@@ -236,9 +287,62 @@ async fn show_stdout(mut receiver: Receiver<CommandEvent>, app_handle: AppHandle
     }
     log::info!("show_stdout: Finished");
 
+    let current_generation = app_handle
+        .state::<AppData>()
+        .core_generation
+        .load(std::sync::atomic::Ordering::SeqCst);
+    if generation != current_generation {
+        log::info!("show_stdout: core generation {generation} already replaced, ignoring exit");
+        return;
+    }
+
+    if restart {
+        // Process spawn and socket connect block (sysinfo scan, connect retries), so keep
+        // them off the async runtime.
+        let app = app_handle.clone();
+        std::thread::spawn(move || restart_core(app));
+        return;
+    }
+
     // Communicate to the frontend that the core process has crashed.
     let res = app_handle.emit("core_process_crashed", crash_msg);
     if let Err(e) = res {
+        log::error!("Failed to emit core_process_crashed: {e:?}");
+    }
+}
+
+/// Restarts core after it exited with code 2. Runs on its own thread.
+fn restart_core(app: AppHandle) {
+    let data = app.state::<AppData>();
+    // Fail requests still waiting on the dead process right away.
+    data.core.shutdown();
+    // The call lived in the dead process: end it everywhere.
+    call_state::reset_for_core_restart(&app);
+
+    let delay = data
+        .core_restarts
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .next_delay(Instant::now());
+    let crash_msg = match delay {
+        None => {
+            log::error!("restart_core: core keeps failing, giving up");
+            sentry_utils::upload_logs_event("Core restart limit reached".to_string());
+            "Core process keeps failing because capturing failed from the OS, please restart the app".to_string()
+        }
+        Some(delay) => {
+            log::info!("restart_core: restarting core in {delay:?}");
+            std::thread::sleep(delay);
+            match connect_core(&app) {
+                Ok(()) => "Core process restarted because capturing failed from the OS and couldn't be recovered, please start the call again".to_string(),
+                Err(e) => {
+                    log::error!("restart_core: failed: {e}");
+                    "Core process terminated because capturing failed from the OS and couldn't be recovered, please restart the app".to_string()
+                }
+            }
+        }
+    };
+    if let Err(e) = app.emit("core_process_crashed", crash_msg) {
         log::error!("Failed to emit core_process_crashed: {e:?}");
     }
 }
@@ -281,6 +385,7 @@ fn start_sidecar(
 }
 
 /// Creates a socket connection to communicate with the core process.
+/// Blocking (retries for up to 20 s): call from a plain thread, never from async code.
 fn create_core_process_socket(
     socket_path: &str,
 ) -> Result<(SocketSender, EventSocket), CoreProcessCreationError> {
@@ -305,44 +410,50 @@ fn create_core_process_socket(
     Err(CoreProcessCreationError::SocketCreationFailed)
 }
 
-/// We send this in order to stop the core process from timing out.
-/// This is used for killing the core process in case the tauri app
-/// has crashed.
-async fn send_ping(sender: SocketSender) {
+/// Pings core through the shared queue so it doesn't time out (core exits when Tauri is
+/// gone). Runs for the app's lifetime and survives core restarts.
+pub async fn ping_core(app: AppHandle) {
+    let mut interval = tokio::time::interval(Duration::from_secs(PING_CORE_PROCESS_INTERVAL_SECS));
     loop {
-        let res = sender.send(Message::Ping);
-        if let Err(e) = res {
-            log::error!("Failed to send ping: {e:?}");
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_secs(
-            PING_CORE_PROCESS_INTERVAL_SECS,
-        ));
+        interval.tick().await;
+        // Errors (e.g. mid-restart) are logged by send; keep pinging.
+        let _ = app.state::<AppData>().core.send(Message::Ping);
     }
-    log::info!("send_ping: Finished");
 }
 
-/// Creates and initializes the core process with socket communication.
-pub fn create_core_process(
-    app: &tauri::AppHandle,
-) -> Result<(CoreProcess, SocketSender, EventSocket), CoreProcessCreationError> {
-    log::info!("create_core_process: Creating core process");
+/// Spawns core, connects to it, sends it the full startup configuration and makes it the
+/// current connection. Blocking: call from a plain thread (or synchronous setup).
+pub fn connect_core(app: &tauri::AppHandle) -> Result<(), CoreProcessCreationError> {
+    log::info!("connect_core: Creating core process");
+    let data = app.state::<AppData>();
+    let generation = data
+        .core_generation
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        + 1;
     let tmp_dir = std::env::temp_dir();
     let socket_name = format!("core-socket-{}", create_random_suffix());
     let socket_path = format!("{}/{socket_name}", tmp_dir.display());
 
-    let (rx, core_process) = start_sidecar(app, &socket_path);
-    tauri::async_runtime::spawn(show_stdout(rx, app.clone()));
+    let (rx, _core_process) = start_sidecar(app, &socket_path);
+    tauri::async_runtime::spawn(show_stdout(rx, app.clone(), generation));
     let (sender, event_socket) = create_core_process_socket(&socket_path)?;
-    let ping_sender = sender.clone();
-    tauri::async_runtime::spawn(send_ping(ping_sender));
-    Ok((
-        CoreProcess {
-            process: core_process,
-        },
+    let client = socket_lib::client::Client::start(
         sender,
         event_socket,
-    ))
+        core_events::CoreEventHandler::new(app.clone()),
+    );
+
+    // Under the settings lock: nothing can change a setting between reading the config
+    // and swapping the connection, so no update is lost or reaches core out of order.
+    let settings = data.settings();
+    for message in settings.core_startup_config() {
+        client
+            .send(message)
+            .map_err(|_| CoreProcessCreationError::SendMessageFailed)?;
+    }
+    data.core.install(client);
+    drop(settings);
+    Ok(())
 }
 
 /// This is a workaround which we use in order to wake up the
@@ -565,13 +676,12 @@ pub fn setup_tray_icon(
             })
             .build(app)?;
 
-        // Store the tray state in AppData for dynamic icon updates
+        // Store the tray state in AppData for dynamic icon updates (main thread only).
         let tray_state = tray::TrayState::new(tray.clone());
-        {
-            let data = app.state::<Mutex<AppData>>();
-            let mut data = data.lock().unwrap();
-            data.tray_state = Some(tray_state);
-        }
+        *app.state::<AppData>()
+            .tray_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(tray_state);
 
         let app_handle = app.handle().clone();
 
@@ -837,4 +947,31 @@ pub fn create_media_window(app: &AppHandle, config: MediaWindowConfig<'_>) -> Re
         .map_err(|e| format!("Failed to run on main thread: {}", e))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RestartBackoff;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn restart_backoff_doubles_then_gives_up_within_the_window() {
+        let mut backoff = RestartBackoff::default();
+        let start = Instant::now();
+        assert_eq!(backoff.next_delay(start), Some(Duration::from_secs(1)));
+        assert_eq!(backoff.next_delay(start), Some(Duration::from_secs(2)));
+        assert_eq!(backoff.next_delay(start), Some(Duration::from_secs(4)));
+        assert_eq!(backoff.next_delay(start), None);
+    }
+
+    #[test]
+    fn restart_backoff_forgets_restarts_outside_the_window() {
+        let mut backoff = RestartBackoff::default();
+        let start = Instant::now();
+        for _ in 0..RestartBackoff::MAX_RESTARTS {
+            backoff.next_delay(start);
+        }
+        let later = start + RestartBackoff::WINDOW + Duration::from_secs(1);
+        assert_eq!(backoff.next_delay(later), Some(Duration::from_secs(1)));
+    }
 }
