@@ -422,6 +422,9 @@ pub struct Application<'a> {
     clipboard_controller: Option<ClipboardController>,
     screen_selection: Option<ScreenSelectionState>,
     pending_overlay_repair: Option<MonitorId>,
+    /// True between a dispatched CallStart and CallEnd. Room teardown is async,
+    /// so late room events asking to open windows are dropped while this is false.
+    call_active: bool,
     #[cfg(target_os = "macos")]
     app_veil_host: Option<AppVeilHost>,
 }
@@ -513,6 +516,7 @@ impl<'a> Application<'a> {
             clipboard_controller,
             screen_selection: None,
             pending_overlay_repair: None,
+            call_active: false,
             #[cfg(target_os = "macos")]
             app_veil_host: None,
         })
@@ -992,6 +996,7 @@ impl<'a> Application<'a> {
         log::info!("close_drawing_window");
         if let Some(window) = &mut self.drawing_window {
             window.hide();
+            window.stop_redraw_thread();
         }
         if let Err(e) = self.socket.send(Message::DrawingDisabled) {
             log::error!("Failed to send DrawingDisabled: {e:?}");
@@ -1496,6 +1501,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                                 error!("user_event: Error sending CallStartResult ack: {e:?}");
                             }
                             self.start_camera_on_call = start_camera_on_call;
+                            self.call_active = true;
 
                             // Open camera window immediately for snappiness
                             if start_camera_on_call {
@@ -1576,6 +1582,8 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
             }
             UserEvent::CallEnd => {
                 log::info!("user_event: CallEnd");
+                self.call_active = false;
+                self.cancel_screen_selection();
                 self.stop_mic();
                 self.audio_player.stop();
                 self.stop_camera();
@@ -2386,6 +2394,10 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
             }
             UserEvent::OpenCamera => {
                 log::info!("user_event: OpenCamera");
+                if !self.call_active {
+                    log::warn!("user_event: no active call, ignoring OpenCamera");
+                    return;
+                }
                 if let Some(room_service) = self.room_service.as_ref() {
                     let participants = room_service.participants();
                     self.open_camera_window(event_loop, participants);
@@ -2412,6 +2424,10 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                 redraw_tx,
             } => {
                 log::info!("user_event: OpenScreenShareWindow");
+                if !self.call_active {
+                    log::warn!("user_event: no active call, ignoring OpenScreenShareWindow");
+                    return;
+                }
                 let buffer = self
                     .room_service
                     .as_ref()
