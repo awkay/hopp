@@ -135,7 +135,9 @@ impl IncomingHandler for CoreEventHandler {
             }
             Message::ExitRequested => {
                 log::info!("core_events: exit requested from core");
-                let _ = app.state::<AppData>().core.send(Message::CallEnd(None));
+                app.state::<AppData>()
+                    .core
+                    .send_before_exit(Message::CallEnd(None));
                 app.exit(0);
             }
             other => {

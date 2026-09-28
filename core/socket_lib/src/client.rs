@@ -91,8 +91,14 @@ impl PendingRequests {
     }
 }
 
+enum Outbound {
+    Frame(Frame),
+    /// Signals once everything enqueued before it has been written.
+    Flush(mpsc::Sender<()>),
+}
+
 pub struct Client {
-    outbound: mpsc::Sender<Frame>,
+    outbound: mpsc::Sender<Outbound>,
     pending: Arc<Mutex<PendingRequests>>,
     socket: SocketSender,
 }
@@ -105,17 +111,26 @@ impl Client {
         mut handler: impl IncomingHandler,
     ) -> Arc<Client> {
         let pending = Arc::new(Mutex::new(PendingRequests::new()));
-        let (outbound_tx, outbound_rx) = mpsc::channel::<Frame>();
+        let (outbound_tx, outbound_rx) = mpsc::channel::<Outbound>();
 
         let writer_socket = sender.clone();
         std::thread::Builder::new()
             .name("core-ipc-writer".into())
             .spawn(move || {
-                for frame in outbound_rx {
-                    if let Err(e) = writer_socket.send_frame(&frame) {
-                        log::error!("core-ipc-writer: write failed, closing connection: {e:?}");
-                        writer_socket.shutdown();
-                        break;
+                for item in outbound_rx {
+                    match item {
+                        Outbound::Frame(frame) => {
+                            if let Err(e) = writer_socket.send_frame(&frame) {
+                                log::error!(
+                                    "core-ipc-writer: write failed, closing connection: {e:?}"
+                                );
+                                writer_socket.shutdown();
+                                break;
+                            }
+                        }
+                        Outbound::Flush(done) => {
+                            let _ = done.send(());
+                        }
                     }
                 }
                 log::info!("core-ipc-writer: exiting");
@@ -169,7 +184,7 @@ impl Client {
     /// Enqueues an event. Never blocks.
     pub fn send(&self, message: Message) -> Result<(), RequestError> {
         self.outbound
-            .send(Frame::event(message))
+            .send(Outbound::Frame(Frame::event(message)))
             .map_err(|_| RequestError::Disconnected)
     }
 
@@ -194,7 +209,7 @@ impl Client {
         };
         if self
             .outbound
-            .send(Frame::with_id(Some(id), message))
+            .send(Outbound::Frame(Frame::with_id(Some(id), message)))
             .is_err()
         {
             let completion = self
@@ -208,6 +223,16 @@ impl Client {
             return Err(RequestError::Disconnected);
         }
         Ok(id)
+    }
+
+    /// Blocks until everything enqueued so far has been written, or `timeout` passes.
+    /// Only for shutdown paths (e.g. sending CallEnd right before the app exits).
+    pub fn flush(&self, timeout: std::time::Duration) -> bool {
+        let (done_tx, done_rx) = mpsc::channel();
+        if self.outbound.send(Outbound::Flush(done_tx)).is_err() {
+            return false;
+        }
+        done_rx.recv_timeout(timeout).is_ok()
     }
 
     /// Stops waiting for `id`; its response, if it still arrives, is discarded.
@@ -456,6 +481,17 @@ mod tests {
                 _ => continue,
             }
         }
+    }
+
+    #[test]
+    fn flush_returns_after_queued_frames_are_written() {
+        let (client, _seen, _server_sender, server_events) = start_client();
+        client.send(Message::CallEnd(None)).unwrap();
+        assert!(client.flush(Duration::from_secs(5)));
+        assert!(matches!(
+            recv_frame(&server_events).message,
+            Message::CallEnd(None)
+        ));
     }
 
     #[test]
