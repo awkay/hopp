@@ -89,6 +89,16 @@ impl CoreClient {
         result
     }
 
+    /// Sends `message` and blocks (up to 1 s) until it is written. Only for exit paths,
+    /// where the process may end before the writer thread gets to it.
+    pub fn send_before_exit(&self, message: Message) {
+        if let Ok(client) = self.client() {
+            if client.send(message).is_ok() && !client.flush(Duration::from_secs(1)) {
+                log::warn!("CoreClient::send_before_exit: message may not have been written");
+            }
+        }
+    }
+
     /// Enqueues a request. Never blocks: the caller may hold a lock to keep the enqueue
     /// ordered with other state changes, then drop it and `wait` for the response.
     pub fn start_request(&self, message: Message) -> Result<PendingResponse, CoreError> {

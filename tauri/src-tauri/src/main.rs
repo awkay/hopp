@@ -422,7 +422,9 @@ fn set_drawing_enabled(app: tauri::AppHandle, enabled: bool, permanent: bool) {
 #[tauri::command(async)]
 fn quit_app(app: tauri::AppHandle) {
     log::info!("quit_app");
-    core_send(&app, Message::CallEnd(None));
+    app.state::<AppData>()
+        .core
+        .send_before_exit(Message::CallEnd(None));
     app.exit(0);
 }
 
