@@ -16,6 +16,7 @@ fork-only features (see below).
 | LiveKit Rust SDK | `gethopp/rust-sdks`, branch `hopp` | `awkay/rust-sdks`, branch `hopp-encoding-params` | adds `LocalVideoTrack::set_encoding_parameters`, which low-bandwidth mode needs |
 | Tauri ↔ core IPC | one `Mutex<AppData>` held across send + 10 s wait; replies matched by variant | `CoreClient`: one ordered non-blocking queue, request ids, pipelined async requests, call ids on call messages, `AppData` split into small locks/atomics, no locks or waits on the main thread (see `AGENTS.md` "Protocol rules") | fixes "Hopp is not responding" hangs/deadlocks, late call-end messages ending the next call, stale responses, preferred camera ignored |
 | Core restart (exit code 2) | swaps the socket, re-sends only the LiveKit URL | re-sends the full startup config (App Veil included), rebinds events, ends the call in the UI, backs off (max 3 per 10 min) | the old path silently dropped App Veil and other settings |
+| Screen effects | none | viewers pick an animated sticker (wand button in the screen-share window); it plays centred over the shared screen on the sharer's overlay and every viewer's window, one at a time (triggers while one plays are dropped). Lossy data topic `effect`, id only; assets compiled into core and validated at build time (`core/resources/effects/effects.md`) | fun reactions without covering the call in chat; old clients just log and ignore the packet |
 
 The packaging layer lives in new files; it modifies no upstream file:
 
@@ -27,7 +28,10 @@ The packaging layer lives in new files; it modifies no upstream file:
 **Fork-only features modify upstream files.** Low-bandwidth mode changes `core/` (new
 `core/src/bandwidth_mode.rs`, plus `room_service.rs`, `lib.rs`, `snapshot_sender.rs`,
 `socket_lib`), `tauri/` (settings, commands, sidebar and in-call turtle buttons), and switches the
-`livekit` dependency in `core/Cargo.toml` / `core/Cargo.lock` to `awkay/rust-sdks`.
+`livekit` dependency in `core/Cargo.toml` / `core/Cargo.lock` to `awkay/rust-sdks`. Screen effects add
+`core/src/effects*`, `core/src/graphics/effect_renderer.rs`, `core/resources/effects/` and a
+`core/build.rs` step, and change `graphics_context.rs`, `screensharing_window.rs`,
+`room_service.rs`, `lib.rs` and `window_manager.rs` (core only).
 
 **Low-bandwidth mode** (client-only; no backend or LiveKit server changes). The turtle button
 during a call asks for low bandwidth; the screen share then drops to 1080p / 15 fps / 900 kbps

@@ -101,6 +101,15 @@ Tauri UI (React)  ←→  Tauri Backend (Rust)  ←→  Core Process (Rust)
    `listen()` in the frontend.
 5. Mirror new structs in `tauri/src/core_payloads.ts`.
 
+## Screen effects (fork feature)
+
+Viewers can send short animated stickers ("screen effects") that play over the shared screen for
+everyone watching; one plays at a time per window. Assets are animated WebPs compiled into core and
+validated by `core/build.rs` against `core/resources/effects/effects.toml`. To add or change an effect,
+read `core/resources/effects/effects.md` (manifest fields, caps, export recipes, runtime behaviour).
+Code: `core/src/effects*`, `core/src/graphics/effect_renderer.rs`; wire topic `effect` in
+`room_service.rs`. No IPC / Tauri changes.
+
 ## Code Style
 
 - **JS/TS:** Prettier (120 cols). Pre-commit runs automatically.
