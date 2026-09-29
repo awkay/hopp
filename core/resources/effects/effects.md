@@ -18,7 +18,8 @@ Everything lives in this directory:
 |---|---|
 | `effects.toml` | The manifest. It lists every effect. |
 | `*.webp` | The assets, as animated WebP files with transparency. |
-| `tools/make_placeholders.py` | Regenerates the placeholder assets. |
+| `*_icon.png` | Optional hand-made picker icons (`icon`). |
+| `tools/make_placeholders.py` | Regenerates the placeholder assets and `confetti_icon.png`. |
 | `tools/make_test_fixtures.py` | Regenerates the tiny fixtures that the validator's tests use (`core/src/effects/testdata/`). |
 
 Effects are **compiled into `hopp_core`**. `core/build.rs` reads the manifest,
@@ -39,6 +40,7 @@ loops = 1                 # optional, default 1
 height_fraction = 0.25    # optional, default 0.33
 order = 10                # optional, default 0
 thumbnail_frame = 7       # optional, default: the most opaque frame
+icon = "thumbs_icon.png"  # optional, default: none (thumbnail from a frame)
 ```
 
 Unknown fields, at the top level or inside `[[effect]]`, fail the build. A typo
@@ -62,7 +64,20 @@ with the wrong type also fails the build, for example `loops = "infinite"`.
 | `loops` | integer | 1 to 3 | `1` | How many times the frames play. The WebP file's own loop count is ignored. There is no "infinite". |
 | `height_fraction` | float | 0.05 to 0.66 | `0.33` | The height of the effect on screen, as a fraction of the height of the shared screen (or of the shared window). The width follows from the asset's aspect ratio. |
 | `order` | integer | any `i32` | `0` | The position in the picker, sorted ascending. Effects with the same value keep their manifest order. |
-| `thumbnail_frame` | integer | 0 to (frame count - 1) | the frame with the most opaque pixels | The frame shown in the picker, scaled to a 64 px square. |
+| `thumbnail_frame` | integer | 0 to (frame count - 1) | the frame with the most opaque pixels | The frame the picker thumbnail is made from (see [Picker thumbnail](#picker-thumbnail)). Ignored when `icon` is set. |
+| `icon` | string | a bare file name in this directory ending in `.png`; no `/`, `\`, `..` or leading `.` | none | A hand-made picker icon used instead of a thumbnail generated from a frame. It must be an 8-bit RGBA PNG, 32 to 256 px on each edge, roughly square (longer edge at most 1.25 × the shorter) and at most 64 KB. |
+
+### Picker thumbnail
+
+Each effect gets a 64 × 64 RGBA picker thumbnail, made at build time:
+
+- **With `icon`:** the PNG is scaled whole to fit the square (aspect ratio kept, centred). Your framing and padding are kept, so leave only a small margin.
+- **Without `icon`:** the build takes `thumbnail_frame` (default: the frame with the most opaque pixels), **crops it to the bounding box of its pixels with alpha above 16**, adds padding of 6% of the crop's longer edge on each side (clamped to the canvas), and scales that to fit the square (aspect ratio kept, centred). A small subject on a large, mostly transparent canvas therefore still fills the icon.
+- **Coverage check:** if fewer than **5%** of the final thumbnail's pixels have alpha above 128, the build fails. The icon would look empty in the picker. This happens with effects made of many small scattered pieces (such as confetti), where no crop helps. Set `icon` to a drawn PNG, or `thumbnail_frame` to a fuller frame. For example:
+
+  ```
+  - effect confetti: thumbnail: the generated picker thumbnail is nearly invisible: 0.0% of its pixels have alpha > 128, at least 5% are needed. Set `icon = "<name>.png"` (a hand-made picker icon) or `thumbnail_frame` (a fuller frame) for this effect
+  ```
 
 ## Caps and why they exist
 
@@ -99,6 +114,7 @@ The build enforces all of these limits. They are defined as constants in
    - Set `height_fraction` to the intended size. Use about 0.2 to 0.3 for a sticker and up to 0.66 for a full-screen celebration.
    - Set `loops`.
    - Set `order` to place it in the picker.
+   - If the build reports that the picker thumbnail is nearly invisible, set `icon` (a PNG in this directory) or `thumbnail_frame`.
 5. **Build core** (`cd core && cargo build`, or `task build_dev`). Any violation fails the build, and the message names the effect, the field and the rule.
 6. **Run the tests**: `cargo test --lib effects`. One test decodes every bundled asset again and checks it against the metadata recorded at build time.
 7. **Try it in a call.** From the screen-share window, open the wand menu and pick the effect. Check the size and timing on both a Retina display and a 1× display.
@@ -200,7 +216,8 @@ tests for every rule. For `effects.toml` and each entry it checks:
    - One loop must last at most 3000 ms.
    - `loops` × loop must be at most 4000 ms.
    - `thumbnail_frame` must be within range.
-6. **All files together.** They must add up to at most 24 MB.
+6. **The picker thumbnail.** An `icon` must exist and pass the PNG rules above. The final thumbnail (from `icon`, or the cropped frame) must pass the 5% coverage check.
+7. **All files together.** They must add up to at most 24 MB.
 
 The build reports every error at once, not only the first. For example:
 
@@ -221,7 +238,7 @@ Invalid screen effects in .../effects.toml (1 error(s)):
   |
 6 | size = 128
   | ^^^^
-unknown field `size`, expected one of `id`, `label`, `file`, `loops`, `height_fraction`, `order`, `thumbnail_frame`
+unknown field `size`, expected one of `id`, `label`, `file`, `loops`, `height_fraction`, `order`, `thumbnail_frame`, `icon`
 ```
 
 Asset errors look like these:

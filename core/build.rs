@@ -69,6 +69,14 @@ fn build_effects() {
                         effects_dir.join(&entry.file).display()
                     );
                 }
+                if let Some(icon) = entry.icon.as_deref() {
+                    if manifest::is_valid_icon_name(icon) {
+                        println!(
+                            "cargo:rerun-if-changed={}",
+                            effects_dir.join(icon).display()
+                        );
+                    }
+                }
             }
             manifest::validate(&parsed, |file| {
                 std::fs::read(effects_dir.join(file)).map_err(|e| e.to_string())
@@ -96,11 +104,8 @@ fn build_effects() {
     );
     for effect in &effects {
         let asset_path = effects_dir.join(&effect.file);
-        let bytes = std::fs::read(&asset_path).unwrap();
-        let thumbnail = manifest::thumbnail_rgba(&bytes, effect.thumbnail_frame)
-            .unwrap_or_else(|e| panic!("effects: thumbnail for {}: {e}", effect.id));
         let thumbnail_path = out_dir.join(format!("effect_thumb_{}.rgba", effect.id));
-        std::fs::write(&thumbnail_path, thumbnail).unwrap();
+        std::fs::write(&thumbnail_path, &effect.thumbnail).unwrap();
 
         let delays = effect
             .asset
