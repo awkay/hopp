@@ -104,7 +104,7 @@ rustfft = "6.2"
 # frame with the same shared validator the crate uses (src/effects/manifest.rs).
 serde = { version = "1.0", features = ["derive"] }
 toml = "1"
-image = { version = "0.25.5", default-features = false, features = ["webp"] }
+image = { version = "0.25.5", default-features = false, features = ["webp", "png"] }
 
 [dev-dependencies]
 toml = "1"

@@ -10,7 +10,8 @@ Pillow + libwebp version.
 Each effect is drawn as a PNG sequence (supersampled 2x for anti-aliasing), then
 packed with img2webp using an explicit per-frame duration (`-d`), lossy colour at
 q=80 and lossless alpha. The placeholders deliberately use uneven delays and at
-least one long held frame so the player's timing is exercised.
+least one long held frame so the player's timing is exercised. It also writes
+the confetti picker icon (confetti_icon.png, see `icon` in effects.md).
 """
 
 import math
@@ -203,6 +204,57 @@ def confetti():
     return "confetti.webp", frames
 
 
+# ── Confetti picker icon (128x128 PNG) ───────────────────────────────────────
+# The confetti animation is scattered small pieces, so no frame makes a readable
+# 64 px thumbnail; effects.toml sets `icon = "confetti_icon.png"` instead.
+
+
+def confetti_icon():
+    size = 128
+    img = canvas(size, size)
+    draw = ImageDraw.Draw(img)
+
+    def s(v):
+        return v * SS
+
+    # Party popper: a striped cone pointing down-left, mouth up-right.
+    tip = (s(18), s(112))
+    mouth_a, mouth_b = (s(52), s(46)), (s(84), s(78))
+    draw.polygon([tip, mouth_a, mouth_b], fill=(250, 204, 21, 255), outline=(150, 100, 0, 255))
+    for t in (0.35, 0.6, 0.82):
+        a = (tip[0] + (mouth_a[0] - tip[0]) * t, tip[1] + (mouth_a[1] - tip[1]) * t)
+        b = (tip[0] + (mouth_b[0] - tip[0]) * t, tip[1] + (mouth_b[1] - tip[1]) * t)
+        draw.line((a, b), fill=(239, 68, 68, 255), width=int(s(6)))
+    draw.ellipse((s(50), s(44), s(86), s(80)), outline=(150, 100, 0, 255), width=int(s(3)))
+
+    # A few big confetti pieces bursting out of the mouth.
+    pieces = [
+        ((96, 22), 16, 8, 0.5, (59, 130, 246)),
+        ((112, 52), 14, 7, -0.6, (34, 197, 94)),
+        ((78, 16), 12, 6, 1.1, (236, 72, 153)),
+        ((106, 88), 13, 6, 0.2, (168, 85, 247)),
+        ((60, 26), 10, 5, -0.9, (239, 68, 68)),
+    ]
+    for (cx, cy), w, h, angle, colour in pieces:
+        ca, sa = math.cos(angle), math.sin(angle)
+        corners = [
+            (s(cx + dx * ca - dy * sa), s(cy + dx * sa + dy * ca))
+            for dx, dy in ((-w, -h), (w, -h), (w, h), (-w, h))
+        ]
+        draw.polygon(corners, fill=colour + (255,))
+    for (cx, cy), r, colour in (((118, 30), 6, (250, 204, 21)), ((88, 44), 5, (34, 197, 94)),
+                                ((120, 110), 5, (59, 130, 246))):
+        draw.ellipse((s(cx - r), s(cy - r), s(cx + r), s(cy + r)), fill=colour + (255,))
+    return "confetti_icon.png", finish(img, size, size)
+
+
+def write_icon(make):
+    name, image = make()
+    out = os.path.join(OUT_DIR, name)
+    image.save(out, optimize=True)
+    print(f"{name}: {image.size[0]}x{image.size[1]}, {os.path.getsize(out)} bytes")
+
+
 def encode(name, frames, workdir):
     img2webp = shutil.which("img2webp")
     if img2webp is None:
@@ -224,6 +276,7 @@ def main():
         for make in (star_bounce, thumbs_up, confetti):
             name, frames = make()
             encode(name, frames, workdir)
+    write_icon(confetti_icon)
 
 
 if __name__ == "__main__":

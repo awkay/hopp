@@ -2427,7 +2427,15 @@ impl ScreensharingWindow {
             self.last_rendered_frame_id = 0;
         }
         if current_frame_id > 0 && current_frame_id <= self.last_rendered_frame_id {
-            log::warn!(
+            // While an effect plays the window redraws every 16 ms, faster than the
+            // stream delivers frames, so a redraw without a new frame is expected.
+            let level = if self.effects.is_playing() {
+                log::Level::Debug
+            } else {
+                log::Level::Warn
+            };
+            log::log!(
+                level,
                 "redraw_inner: dropping redraw {current_frame_id} {}",
                 self.last_rendered_frame_id
             );

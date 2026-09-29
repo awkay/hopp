@@ -50,6 +50,20 @@ pub const MAX_HEIGHT_FRACTION: f64 = 0.66;
 pub const DEFAULT_HEIGHT_FRACTION: f64 = 0.33;
 /// Edge of the square picker thumbnail generated at build time (RGBA).
 pub const THUMBNAIL_EDGE: u32 = 64;
+/// A generated thumbnail is cropped to the pixels with alpha above this...
+pub const CROP_ALPHA: u8 = 16;
+/// ...plus this fraction of the crop's longer edge as padding on each side.
+pub const CROP_PADDING_FRACTION: f64 = 0.06;
+/// The picker thumbnail must have at least this fraction of its pixels with alpha
+/// above `COVERAGE_ALPHA`, or the build fails (the icon would look empty).
+pub const MIN_THUMBNAIL_COVERAGE: f64 = 0.05;
+pub const COVERAGE_ALPHA: u8 = 128;
+/// Optional hand-made picker icon (`icon`): an RGBA PNG, roughly square.
+pub const MIN_ICON_EDGE: u32 = 32;
+pub const MAX_ICON_EDGE: u32 = 256;
+pub const MAX_ICON_BYTES: usize = 64 * 1024;
+/// Longer edge / shorter edge.
+pub const MAX_ICON_ASPECT: f64 = 1.25;
 
 /// The parsed `effects.toml`.
 #[derive(Debug, Clone, Deserialize)]
@@ -75,6 +89,9 @@ pub struct EffectEntry {
     pub order: i32,
     #[serde(default)]
     pub thumbnail_frame: Option<u32>,
+    /// Picker icon PNG used instead of a thumbnail generated from a frame.
+    #[serde(default)]
+    pub icon: Option<String>,
 }
 
 fn default_loops() -> u32 {
@@ -130,6 +147,9 @@ pub struct ValidatedEffect {
     pub height_fraction: f64,
     pub order: i32,
     pub thumbnail_frame: usize,
+    pub icon: Option<String>,
+    /// `THUMBNAIL_EDGE`² straight RGBA picker thumbnail (from `icon` or a frame).
+    pub thumbnail: Vec<u8>,
     pub file_bytes: usize,
     pub asset: AssetInfo,
 }
@@ -162,6 +182,16 @@ pub fn is_valid_file_name(file: &str) -> bool {
         && !file.contains("..")
         && !file.starts_with('.')
         && file.ends_with(".webp")
+}
+
+/// True for a bare `.png` file name (no directories, no `..`).
+pub fn is_valid_icon_name(file: &str) -> bool {
+    !file.is_empty()
+        && !file.contains('/')
+        && !file.contains('\\')
+        && !file.contains("..")
+        && !file.starts_with('.')
+        && file.ends_with(".png")
 }
 
 /// Opens an animated WebP for frame-by-frame decoding.
@@ -445,6 +475,36 @@ pub fn validate(
             None => asset.most_opaque_frame,
         };
 
+        let thumbnail = match &entry.icon {
+            Some(icon) if !is_valid_icon_name(icon) => Err((
+                "icon",
+                format!("{icon:?} must be a bare .png file name (no '/', '\\\\' or '..')"),
+            )),
+            Some(icon) => load(icon)
+                .map_err(|message| ("icon", format!("{icon:?}: {message}")))
+                .and_then(|bytes| {
+                    icon_thumbnail_rgba(&bytes)
+                        .map_err(|message| ("icon", format!("{icon:?}: {message}")))
+                }),
+            None if entry_ok => {
+                thumbnail_rgba(&bytes, thumbnail_frame).map_err(|message| ("thumbnail", message))
+            }
+            None => Ok(Vec::new()),
+        };
+        let thumbnail = match thumbnail {
+            Ok(thumbnail) => thumbnail,
+            Err((field, message)) => {
+                push(field, message);
+                continue;
+            }
+        };
+        if entry_ok {
+            if let Err(message) = check_thumbnail_coverage(&thumbnail, entry.icon.is_some()) {
+                push("thumbnail", message);
+                continue;
+            }
+        }
+
         if entry_ok {
             validated.push(ValidatedEffect {
                 id: entry.id.clone(),
@@ -454,6 +514,8 @@ pub fn validate(
                 height_fraction: entry.height_fraction,
                 order: entry.order,
                 thumbnail_frame,
+                icon: entry.icon.clone(),
+                thumbnail,
                 file_bytes: bytes.len(),
                 asset,
             });
@@ -492,21 +554,44 @@ pub fn premultiply_rgba(pixels: &mut [u8]) {
     }
 }
 
-/// Picker thumbnail: frame `index` scaled to fit a `THUMBNAIL_EDGE` square
-/// (aspect preserved, centred, transparent padding), straight RGBA.
-pub fn thumbnail_rgba(bytes: &[u8], index: usize) -> Result<Vec<u8>, String> {
-    let (_, _, mut frames) = open_animation(bytes)?;
-    let frame = frames
-        .nth(index)
-        .ok_or_else(|| format!("frame {index} missing"))?
-        .map_err(|e| e.to_string())?;
-    let source = frame.into_buffer();
-    let (width, height) = source.dimensions();
-    let scale = THUMBNAIL_EDGE as f64 / width.max(height) as f64;
+/// Bounding box `(x, y, width, height)` of the pixels with alpha above `threshold`.
+pub fn alpha_bounds(image: &image::RgbaImage, threshold: u8) -> Option<(u32, u32, u32, u32)> {
+    let mut bounds: Option<(u32, u32, u32, u32)> = None;
+    for (x, y, pixel) in image.enumerate_pixels() {
+        if pixel.0[3] <= threshold {
+            continue;
+        }
+        bounds = Some(match bounds {
+            None => (x, y, x, y),
+            Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+        });
+    }
+    bounds.map(|(x0, y0, x1, y1)| (x0, y0, x1 - x0 + 1, y1 - y0 + 1))
+}
+
+/// Crops to the content (alpha above `CROP_ALPHA`) plus `CROP_PADDING_FRACTION`
+/// padding, clamped to the image. An image with no such pixel is returned whole.
+pub fn crop_to_content(image: &image::RgbaImage) -> image::RgbaImage {
+    let Some((x, y, width, height)) = alpha_bounds(image, CROP_ALPHA) else {
+        return image.clone();
+    };
+    let pad = ((width.max(height) as f64 * CROP_PADDING_FRACTION).round() as u32).max(1);
+    let left = x.saturating_sub(pad);
+    let top = y.saturating_sub(pad);
+    let right = (x + width + pad).min(image.width());
+    let bottom = (y + height + pad).min(image.height());
+    image::imageops::crop_imm(image, left, top, right - left, bottom - top).to_image()
+}
+
+/// Scales `image` to fit a `THUMBNAIL_EDGE` square (aspect preserved, centred,
+/// transparent padding), straight RGBA.
+pub fn fit_thumbnail(image: &image::RgbaImage) -> Vec<u8> {
+    let (width, height) = image.dimensions();
+    let scale = THUMBNAIL_EDGE as f64 / width.max(height).max(1) as f64;
     let scaled_w = ((width as f64 * scale).round() as u32).clamp(1, THUMBNAIL_EDGE);
     let scaled_h = ((height as f64 * scale).round() as u32).clamp(1, THUMBNAIL_EDGE);
     let scaled = image::imageops::resize(
-        &source,
+        image,
         scaled_w,
         scaled_h,
         image::imageops::FilterType::Triangle,
@@ -518,7 +603,89 @@ pub fn thumbnail_rgba(bytes: &[u8], index: usize) -> Result<Vec<u8>, String> {
         ((THUMBNAIL_EDGE - scaled_w) / 2) as i64,
         ((THUMBNAIL_EDGE - scaled_h) / 2) as i64,
     );
-    Ok(canvas.into_raw())
+    canvas.into_raw()
+}
+
+/// Picker thumbnail from frame `index`: cropped to its content, then fitted.
+pub fn thumbnail_rgba(bytes: &[u8], index: usize) -> Result<Vec<u8>, String> {
+    let (_, _, mut frames) = open_animation(bytes)?;
+    let frame = frames
+        .nth(index)
+        .ok_or_else(|| format!("frame {index} missing"))?
+        .map_err(|e| e.to_string())?;
+    Ok(fit_thumbnail(&crop_to_content(frame.buffer())))
+}
+
+/// Decodes and checks an `icon` PNG: RGBA8, each edge
+/// `MIN_ICON_EDGE..=MAX_ICON_EDGE`, aspect at most `MAX_ICON_ASPECT`, at most
+/// `MAX_ICON_BYTES`.
+pub fn decode_icon(bytes: &[u8]) -> Result<image::RgbaImage, String> {
+    if bytes.len() > MAX_ICON_BYTES {
+        return Err(format!(
+            "is {} bytes; at most {MAX_ICON_BYTES} bytes are allowed",
+            bytes.len()
+        ));
+    }
+    if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err("not a PNG file".to_string());
+    }
+    let decoded = image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
+        .map_err(|e| format!("cannot read PNG: {e}"))?;
+    if decoded.color() != image::ColorType::Rgba8 {
+        return Err(format!(
+            "is {:?}; icons must be 8-bit RGBA (with alpha)",
+            decoded.color()
+        ));
+    }
+    let (width, height) = (decoded.width(), decoded.height());
+    let edges = MIN_ICON_EDGE..=MAX_ICON_EDGE;
+    if !edges.contains(&width) || !edges.contains(&height) {
+        return Err(format!(
+            "is {width}x{height}; each edge must be {MIN_ICON_EDGE}..={MAX_ICON_EDGE} px"
+        ));
+    }
+    let aspect = width.max(height) as f64 / width.min(height) as f64;
+    if aspect > MAX_ICON_ASPECT {
+        return Err(format!(
+            "is {width}x{height}; it must be roughly square (longer edge at most {MAX_ICON_ASPECT}x the shorter)"
+        ));
+    }
+    Ok(decoded.into_rgba8())
+}
+
+/// Picker thumbnail from an `icon` PNG: fitted whole (the author's framing is kept).
+pub fn icon_thumbnail_rgba(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    Ok(fit_thumbnail(&decode_icon(bytes)?))
+}
+
+/// Fraction of the thumbnail's pixels with alpha above `COVERAGE_ALPHA`.
+pub fn thumbnail_coverage(rgba: &[u8]) -> f64 {
+    let pixels = rgba.as_chunks::<4>().0;
+    if pixels.is_empty() {
+        return 0.0;
+    }
+    let opaque = pixels.iter().filter(|p| p[3] > COVERAGE_ALPHA).count();
+    opaque as f64 / pixels.len() as f64
+}
+
+/// Fails when the picker thumbnail would look (nearly) empty.
+pub fn check_thumbnail_coverage(rgba: &[u8], from_icon: bool) -> Result<(), String> {
+    let coverage = thumbnail_coverage(rgba);
+    if coverage >= MIN_THUMBNAIL_COVERAGE {
+        return Ok(());
+    }
+    let source = if from_icon {
+        "the icon PNG"
+    } else {
+        "the generated picker thumbnail"
+    };
+    Err(format!(
+        "{source} is nearly invisible: {:.1}% of its pixels have alpha > {COVERAGE_ALPHA}, \
+         at least {:.0}% are needed. Set `icon = \"<name>.png\"` (a hand-made picker icon) \
+         or `thumbnail_frame` (a fuller frame) for this effect",
+        coverage * 100.0,
+        MIN_THUMBNAIL_COVERAGE * 100.0
+    ))
 }
 
 #[cfg(test)]
@@ -544,6 +711,7 @@ mod tests {
             height_fraction: DEFAULT_HEIGHT_FRACTION,
             order: 0,
             thumbnail_frame: None,
+            icon: None,
         }
     }
 
@@ -572,6 +740,190 @@ mod tests {
                 .any(|e| e.field == field && e.message.contains(contains)),
             "expected a {field} error containing {contains:?}, got {errors:#?}"
         );
+    }
+
+    fn png(image: image::DynamicImage) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        image
+            .write_to(&mut Cursor::new(&mut bytes), image::ImageFormat::Png)
+            .unwrap();
+        bytes
+    }
+
+    /// Transparent RGBA PNG with an opaque `dot`x`dot` square in the middle.
+    fn icon_png(width: u32, height: u32, dot: u32) -> Vec<u8> {
+        let mut image = image::RgbaImage::new(width, height);
+        let (x0, y0) = ((width - dot) / 2, (height - dot) / 2);
+        for y in y0..y0 + dot {
+            for x in x0..x0 + dot {
+                image.put_pixel(x, y, Rgba([200, 40, 40, 255]));
+            }
+        }
+        png(image::DynamicImage::ImageRgba8(image))
+    }
+
+    fn with_icon(file: &str, icon: &str) -> EffectEntry {
+        let mut entry = entry("pop", file);
+        entry.icon = Some(icon.to_string());
+        entry
+    }
+
+    /// Fixtures plus in-memory icons: `good.png` (full), `dot.png` (a 4 px dot).
+    fn fixtures_and_icons(name: &str) -> Result<Vec<u8>, String> {
+        match name {
+            "good.png" => Ok(icon_png(96, 96, 80)),
+            "dot.png" => Ok(icon_png(128, 128, 4)),
+            _ => fixtures(name),
+        }
+    }
+
+    #[test]
+    fn crops_to_the_alpha_bounds_with_padding() {
+        let mut image = image::RgbaImage::new(200, 100);
+        for y in 40..50 {
+            for x in 150..160 {
+                image.put_pixel(x, y, Rgba([255, 255, 255, 255]));
+            }
+        }
+        // Faint pixels (alpha <= CROP_ALPHA) do not extend the crop.
+        image.put_pixel(2, 2, Rgba([255, 255, 255, CROP_ALPHA]));
+        assert_eq!(alpha_bounds(&image, CROP_ALPHA), Some((150, 40, 10, 10)));
+        let cropped = crop_to_content(&image);
+        assert_eq!(cropped.dimensions(), (12, 12)); // 1 px padding each side
+        assert_eq!(cropped.get_pixel(0, 0).0[3], 0);
+        assert_eq!(cropped.get_pixel(1, 1).0[3], 255);
+
+        // Padding is clamped at the image edge.
+        let mut corner = image::RgbaImage::new(100, 100);
+        for y in 0..50 {
+            for x in 0..20 {
+                corner.put_pixel(x, y, Rgba([255, 255, 255, 255]));
+            }
+        }
+        assert_eq!(crop_to_content(&corner).dimensions(), (23, 53));
+
+        // Nothing visible: returned whole.
+        let empty = image::RgbaImage::new(40, 30);
+        assert_eq!(crop_to_content(&empty).dimensions(), (40, 30));
+    }
+
+    #[test]
+    fn cropping_makes_a_small_subject_fill_the_thumbnail() {
+        let mut image = image::RgbaImage::new(640, 360);
+        for y in 170..190 {
+            for x in 310..330 {
+                image.put_pixel(x, y, Rgba([255, 0, 0, 255]));
+            }
+        }
+        let whole = fit_thumbnail(&image);
+        let cropped = fit_thumbnail(&crop_to_content(&image));
+        assert_eq!(
+            cropped.len(),
+            (THUMBNAIL_EDGE * THUMBNAIL_EDGE * 4) as usize
+        );
+        assert!(thumbnail_coverage(&whole) < MIN_THUMBNAIL_COVERAGE);
+        assert!(
+            thumbnail_coverage(&cropped) > 0.6,
+            "{}",
+            thumbnail_coverage(&cropped)
+        );
+    }
+
+    #[test]
+    fn icon_validation_rules() {
+        assert!(decode_icon(&icon_png(128, 128, 100)).is_ok());
+        assert!(decode_icon(&icon_png(32, 40, 20)).is_ok());
+        let err = |bytes: Vec<u8>| decode_icon(&bytes).unwrap_err();
+        assert!(err(icon_png(31, 31, 20)).contains("each edge must be 32..=256"));
+        assert!(err(icon_png(257, 257, 20)).contains("each edge must be 32..=256"));
+        assert!(err(icon_png(128, 96, 20)).contains("roughly square"));
+        let rgb = image::DynamicImage::ImageRgb8(image::RgbImage::new(64, 64));
+        assert!(err(png(rgb)).contains("8-bit RGBA"));
+        assert!(err(b"GIF89a....".to_vec()).contains("not a PNG"));
+        let noise = image::RgbaImage::from_fn(256, 256, |x, y| {
+            let v = (x.wrapping_mul(2_654_435_761) ^ y.wrapping_mul(40_503)).wrapping_mul(97);
+            Rgba(v.to_le_bytes())
+        });
+        let big = png(image::DynamicImage::ImageRgba8(noise));
+        assert!(big.len() > MAX_ICON_BYTES);
+        assert!(err(big).contains("at most 65536 bytes"));
+
+        assert!(is_valid_icon_name("pop_icon.png"));
+        for bad in [
+            "",
+            "icon.webp",
+            "dir/icon.png",
+            "..png",
+            ".icon.png",
+            "a\\b.png",
+        ] {
+            assert!(!is_valid_icon_name(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn an_icon_replaces_the_generated_thumbnail() {
+        let effects = validate(
+            &manifest(vec![with_icon("valid.webp", "good.png")]),
+            fixtures_and_icons,
+        )
+        .unwrap();
+        assert_eq!(effects[0].icon.as_deref(), Some("good.png"));
+        assert_eq!(
+            effects[0].thumbnail,
+            icon_thumbnail_rgba(&icon_png(96, 96, 80)).unwrap()
+        );
+        assert_ne!(
+            effects[0].thumbnail,
+            thumbnail_rgba(&fixture("valid.webp"), 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn rejects_bad_or_missing_icons() {
+        let errors = |entry: EffectEntry| {
+            validate(&manifest(vec![entry]), fixtures_and_icons).expect_err("expected errors")
+        };
+        let has = |errors: &[ManifestError], field: &str, text: &str| {
+            errors
+                .iter()
+                .any(|e| e.field == field && e.message.contains(text))
+        };
+        assert!(has(
+            &errors(with_icon("valid.webp", "../x.png")),
+            "icon",
+            "bare .png"
+        ));
+        assert!(has(
+            &errors(with_icon("valid.webp", "gone.png")),
+            "icon",
+            "gone.png"
+        ));
+    }
+
+    #[test]
+    fn rejects_a_nearly_invisible_thumbnail() {
+        let errors = validate(
+            &manifest(vec![with_icon("valid.webp", "dot.png")]),
+            fixtures_and_icons,
+        )
+        .expect_err("expected a coverage error");
+        assert!(
+            errors.iter().any(|e| e.field == "thumbnail"
+                && e.message.contains("nearly invisible")
+                && e.message.contains("icon")
+                && e.message.contains("thumbnail_frame")),
+            "{errors:#?}"
+        );
+        assert!(check_thumbnail_coverage(&vec![0; 64 * 64 * 4], false).is_err());
+        let mut rgba = vec![0u8; 64 * 64 * 4];
+        // Exactly 5% of 4096 pixels (205) with alpha > 128 passes; 204 does not.
+        for pixel in rgba.chunks_mut(4).take(204) {
+            pixel[3] = 129;
+        }
+        assert!(check_thumbnail_coverage(&rgba, false).is_err());
+        rgba[204 * 4 + 3] = 255;
+        assert!(check_thumbnail_coverage(&rgba, false).is_ok());
     }
 
     #[test]

@@ -26,6 +26,8 @@ order = 20
 id = "confetti"
 label = "Confetti"
 file = "confetti.webp"
+# Scattered small pieces make an empty generated thumbnail; use a drawn icon.
+icon = "confetti_icon.png"
 loops = 2
 height_fraction = 0.66
 order = 30
