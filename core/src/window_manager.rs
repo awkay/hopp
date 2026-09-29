@@ -346,6 +346,13 @@ impl<'a> WindowManager<'a> {
         }
     }
 
+    /// Re-enables screen effects on every overlay after a GPU error (new call).
+    pub fn reset_effects_poison(&mut self) {
+        for entry in &mut self.windows {
+            entry.gfx.reset_effects_poison();
+        }
+    }
+
     pub fn active_gfx_mut(&mut self) -> Option<&mut GraphicsContext<'a>> {
         let active_id = self.active_monitor_id.as_ref()?;
         Some(

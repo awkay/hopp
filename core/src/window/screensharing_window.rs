@@ -500,6 +500,8 @@ struct ScreensharingState {
     effects_open: bool,
     /// An effect is playing in this window: the picker is disabled.
     effect_busy: bool,
+    /// Effects hit a GPU error in this window: the picker is off until the next call.
+    effects_disabled: bool,
     /// When true, drawn strokes persist until right-click; otherwise they fade out.
     draw_persist: bool,
     /// Whether the sharer currently allows remote control input.
@@ -537,6 +539,7 @@ impl Default for ScreensharingState {
             dropdown_open: false,
             effects_open: false,
             effect_busy: false,
+            effects_disabled: false,
             draw_persist: true,
             remote_control_allowed: true,
             app_veil_snapshot: Default::default(),
@@ -1038,6 +1041,7 @@ impl ScreensharingWindow {
     /// (then the trigger is dropped).
     pub fn trigger_effect(&mut self, effect: &'static EffectDef) -> PlayOutcome {
         let outcome = self.effects.try_play(effect);
+        self.state.effects_disabled = self.effects.is_poisoned();
         if outcome == PlayOutcome::Started {
             self.state.effect_busy = true;
             self.state.effects_open = false;
@@ -1045,6 +1049,12 @@ impl ScreensharingWindow {
             self.window.request_redraw();
         }
         outcome
+    }
+
+    /// Re-enables effects after a GPU error (a new call started).
+    pub fn reset_effects_poison(&mut self) {
+        self.effects.reset_poison();
+        self.state.effects_disabled = false;
     }
 
     /// Stops the current effect and frees its memory.
@@ -2019,7 +2029,10 @@ impl ScreensharingWindow {
         };
         let header_end_buttons = || {
             row![
-                effects_trigger_button(state.effects_open, !state.effect_busy),
+                effects_trigger_button(
+                    state.effects_open,
+                    effects_trigger_state(state.effect_busy, state.effects_disabled),
+                ),
                 dropdown_trigger_button(
                     ICON_COG,
                     state.dropdown_open,
@@ -2281,7 +2294,7 @@ impl ScreensharingWindow {
         } else if state.effects_open {
             dropdown_overlay(
                 base,
-                effects_menu(state.effect_busy),
+                effects_menu(state.effect_busy || state.effects_disabled),
                 ScreensharingMessage::DismissEffects,
                 WindowConstant::HEADER_HEIGHT,
                 WindowConstant::HEADER_SIDE_PADDING
@@ -2364,7 +2377,9 @@ impl ScreensharingWindow {
             ScreensharingMessage::ToggleEffects => {
                 self.call_controls.dismiss_dropdowns();
                 self.state.dropdown_open = false;
-                self.state.effects_open = !self.state.effects_open && !self.state.effect_busy;
+                self.state.effects_open = !self.state.effects_open
+                    && !self.state.effect_busy
+                    && !self.state.effects_disabled;
             }
             ScreensharingMessage::DismissEffects => {
                 self.state.effects_open = false;
@@ -2524,7 +2539,8 @@ impl ScreensharingWindow {
         self.click_animation_renderer.update();
         self.participants_manager.hide_inactive_cursors();
         self.state.effect_busy = self.effects.is_playing();
-        if self.state.effect_busy {
+        self.state.effects_disabled = self.effects.is_poisoned();
+        if self.state.effect_busy || self.state.effects_disabled {
             self.state.effects_open = false;
         }
 
@@ -2596,6 +2612,13 @@ impl ScreensharingWindow {
             content,
             content,
         );
+        if self.effects.is_poisoned() && !self.state.effects_disabled {
+            // Poisoned during this draw: stop the redraw tick and grey the picker.
+            self.state.effects_disabled = true;
+            self.state.effect_busy = false;
+            self.effect_deadline.set(None);
+            self.window.request_redraw();
+        }
 
         self.window.pre_present_notify();
         output.present();
@@ -2615,12 +2638,33 @@ impl ScreensharingWindow {
     }
 }
 
+/// Whether the effects button can be pressed, and why not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EffectsTrigger {
+    Enabled,
+    /// One is playing: only one effect plays at a time.
+    Busy,
+    /// A GPU error turned effects off in this window for the rest of the call.
+    Unavailable,
+}
+
+fn effects_trigger_state(busy: bool, disabled: bool) -> EffectsTrigger {
+    if disabled {
+        EffectsTrigger::Unavailable
+    } else if busy {
+        EffectsTrigger::Busy
+    } else {
+        EffectsTrigger::Enabled
+    }
+}
+
 /// Header button that opens the screen-effects picker. Disabled (dimmed, no press)
-/// while an effect plays: only one effect plays at a time.
+/// while an effect plays or after a GPU error.
 fn effects_trigger_button<'a>(
     is_open: bool,
-    enabled: bool,
+    trigger_state: EffectsTrigger,
 ) -> iced::Element<'a, ScreensharingMessage, Theme, iced::Renderer> {
+    let enabled = trigger_state == EffectsTrigger::Enabled;
     let icon_alpha = if enabled { 1.0 } else { 0.35 };
     let icon = svg(svg::Handle::from_memory(ICON_WAND))
         .width(Length::Fixed(20.0))
@@ -2658,10 +2702,10 @@ fn effects_trigger_button<'a>(
             snap: false,
         }
     });
-    let label = if enabled {
-        "Screen effects"
-    } else {
-        "Screen effects (one is playing)"
+    let label = match trigger_state {
+        EffectsTrigger::Enabled => "Screen effects",
+        EffectsTrigger::Busy => "Screen effects (one is playing)",
+        EffectsTrigger::Unavailable => "Screen effects unavailable until the next call",
     };
     tooltip(
         trigger,

@@ -1534,6 +1534,13 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                             // Field + mirror directly (room_service still borrows self).
                             self.current_call = Some(call_id);
                             CURRENT_CALL_ID.store(call_id, Ordering::SeqCst);
+                            // A GPU error disables effects for the rest of a call only.
+                            if let Some(wm) = self.window_manager.as_mut() {
+                                wm.reset_effects_poison();
+                            }
+                            if let Some(window) = self.screensharing_window.as_mut() {
+                                window.reset_effects_poison();
+                            }
 
                             // Open camera window immediately for snappiness
                             if start_camera_on_call {

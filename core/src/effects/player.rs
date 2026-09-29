@@ -55,6 +55,8 @@ pub enum PlayOutcome {
     Busy,
     /// This effect failed to decode before; it is never retried.
     Broken,
+    /// Effects hit a GPU error in this window and are off for the rest of the call.
+    Disabled,
 }
 
 /// What `tick` found.
@@ -87,7 +89,7 @@ pub fn frame_at(ends: &[u64], loops: u32, elapsed_ms: u64) -> Option<u64> {
     let within = elapsed_ms % loop_ms;
     let frame = ends
         .partition_point(|&end| end <= within)
-        .min(ends.len() - 1);
+        .min(ends.len().saturating_sub(1));
     Some(loop_index * ends.len() as u64 + frame as u64)
 }
 
@@ -234,7 +236,9 @@ impl EffectPlayer {
             return Tick::Ended;
         };
 
-        let playback = self.playback.as_mut().unwrap();
+        let Some(playback) = self.playback.as_mut() else {
+            return Tick::Idle;
+        };
         let mut newest: Option<DecodedFrame> = None;
         loop {
             if playback.pending.is_none() {

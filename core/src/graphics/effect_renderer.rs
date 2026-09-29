@@ -230,6 +230,9 @@ impl EffectQuad {
             log::warn!("effects: skipping malformed frame {:?}", frame);
             return;
         }
+        let Some(bytes_per_row) = frame.width.checked_mul(4) else {
+            return;
+        };
         let reuse = self
             .texture
             .as_ref()
@@ -291,7 +294,7 @@ impl EffectQuad {
             &frame.rgba,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(frame.width * 4),
+                bytes_per_row: Some(bytes_per_row),
                 rows_per_image: Some(frame.height),
             },
             wgpu::Extent3d {
@@ -361,16 +364,135 @@ impl EffectQuad {
     }
 }
 
-/// A window's effect: the one-at-a-time player plus its GPU quad.
-pub(crate) struct EffectLayer {
+/// Where effect-specific wgpu errors are collected: the device's error scopes, or a
+/// fake in tests.
+trait ErrorScopes {
+    fn push(&self, filter: wgpu::ErrorFilter);
+    /// Pops the innermost scope and returns the error it caught, if any.
+    fn pop(&self) -> Option<String>;
+}
+
+impl ErrorScopes for wgpu::Device {
+    fn push(&self, filter: wgpu::ErrorFilter) {
+        self.push_error_scope(filter);
+    }
+
+    fn pop(&self) -> Option<String> {
+        // wgpu 27 native (wgpu-core): the scope's error is recorded synchronously by
+        // the failing call, and `pop_error_scope` returns an already-ready future, so
+        // this never waits.
+        pollster::block_on(self.pop_error_scope()).map(|e| e.to_string())
+    }
+}
+
+/// Runs `f` (effect-specific wgpu calls only) inside Validation and OutOfMemory
+/// error scopes, so a wgpu error is reported here instead of reaching the default
+/// uncaptured-error handler (which panics), and catches a panic from `f`.
+///
+/// `AssertUnwindSafe` is sound here in the sense that matters: on `Err` the caller
+/// discards everything `f` touched (the quad and its texture) and stops the player,
+/// so no half-updated state is used again. The scopes are always popped, panic or
+/// not, so iced's later errors on the shared device are not swallowed.
+///
+/// wgpu 27 error scopes are a stack on the device (not per thread); all rendering
+/// runs on the event-loop thread, so nothing else interleaves between push and pop.
+fn guarded<S: ErrorScopes + ?Sized, T>(
+    scopes: &S,
+    what: &str,
+    f: impl FnOnce() -> T,
+) -> Result<T, String> {
+    scopes.push(wgpu::ErrorFilter::Validation);
+    scopes.push(wgpu::ErrorFilter::OutOfMemory);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+    let out_of_memory = scopes.pop();
+    let validation = scopes.pop();
+    let mut errors: Vec<String> = Vec::new();
+    if let Err(panic) = &result {
+        let message = panic
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown panic".to_string());
+        errors.push(format!("panic: {message}"));
+    }
+    if let Some(e) = validation {
+        errors.push(format!("validation: {e}"));
+    }
+    if let Some(e) = out_of_memory {
+        errors.push(format!("out of memory: {e}"));
+    }
+    match result {
+        Ok(value) if errors.is_empty() => Ok(value),
+        _ => Err(format!("{what}: {}", errors.join("; "))),
+    }
+}
+
+/// Playback plus the per-window kill switch. No GPU here, so it is unit-testable.
+struct EffectGate {
     player: EffectPlayer,
-    quad: EffectQuad,
+    /// Why effects are off in this window for the rest of the call.
+    poisoned: Option<String>,
+}
+
+impl EffectGate {
+    fn new(clock: Arc<dyn Clock>) -> Self {
+        Self {
+            player: EffectPlayer::new(clock),
+            poisoned: None,
+        }
+    }
+
+    fn try_play(&mut self, effect: &'static EffectDef) -> PlayOutcome {
+        if self.poisoned.is_some() {
+            return PlayOutcome::Disabled;
+        }
+        self.player.try_play(effect)
+    }
+
+    fn is_playing(&self) -> bool {
+        self.poisoned.is_none() && self.player.is_playing()
+    }
+
+    /// Turns effects off for the rest of the call and stops the current one.
+    fn poison(&mut self, reason: String) {
+        self.player.stop();
+        if self.poisoned.is_none() {
+            log::error!(
+                "effects: GPU error, effects disabled in this window until the next call: {reason}"
+            );
+            self.poisoned = Some(reason);
+        } else {
+            log::error!("effects: further GPU error while disabled: {reason}");
+        }
+    }
+
+    fn reset(&mut self) {
+        if self.poisoned.take().is_some() {
+            log::info!("effects: re-enabled for the new call");
+        }
+    }
+}
+
+/// A window's effect: the one-at-a-time player plus its GPU quad.
+///
+/// Every effect-specific wgpu call runs under `guarded`. Any wgpu error or panic
+/// there poisons the layer: the effect stops, the GPU objects are dropped, and
+/// `try_play` answers `Disabled` until `reset_poison` (next call). The quad
+/// (shader + pipeline) is built on first use, so a window that never plays an
+/// effect never compiles it.
+pub(crate) struct EffectLayer {
+    gate: EffectGate,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    target_format: wgpu::TextureFormat,
+    quad: Option<EffectQuad>,
 }
 
 impl std::fmt::Debug for EffectLayer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EffectLayer")
-            .field("player", &self.player)
+            .field("player", &self.gate.player)
+            .field("poisoned", &self.gate.poisoned)
             .finish()
     }
 }
@@ -383,32 +505,74 @@ impl EffectLayer {
         clock: Arc<dyn Clock>,
     ) -> Self {
         Self {
-            player: EffectPlayer::new(clock),
-            quad: EffectQuad::new(device, queue, target_format),
+            gate: EffectGate::new(clock),
+            device,
+            queue,
+            target_format,
+            quad: None,
         }
     }
 
-    /// Starts `effect` unless one is already playing (then it is dropped).
+    /// Starts `effect` unless one is already playing (then it is dropped) or effects
+    /// are disabled in this window.
     pub(crate) fn try_play(&mut self, effect: &'static EffectDef) -> PlayOutcome {
-        let outcome = self.player.try_play(effect);
+        if self.gate.poisoned.is_none() && self.quad.is_none() {
+            let (device, queue, format) =
+                (self.device.clone(), self.queue.clone(), self.target_format);
+            match guarded(&self.device, "create effect pipeline", move || {
+                EffectQuad::new(device, queue, format)
+            }) {
+                Ok(quad) => self.quad = Some(quad),
+                Err(reason) => self.poison(reason),
+            }
+        }
+        let outcome = self.gate.try_play(effect);
         if outcome != PlayOutcome::Busy {
-            log::debug!("effects: play {} -> {outcome:?}", effect.id);
+            log::info!("effects: play {} -> {outcome:?}", effect.id);
         }
         outcome
     }
 
     pub(crate) fn is_playing(&self) -> bool {
-        self.player.is_playing()
+        self.gate.is_playing()
+    }
+
+    /// Effects hit a GPU error in this window; off until `reset_poison`.
+    pub(crate) fn is_poisoned(&self) -> bool {
+        self.gate.poisoned.is_some()
+    }
+
+    /// Re-enables effects (a new call started).
+    pub(crate) fn reset_poison(&mut self) {
+        self.gate.reset();
     }
 
     pub(crate) fn deadline(&self) -> Option<std::time::Instant> {
-        self.player.deadline()
+        if self.is_poisoned() {
+            return None;
+        }
+        self.gate.player.deadline()
     }
 
     /// Stops the effect and frees the worker, channel and texture.
     pub(crate) fn clear(&mut self) {
-        self.player.stop();
-        self.quad.release();
+        self.gate.player.stop();
+        self.release_texture();
+    }
+
+    fn release_texture(&mut self) {
+        let Some(quad) = self.quad.as_mut() else {
+            return;
+        };
+        if let Err(reason) = guarded(&self.device, "release effect texture", || quad.release()) {
+            self.poison(reason);
+        }
+    }
+
+    fn poison(&mut self, reason: String) {
+        self.gate.poison(reason);
+        // Drop every effect GPU object; whatever state they were left in is unused.
+        self.quad = None;
     }
 
     /// Advances the effect and draws it into `view` (already presented by iced),
@@ -421,26 +585,41 @@ impl EffectLayer {
         content: PixelRect,
         clip: PixelRect,
     ) {
-        match self.player.tick() {
+        if self.is_poisoned() {
+            return;
+        }
+        match self.gate.player.tick() {
             Tick::Idle => {}
-            Tick::Ended => self.quad.release(),
+            Tick::Ended => {
+                log::info!("effects: effect ended");
+                self.release_texture();
+            }
             Tick::Playing {
                 effect,
                 new_frame,
                 has_frame,
             } => {
-                if let Some(frame) = new_frame {
-                    self.quad.upload(&frame);
-                    // `frame` (the CPU copy) is dropped here; only the texture remains.
-                }
-                if !has_frame {
+                let Some(quad) = self.quad.as_mut() else {
+                    // Only reachable if the quad was dropped mid-play; nothing to draw with.
+                    self.gate.player.stop();
                     return;
-                }
-                if let Some(dest) =
-                    fit_effect(content, effect.width, effect.height, effect.height_fraction)
-                {
-                    self.quad
-                        .draw(view, target_width, target_height, dest, clip);
+                };
+                let result = guarded(&self.device, "draw effect", || {
+                    if let Some(frame) = new_frame {
+                        quad.upload(&frame);
+                        // `frame` (the CPU copy) is dropped here; only the texture remains.
+                    }
+                    if !has_frame {
+                        return;
+                    }
+                    if let Some(dest) =
+                        fit_effect(content, effect.width, effect.height, effect.height_fraction)
+                    {
+                        quad.draw(view, target_width, target_height, dest, clip);
+                    }
+                });
+                if let Err(reason) = result {
+                    self.poison(format!("{} ({reason})", effect.id));
                 }
             }
         }
@@ -458,6 +637,104 @@ mod tests {
             width,
             height,
         }
+    }
+
+    /// Stand-in for the device's error-scope stack.
+    #[derive(Default)]
+    struct FakeScopes {
+        stack: std::cell::RefCell<Vec<(wgpu::ErrorFilter, Option<String>)>>,
+    }
+
+    impl FakeScopes {
+        /// What wgpu does on an error: the innermost scope with a matching filter
+        /// keeps the first one.
+        fn report(&self, filter: wgpu::ErrorFilter, message: &str) {
+            let mut stack = self.stack.borrow_mut();
+            let scope = stack
+                .iter_mut()
+                .rev()
+                .find(|(f, _)| *f == filter)
+                .expect("error outside any scope would panic in wgpu");
+            scope.1.get_or_insert_with(|| message.to_string());
+        }
+
+        fn depth(&self) -> usize {
+            self.stack.borrow().len()
+        }
+    }
+
+    impl ErrorScopes for FakeScopes {
+        fn push(&self, filter: wgpu::ErrorFilter) {
+            self.stack.borrow_mut().push((filter, None));
+        }
+
+        fn pop(&self) -> Option<String> {
+            self.stack.borrow_mut().pop().expect("unbalanced pop").1
+        }
+    }
+
+    #[test]
+    fn guarded_passes_through_a_clean_result() {
+        let scopes = FakeScopes::default();
+        assert_eq!(guarded(&scopes, "draw", || 7), Ok(7));
+        assert_eq!(scopes.depth(), 0);
+    }
+
+    #[test]
+    fn guarded_captures_validation_and_oom_errors() {
+        let scopes = FakeScopes::default();
+        let err = guarded(&scopes, "draw", || {
+            scopes.report(wgpu::ErrorFilter::Validation, "bad scissor");
+        })
+        .unwrap_err();
+        assert!(err.contains("draw") && err.contains("bad scissor"), "{err}");
+        assert_eq!(scopes.depth(), 0);
+
+        let err = guarded(&scopes, "upload", || {
+            scopes.report(wgpu::ErrorFilter::OutOfMemory, "no vram");
+        })
+        .unwrap_err();
+        assert!(err.contains("out of memory: no vram"), "{err}");
+        assert_eq!(scopes.depth(), 0);
+    }
+
+    #[test]
+    fn guarded_catches_a_panic_and_still_pops_its_scopes() {
+        let scopes = FakeScopes::default();
+        // An outer scope (as if another caller had one open) must survive intact.
+        scopes.push(wgpu::ErrorFilter::Validation);
+        let err =
+            guarded(&scopes, "draw", || -> u32 { panic!("index out of bounds") }).unwrap_err();
+        assert!(err.contains("panic: index out of bounds"), "{err}");
+        assert_eq!(scopes.depth(), 1);
+        assert_eq!(scopes.pop(), None);
+    }
+
+    #[test]
+    fn poison_stops_playback_and_refuses_effects_until_reset() {
+        let effect = crate::effects::EFFECTS.first().expect("bundled effects");
+        let clock = Arc::new(crate::utils::clock::TestClock::new());
+        let mut gate = EffectGate::new(clock);
+
+        assert_eq!(gate.try_play(effect), PlayOutcome::Started);
+        assert!(gate.is_playing());
+
+        gate.poison("draw effect: validation: boom".to_string());
+        assert!(!gate.is_playing());
+        assert!(!gate.player.is_playing());
+        assert_eq!(gate.try_play(effect), PlayOutcome::Disabled);
+        // A second error keeps the first reason.
+        gate.poison("later".to_string());
+        assert_eq!(
+            gate.poisoned.as_deref(),
+            Some("draw effect: validation: boom")
+        );
+        assert_eq!(gate.try_play(effect), PlayOutcome::Disabled);
+
+        gate.reset();
+        assert!(gate.poisoned.is_none());
+        assert_eq!(gate.try_play(effect), PlayOutcome::Started);
+        gate.player.stop();
     }
 
     #[test]
