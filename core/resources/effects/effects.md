@@ -278,6 +278,11 @@ it first. This is accepted.
 - At the 1280 × 720 cap this is about 11 MB of frames in memory, plus one texture.
 - The worker, the frames and the texture are all freed when the effect ends, when the window hides, when the viewer window switches to a new sharer, or when the call ends.
 
+**GPU failures.**
+
+- Every effect wgpu call (pipeline, texture, uploads, the draw pass) runs inside Validation and OutOfMemory error scopes and `catch_unwind`, so a GPU error cannot reach wgpu's default handler (which panics) and kill core.
+- On an error the window logs it at error level, stops the effect, drops its GPU objects and disables effects for the rest of the call (the wand button greys out, incoming effects are ignored in that window). The next call re-enables them.
+
 **Network.**
 
 - The packet is `{"v":1,"id":"<id>","at":null}` on the LiveKit data topic `effect`.

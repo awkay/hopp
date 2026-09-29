@@ -372,6 +372,11 @@ impl<'a> GraphicsContext<'a> {
         outcome
     }
 
+    /// Re-enables effects after a GPU error (a new call started).
+    pub fn reset_effects_poison(&mut self) {
+        self.effects.reset_poison();
+    }
+
     /// Stops the current effect and frees its memory (share stopped, call ended).
     pub fn clear_effects(&mut self) {
         self.effects.clear();
