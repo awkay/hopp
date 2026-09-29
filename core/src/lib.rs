@@ -14,6 +14,7 @@ pub mod livekit {
 }
 
 mod bandwidth_mode;
+pub(crate) mod effects;
 pub mod room_service;
 mod snapshot_sender;
 

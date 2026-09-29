@@ -2568,6 +2568,7 @@ dependencies = [
  "thread-priority",
  "tokio",
  "tokio-stream",
+ "toml",
  "tract-core",
  "tract-onnx",
  "wgpu",
