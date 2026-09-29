@@ -44,7 +44,7 @@ pub(crate) fn rasterize_svg_to_rgba(svg_bytes: &[u8], px_size: u32) -> (Vec<u8>,
         &mut pixmap.as_mut(),
     );
     let mut rgba = pixmap.data().to_vec();
-    for px in rgba.chunks_exact_mut(4) {
+    for px in rgba.as_chunks_mut::<4>().0 {
         let a = px[3] as f32;
         if a > 0.0 && a < 255.0 {
             let inv = 255.0 / a;
