@@ -187,7 +187,11 @@ impl EffectPlayer {
             return PlayOutcome::Broken;
         }
 
-        let (sender, receiver) = sync_channel(1);
+        // Rendezvous channel: the worker blocks holding one decoded frame until the
+        // render thread takes it, and the render thread holds at most one frame that
+        // is not yet due. So decoding runs one to two frames ahead, and at the 1280x720
+        // cap about 11 MB of frames exist at once (plus the GPU texture).
+        let (sender, receiver) = sync_channel(0);
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = Arc::clone(&cancel);
         let live = Arc::clone(&self.live_workers);
@@ -497,6 +501,30 @@ mod tests {
         assert!(!player.is_playing());
         assert!(matches!(player.tick(), Tick::Idle));
         assert!(wait_until(|| player.live_workers() == 0));
+    }
+
+    #[test]
+    fn call_end_mid_stream_frees_a_worker_blocked_on_send() {
+        let (mut player, _clock) = player();
+        let effect = EFFECTS.iter().max_by_key(|e| e.delays_ms.len()).unwrap();
+        player.try_play(effect);
+        assert!(wait_until(|| matches!(
+            player.tick(),
+            Tick::Playing {
+                has_frame: true,
+                ..
+            }
+        )));
+        // Let the worker decode ahead and block handing over the next frame.
+        std::thread::sleep(Duration::from_millis(100));
+        assert_eq!(player.live_workers(), 1);
+        player.stop(); // what hiding the window / ending the call does
+        assert!(matches!(player.tick(), Tick::Idle));
+        assert!(player.deadline().is_none());
+        assert!(wait_until(|| player.live_workers() == 0));
+        // A new call can play again straight away.
+        assert_eq!(player.try_play(effect), PlayOutcome::Started);
+        player.stop();
     }
 
     #[test]
