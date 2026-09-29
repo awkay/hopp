@@ -36,7 +36,8 @@ pub struct EffectPacket {
 #[derive(Debug, Clone, Copy)]
 pub struct EffectTrigger {
     pub effect: &'static EffectDef,
-    /// Clamped to 0..=1. Ignored by v1 renderers.
+    /// Clamped to 0..=1. Ignored by v1 renderers (kept for placement later).
+    #[allow(dead_code)]
     pub at: Option<WirePoint>,
 }
 

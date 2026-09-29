@@ -259,7 +259,8 @@ impl EffectPlayer {
         }
     }
 
-    /// Decoder threads still running (for tests and diagnostics).
+    /// Decoder threads still running.
+    #[cfg(test)]
     pub fn live_workers(&self) -> usize {
         self.live_workers.load(Ordering::Acquire)
     }

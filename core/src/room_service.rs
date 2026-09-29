@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use winit::event_loop::EventLoopProxy;
 
+use crate::effects::wire::{encode_effect_packet, parse_effect_packet, TOPIC_EFFECT};
 use crate::snapshot_sender::SnapshotSender;
 use crate::{audio, ParticipantData, UserEvent};
 
@@ -226,6 +227,8 @@ enum RoomServiceCommand {
     PublishPasteFromClipboard(PasteFromClipboardData),
     PublishClipboardData(ClipboardDataPayload),
     PublishClickAnimation(ClientPoint),
+    /// Screen effect trigger (id only), published lossy on `TOPIC_EFFECT`.
+    PublishEffect(&'static str),
     PublishAppVeilSnapshot {
         force: bool,
     },
@@ -269,6 +272,7 @@ impl std::fmt::Debug for RoomServiceCommand {
             Self::PublishPasteFromClipboard(..) => write!(f, "PublishPasteFromClipboard"),
             Self::PublishClipboardData(..) => write!(f, "PublishClipboardData"),
             Self::PublishClickAnimation(..) => write!(f, "PublishClickAnimation"),
+            Self::PublishEffect(id) => write!(f, "PublishEffect({id})"),
             Self::PublishAppVeilSnapshot { force } => {
                 write!(f, "PublishAppVeilSnapshot {{ force: {force} }}")
             }
@@ -898,6 +902,17 @@ impl RoomService {
             .send(RoomServiceCommand::PublishClipboardData(data));
         if let Err(e) = res {
             log::error!("publish_clipboard_data: Failed to send command: {e:?}");
+        }
+    }
+
+    /// Publishes a screen effect trigger to the room (lossy, fire-and-forget).
+    pub fn publish_effect(&self, id: &'static str) {
+        log::debug!("publish_effect: {id}");
+        if let Err(e) = self
+            .service_command_tx
+            .send(RoomServiceCommand::PublishEffect(id))
+        {
+            log::error!("publish_effect: Failed to send command: {e:?}");
         }
     }
 
@@ -2041,6 +2056,27 @@ async fn room_service_commands(
                     log::error!("room_service_commands: Failed to publish click animation: {e:?}");
                 }
             }
+            RoomServiceCommand::PublishEffect(id) => {
+                let inner_room = inner.room.lock().await;
+                let Some(room) = inner_room.as_ref() else {
+                    log::warn!("room_service_commands: Room doesn't exist for PublishEffect");
+                    continue;
+                };
+                // Lossy: a lost effect is harmless, and it must not queue in front of
+                // keystrokes on the reliable channel.
+                let res = room
+                    .local_participant()
+                    .publish_data(DataPacket {
+                        payload: encode_effect_packet(id),
+                        reliable: false,
+                        topic: Some(TOPIC_EFFECT.to_string()),
+                        ..Default::default()
+                    })
+                    .await;
+                if let Err(e) = res {
+                    log::error!("room_service_commands: Failed to publish effect: {e:?}");
+                }
+            }
             RoomServiceCommand::PublishAppVeilSnapshot { force } => {
                 let Some(snapshot) = inner.app_veil_snapshot.lock().unwrap().clone() else {
                     continue;
@@ -2697,6 +2733,30 @@ async fn handle_room_events(ctx: RoomEventContext) {
                         apply_bandwidth_mode(&inner).await;
                     } else if requesters_changed {
                         send_bandwidth_mode_state(&inner);
+                    }
+                    continue;
+                }
+
+                if topic.as_deref() == Some(TOPIC_EFFECT) {
+                    let Some(participant) = participant else {
+                        log::debug!("handle_room_events: effect sender is missing");
+                        continue;
+                    };
+                    let sender = participant.identity().as_str().to_string();
+                    if participant_identities_match(&sender, &user_identity) {
+                        continue;
+                    }
+                    // Size, version, id and point are validated; unknown ids dropped.
+                    let Some(trigger) = parse_effect_packet(&payload) else {
+                        log::debug!("handle_room_events: dropping invalid effect from {sender}");
+                        continue;
+                    };
+                    if let Err(e) = event_loop_proxy
+                        .send_event(UserEvent::EffectFromParticipant(trigger.effect, sender))
+                    {
+                        log::error!(
+                            "handle_room_events: Failed to send EffectFromParticipant: {e:?}"
+                        );
                     }
                     continue;
                 }
@@ -3569,5 +3629,34 @@ mod app_veil_tests {
             Some(&current),
             &current
         ));
+    }
+}
+
+#[cfg(test)]
+mod effect_packet_tests {
+    use super::*;
+
+    #[test]
+    fn old_clients_cannot_parse_an_effect_packet_as_a_client_event() {
+        // Old clients run unknown topics through the generic ClientEvent parse, which
+        // fails and `continue`s: only that packet is dropped.
+        let packet = encode_effect_packet(crate::effects::EFFECTS[0].id);
+        assert!(serde_json::from_slice::<ClientEvent>(&packet).is_err());
+        assert!(parse_effect_packet(&packet).is_some());
+    }
+
+    #[test]
+    fn effect_topic_is_distinct_from_existing_topics() {
+        for topic in [
+            TOPIC_SHARER_LOCATION,
+            TOPIC_REMOTE_CONTROL_ENABLED,
+            TOPIC_PARTICIPANT_IN_CONTROL,
+            TOPIC_TICK_RESPONSE,
+            TOPIC_DRAW,
+            TOPIC_APP_VEIL,
+            TOPIC_BANDWIDTH_MODE,
+        ] {
+            assert_ne!(topic, TOPIC_EFFECT);
+        }
     }
 }

@@ -11,12 +11,14 @@
 //! - Pill-shaped control buttons with solid/gradient backgrounds
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant as StdInstant};
 
 use iced::mouse;
-use iced::widget::{canvas, column, container, row, shader, stack, text, Space};
+use iced::widget::{
+    button, canvas, column, container, image, row, shader, stack, svg, text, tooltip, Space,
+};
 use iced::{
     alignment, gradient, Alignment, Background, Border, Color, Length, Padding, Pixels, Point,
     Radians, Rectangle, Shadow, Size, Vector,
@@ -54,6 +56,9 @@ use crate::components::fonts::{self as fonts_mod, GEIST_MEDIUM, GEIST_REGULAR};
 use crate::components::segmented_control::{
     self as seg_ctrl_mod, SegmentedButton, SegmentedControlAnim,
 };
+use crate::effects::player::PlayOutcome;
+use crate::effects::{EffectDef, EFFECTS};
+use crate::graphics::effect_renderer::{EffectLayer, PixelRect};
 use crate::graphics::graphics_context::click_animation::ClickAnimationRenderer;
 use crate::graphics::graphics_context::participant::{
     CursorMode, ParticipantError, ParticipantsManager,
@@ -89,9 +94,14 @@ pub fn screensharing_window_attributes() -> WindowAttributes {
 }
 
 // Wide enough for the turtle toggle + call controls on each side of the segmented control.
-const SCREENSHARE_CALL_CONTROLS_MIN_WIDTH: f32 = 690.0;
+const SCREENSHARE_CALL_CONTROLS_MIN_WIDTH: f32 = 786.0;
 const SCREENSHARE_SEGMENTED_CONTROLS_WIDTH: f32 = 132.0;
 const SCREENSHARE_SETTINGS_BUTTON_WIDTH: f32 = 44.0;
+const SCREENSHARE_HEADER_BUTTON_SPACING: f32 = 4.0;
+/// Effects button + cog at the right end of the header (reserved on both sides so the
+/// centre group stays centred).
+const SCREENSHARE_HEADER_END_WIDTH: f32 =
+    SCREENSHARE_SETTINGS_BUTTON_WIDTH * 2.0 + SCREENSHARE_HEADER_BUTTON_SPACING;
 /// Turtle toggle + call controls, centered together in the header slot.
 const SCREENSHARE_HEADER_CONTROLS_WIDTH: f32 =
     bandwidth_toggle_width(CallControlsDensity::Compact.button_size())
@@ -274,6 +284,40 @@ fn default_screen_area_from_hardcoded() -> ScreenArea {
 }
 
 const REDRAW_INTERVAL: Duration = Duration::from_millis(1_000 / 10);
+/// Redraw interval while a screen effect plays (effect frames can be 20 ms apart).
+const EFFECT_REDRAW_INTERVAL: Duration = Duration::from_millis(16);
+
+/// "Redraw fast until" deadline shared with the redraw thread, as ms since `epoch`.
+/// A timestamp cannot get stuck: once it passes, the thread falls back to 10 fps.
+#[derive(Clone)]
+struct EffectAnimationDeadline {
+    epoch: StdInstant,
+    until_ms: Arc<AtomicU64>,
+}
+
+impl EffectAnimationDeadline {
+    fn new() -> Self {
+        Self {
+            epoch: StdInstant::now(),
+            until_ms: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    fn set(&self, deadline: Option<StdInstant>) {
+        let until = deadline
+            .map(|d| d.saturating_duration_since(self.epoch).as_millis() as u64)
+            .unwrap_or(0);
+        self.until_ms.store(until, Ordering::Release);
+    }
+
+    fn interval(&self) -> Duration {
+        if (self.epoch.elapsed().as_millis() as u64) < self.until_ms.load(Ordering::Acquire) {
+            EFFECT_REDRAW_INTERVAL
+        } else {
+            REDRAW_INTERVAL
+        }
+    }
+}
 
 pub enum RedrawCommand {
     ForceRedraw,
@@ -284,9 +328,10 @@ fn spawn_redraw_thread(
     redraw_rx: std::sync::mpsc::Receiver<RedrawCommand>,
     redraw_in_progress: Arc<AtomicBool>,
     window: Arc<Window>,
+    effect_deadline: EffectAnimationDeadline,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || loop {
-        match redraw_rx.recv_timeout(REDRAW_INTERVAL) {
+        match redraw_rx.recv_timeout(effect_deadline.interval()) {
             Ok(RedrawCommand::ForceRedraw) => {
                 if !redraw_in_progress.load(Ordering::Acquire) {
                     window.request_redraw();
@@ -302,6 +347,24 @@ const SCREENSHARE_STREAM_ID: u64 = u64::MAX;
 
 const ICON_COG: &[u8] = include_bytes!("../../resources/icons/cog.svg");
 const ICON_PENCIL_SVG: &[u8] = include_bytes!("../../resources/icons/pencil.svg");
+const ICON_WAND: &[u8] = include_bytes!("../../resources/icons/wand.svg");
+/// Picker grid: thumbnails per row and their logical size.
+const EFFECTS_PER_ROW: usize = 4;
+const EFFECT_THUMBNAIL_SIZE: f32 = 40.0;
+
+/// One iced handle per effect thumbnail, built once so their ids stay stable (a new
+/// handle per frame would re-upload). Thumbnails are 64 px, well under iced's
+/// synchronous-upload limit.
+fn effect_thumbnails() -> &'static [image::Handle] {
+    static THUMBNAILS: std::sync::OnceLock<Vec<image::Handle>> = std::sync::OnceLock::new();
+    THUMBNAILS.get_or_init(|| {
+        let edge = crate::effects::manifest::THUMBNAIL_EDGE;
+        EFFECTS
+            .iter()
+            .map(|effect| image::Handle::from_rgba(edge, edge, effect.thumbnail.to_vec()))
+            .collect()
+    })
+}
 
 /// Icon font codepoints for segmented control (from icons-font).
 const ICON_REMOTE_CONTROL: char = '\u{F107}';
@@ -349,6 +412,9 @@ pub enum ScreensharingMessage {
     DismissDropdown,
     DropdownItemClicked(usize),
     ToggleLowBandwidth,
+    ToggleEffects,
+    DismissEffects,
+    EffectPicked(&'static str),
 }
 
 // ── Input events to forward to room service ─────────────────────────────────
@@ -362,20 +428,42 @@ pub(crate) enum ScreenShareTab {
 
 #[derive(Debug)]
 pub(crate) enum ScreenShareInputEvent {
-    CursorMoved { x: f64, y: f64 },
+    CursorMoved {
+        x: f64,
+        y: f64,
+    },
     MouseClick(crate::room_service::MouseClickData),
     Scroll(crate::room_service::WheelDelta),
     KeyInput(crate::room_service::KeystrokeData),
-    DrawStart { x: f64, y: f64, path_id: u64 },
-    DrawAddPoint { x: f64, y: f64 },
-    DrawEnd { x: f64, y: f64 },
+    DrawStart {
+        x: f64,
+        y: f64,
+        path_id: u64,
+    },
+    DrawAddPoint {
+        x: f64,
+        y: f64,
+    },
+    DrawEnd {
+        x: f64,
+        y: f64,
+    },
     DrawText(crate::room_service::DrawTextData),
     DrawClearAllPaths,
     DrawClearPaths(Vec<u64>),
-    ClickAnimation { x: f64, y: f64 },
+    ClickAnimation {
+        x: f64,
+        y: f64,
+    },
     DrawingModeChanged(crate::room_service::DrawingMode),
-    AddToClipboard { is_copy: bool },
+    AddToClipboard {
+        is_copy: bool,
+    },
     PasteFromClipboard(Option<String>),
+    /// The local user started this effect; publish it to the room.
+    PlayEffect {
+        id: &'static str,
+    },
 }
 
 impl From<DrawTextUpdate> for ScreenShareInputEvent {
@@ -408,6 +496,10 @@ struct ScreensharingState {
     text_input: DrawTextInput,
     /// Whether the settings dropdown is open.
     dropdown_open: bool,
+    /// Whether the screen-effects picker is open.
+    effects_open: bool,
+    /// An effect is playing in this window: the picker is disabled.
+    effect_busy: bool,
     /// When true, drawn strokes persist until right-click; otherwise they fade out.
     draw_persist: bool,
     /// Whether the sharer currently allows remote control input.
@@ -443,6 +535,8 @@ impl Default for ScreensharingState {
             last_draw_cursor: None,
             text_input: DrawTextInput::default(),
             dropdown_open: false,
+            effects_open: false,
+            effect_busy: false,
             draw_persist: true,
             remote_control_allowed: true,
             app_veil_snapshot: Default::default(),
@@ -552,6 +646,9 @@ pub struct ScreensharingWindow {
     screen_share_buffer: Arc<crate::livekit::video::VideoBufferManager>,
     participants_manager: ParticipantsManager,
     click_animation_renderer: ClickAnimationRenderer,
+    /// Screen effect drawn over the shared content.
+    effects: EffectLayer,
+    effect_deadline: EffectAnimationDeadline,
     last_rendered_frame_id: u64,
     redraw_in_progress: Arc<AtomicBool>,
     redraw_tx: std::sync::mpsc::Sender<RedrawCommand>,
@@ -840,10 +937,18 @@ impl ScreensharingWindow {
         let call_controls =
             CallControlsState::new(camera_active, selected_camera_name, selected_mic_name);
         let redraw_in_progress = Arc::new(AtomicBool::new(false));
+        let effect_deadline = EffectAnimationDeadline::new();
         let redraw_thread = spawn_redraw_thread(
             redraw_rx,
             Arc::clone(&redraw_in_progress),
             Arc::clone(&window),
+            effect_deadline.clone(),
+        );
+        let effects = EffectLayer::new(
+            device.clone(),
+            context_manager.screensharing_context.queue.clone(),
+            format,
+            clock::default_clock(),
         );
         let s = Self {
             window,
@@ -867,6 +972,8 @@ impl ScreensharingWindow {
             screen_share_buffer,
             participants_manager,
             click_animation_renderer: ClickAnimationRenderer::new(clock::default_clock()),
+            effects,
+            effect_deadline,
             last_rendered_frame_id: 0,
             redraw_in_progress,
             redraw_tx,
@@ -922,8 +1029,30 @@ impl ScreensharingWindow {
         self.window.focus_window();
     }
 
-    pub fn hide(&self) {
+    pub fn hide(&mut self) {
+        self.clear_effects();
         self.window.set_visible(false);
+    }
+
+    /// Plays a screen effect over the shared content unless one is already playing
+    /// (then the trigger is dropped).
+    pub fn trigger_effect(&mut self, effect: &'static EffectDef) -> PlayOutcome {
+        let outcome = self.effects.try_play(effect);
+        if outcome == PlayOutcome::Started {
+            self.state.effect_busy = true;
+            self.state.effects_open = false;
+            self.effect_deadline.set(self.effects.deadline());
+            self.window.request_redraw();
+        }
+        outcome
+    }
+
+    /// Stops the current effect and frees its memory.
+    pub fn clear_effects(&mut self) {
+        self.effects.clear();
+        self.effect_deadline.set(None);
+        self.state.effect_busy = false;
+        self.state.effects_open = false;
     }
 
     pub fn add_participant(
@@ -1070,6 +1199,7 @@ impl ScreensharingWindow {
             new_rx,
             Arc::clone(&self.redraw_in_progress),
             Arc::clone(&self.window),
+            self.effect_deadline.clone(),
         ));
         self.redraw_tx = new_tx;
     }
@@ -1197,6 +1327,7 @@ impl ScreensharingWindow {
                 let logical_x = (position.x / scale_factor as f64) as f32;
                 let logical_y = (position.y / scale_factor as f64) as f32;
                 let inside = !self.state.dropdown_open
+                    && !self.state.effects_open
                     && !self.call_controls.has_open_dropdown()
                     && logical_x >= rect.x
                     && logical_x < rect.x + rect.width
@@ -1715,6 +1846,14 @@ impl ScreensharingWindow {
                             );
                             input_events.push(ScreenShareInputEvent::DrawingModeChanged(mode));
                         }
+                        ScreensharingMessage::EffectPicked(id) => {
+                            if let Some(effect) = crate::effects::find(id) {
+                                if self.trigger_effect(effect) == PlayOutcome::Started {
+                                    input_events
+                                        .push(ScreenShareInputEvent::PlayEffect { id: effect.id });
+                                }
+                            }
+                        }
                         _ => {}
                     }
                     self.update(msg);
@@ -1878,11 +2017,18 @@ impl ScreensharingWindow {
         } else {
             WindowConstant::HEADER_SIDE_PADDING
         };
-        let cog_button = dropdown_trigger_button(
-            ICON_COG,
-            state.dropdown_open,
-            ScreensharingMessage::ToggleDropdown,
-        );
+        let header_end_buttons = || {
+            row![
+                effects_trigger_button(state.effects_open, !state.effect_busy),
+                dropdown_trigger_button(
+                    ICON_COG,
+                    state.dropdown_open,
+                    ScreensharingMessage::ToggleDropdown,
+                ),
+            ]
+            .spacing(SCREENSHARE_HEADER_BUTTON_SPACING)
+            .align_y(Alignment::Center)
+        };
 
         let header_content: iced::Element<'a, ScreensharingMessage, Theme, iced::Renderer> =
             if show_call_controls {
@@ -1890,12 +2036,12 @@ impl ScreensharingWindow {
                     Space::new().width(Length::Fixed(traffic_light_spacer)),
                     name_label,
                     Space::new().width(Length::Fill),
-                    cog_button,
+                    header_end_buttons(),
                 ]
                 .align_y(Alignment::Center)
                 .width(Length::Fill);
                 let center_and_call_controls = row![
-                    Space::new().width(Length::Fixed(SCREENSHARE_SETTINGS_BUTTON_WIDTH)),
+                    Space::new().width(Length::Fixed(SCREENSHARE_HEADER_END_WIDTH)),
                     Space::new().width(Length::Fill),
                     seg_ctrl,
                     container(
@@ -1913,7 +2059,7 @@ impl ScreensharingWindow {
                     )
                     .width(Length::Fill)
                     .center_x(Length::Fill),
-                    Space::new().width(Length::Fixed(SCREENSHARE_SETTINGS_BUTTON_WIDTH)),
+                    Space::new().width(Length::Fixed(SCREENSHARE_HEADER_END_WIDTH)),
                 ]
                 .width(Length::Fill)
                 .align_y(Alignment::Center);
@@ -1923,7 +2069,7 @@ impl ScreensharingWindow {
                     Space::new().width(Length::Fixed(traffic_light_spacer)),
                     name_label,
                     Space::new().width(Length::Fill),
-                    cog_button,
+                    header_end_buttons(),
                 ]
                 .align_y(Alignment::Center)
                 .width(Length::Fill);
@@ -2132,6 +2278,16 @@ impl ScreensharingWindow {
                 WindowConstant::HEADER_HEIGHT,
                 WindowConstant::HEADER_SIDE_PADDING,
             )
+        } else if state.effects_open {
+            dropdown_overlay(
+                base,
+                effects_menu(state.effect_busy),
+                ScreensharingMessage::DismissEffects,
+                WindowConstant::HEADER_HEIGHT,
+                WindowConstant::HEADER_SIDE_PADDING
+                    + SCREENSHARE_SETTINGS_BUTTON_WIDTH
+                    + SCREENSHARE_HEADER_BUTTON_SPACING,
+            )
         } else {
             base
         };
@@ -2141,10 +2297,10 @@ impl ScreensharingWindow {
                 - header_left_padding
                 - WindowConstant::HEADER_SIDE_PADDING
                 - SCREENSHARE_SEGMENTED_CONTROLS_WIDTH
-                - SCREENSHARE_SETTINGS_BUTTON_WIDTH * 2.0;
+                - SCREENSHARE_HEADER_END_WIDTH * 2.0;
             let call_controls_slot_width = call_controls_slot_width / 2.0;
             let trailing_padding = WindowConstant::HEADER_SIDE_PADDING
-                + SCREENSHARE_SETTINGS_BUTTON_WIDTH
+                + SCREENSHARE_HEADER_END_WIDTH
                 + (call_controls_slot_width - SCREENSHARE_HEADER_CONTROLS_WIDTH).max(0.0) / 2.0;
             call_controls.wrap_dropdown(
                 base,
@@ -2168,6 +2324,7 @@ impl ScreensharingWindow {
                         | CallControlsMessage::CameraDropdownToggle
                 ) {
                     self.state.dropdown_open = false;
+                    self.state.effects_open = false;
                 }
                 self.call_controls
                     .update(message, &self.call_participants, &self.event_loop_proxy);
@@ -2182,6 +2339,7 @@ impl ScreensharingWindow {
             }
             ScreensharingMessage::ToggleDropdown => {
                 self.call_controls.dismiss_dropdowns();
+                self.state.effects_open = false;
                 self.state.dropdown_open = !self.state.dropdown_open;
                 log::info!(
                     "ScreensharingWindow: dropdown toggled = {}",
@@ -2203,7 +2361,21 @@ impl ScreensharingWindow {
                 );
                 self.state.dropdown_open = false;
             }
+            ScreensharingMessage::ToggleEffects => {
+                self.call_controls.dismiss_dropdowns();
+                self.state.dropdown_open = false;
+                self.state.effects_open = !self.state.effects_open && !self.state.effect_busy;
+            }
+            ScreensharingMessage::DismissEffects => {
+                self.state.effects_open = false;
+            }
+            ScreensharingMessage::EffectPicked(_) => {
+                // Played (or dropped) in handle_window_event, which can emit the
+                // publish event.
+                self.state.effects_open = false;
+            }
             ScreensharingMessage::ToggleLowBandwidth => {
+                self.state.effects_open = false;
                 self.state.dropdown_open = false;
                 self.call_controls.dismiss_dropdowns();
                 let enabled = next_local_request(&self.state.bandwidth_mode);
@@ -2351,6 +2523,10 @@ impl ScreensharingWindow {
 
         self.click_animation_renderer.update();
         self.participants_manager.hide_inactive_cursors();
+        self.state.effect_busy = self.effects.is_playing();
+        if self.state.effect_busy {
+            self.state.effects_open = false;
+        }
 
         // Build fresh interface from cache
         let cache = self.cache.take().unwrap_or_default();
@@ -2404,6 +2580,23 @@ impl ScreensharingWindow {
         };
         wgpu_renderer.present(clear_color, output.texture.format(), &view, &self.viewport);
 
+        // Screen effect over the shared content (after iced, same view).
+        let scale = self.window.scale_factor() as f32;
+        let content_logical = self.participant_image_rect();
+        let content = PixelRect {
+            x: content_logical.x * scale,
+            y: content_logical.y * scale,
+            width: content_logical.width * scale,
+            height: content_logical.height * scale,
+        };
+        self.effects.render(
+            &view,
+            output.texture.width(),
+            output.texture.height(),
+            content,
+            content,
+        );
+
         self.window.pre_present_notify();
         output.present();
 
@@ -2422,9 +2615,141 @@ impl ScreensharingWindow {
     }
 }
 
+/// Header button that opens the screen-effects picker. Disabled (dimmed, no press)
+/// while an effect plays: only one effect plays at a time.
+fn effects_trigger_button<'a>(
+    is_open: bool,
+    enabled: bool,
+) -> iced::Element<'a, ScreensharingMessage, Theme, iced::Renderer> {
+    let icon_alpha = if enabled { 1.0 } else { 0.35 };
+    let icon = svg(svg::Handle::from_memory(ICON_WAND))
+        .width(Length::Fixed(20.0))
+        .height(Length::Fixed(20.0))
+        .style(move |_theme: &Theme, _status| svg::Style {
+            color: Some(Color::from_rgba(1.0, 1.0, 1.0, icon_alpha)),
+        });
+    let trigger = button(
+        container(icon)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center_x(Length::Fill)
+            .center_y(Length::Fill),
+    )
+    .width(Length::Fixed(SCREENSHARE_SETTINGS_BUTTON_WIDTH))
+    .height(Length::Fixed(24.0))
+    .on_press_maybe(enabled.then_some(ScreensharingMessage::ToggleEffects))
+    .padding(0)
+    .style(move |_theme: &Theme, status| {
+        let highlighted =
+            matches!(status, button::Status::Hovered | button::Status::Pressed) || is_open;
+        button::Style {
+            background: highlighted.then(|| Background::Color(ColorToken::Slate400.to_color())),
+            border: Border {
+                color: if highlighted {
+                    Color::from_rgba(1.0, 1.0, 1.0, 0.2)
+                } else {
+                    Color::TRANSPARENT
+                },
+                width: if highlighted { 1.0 } else { 0.0 },
+                radius: 32.0.into(),
+            },
+            text_color: Color::WHITE,
+            shadow: Shadow::default(),
+            snap: false,
+        }
+    });
+    let label = if enabled {
+        "Screen effects"
+    } else {
+        "Screen effects (one is playing)"
+    };
+    tooltip(
+        trigger,
+        container(text(label).size(12).color(Color::WHITE))
+            .padding(Padding::from([4.0, 8.0]))
+            .style(|_theme: &Theme| container::Style {
+                background: Some(Background::Color(ColorToken::Gray600.to_color())),
+                border: Border {
+                    color: Color::from_rgba(1.0, 1.0, 1.0, 0.15),
+                    width: 1.0,
+                    radius: 6.0.into(),
+                },
+                ..Default::default()
+            }),
+        tooltip::Position::Bottom,
+    )
+    .gap(4)
+    .snap_within_viewport(true)
+    .into()
+}
+
+/// Grid of effect thumbnails. Greyed out and inert while an effect plays.
+fn effects_menu<'a>(busy: bool) -> iced::Element<'a, ScreensharingMessage, Theme, iced::Renderer> {
+    let thumbnails = effect_thumbnails();
+    let mut rows = column![].spacing(4);
+    for (effects, handles) in EFFECTS
+        .chunks(EFFECTS_PER_ROW)
+        .zip(thumbnails.chunks(EFFECTS_PER_ROW))
+    {
+        let mut grid_row = row![].spacing(4);
+        for (effect, handle) in effects.iter().zip(handles) {
+            let picture = image(handle.clone())
+                .width(Length::Fixed(EFFECT_THUMBNAIL_SIZE))
+                .height(Length::Fixed(EFFECT_THUMBNAIL_SIZE))
+                .opacity(if busy { 0.35_f32 } else { 1.0_f32 });
+            let cell = button(picture)
+                .padding(4)
+                .on_press_maybe((!busy).then_some(ScreensharingMessage::EffectPicked(effect.id)))
+                .style(|_theme: &Theme, status| button::Style {
+                    background: matches!(status, button::Status::Hovered | button::Status::Pressed)
+                        .then(|| Background::Color(ColorToken::Slate600.to_color())),
+                    border: Border {
+                        color: Color::TRANSPARENT,
+                        width: 0.0,
+                        radius: 8.0.into(),
+                    },
+                    text_color: Color::WHITE,
+                    shadow: Shadow::default(),
+                    snap: false,
+                });
+            grid_row = grid_row.push(
+                tooltip(
+                    cell,
+                    container(text(effect.label).size(12).color(Color::WHITE))
+                        .padding(Padding::from([4.0, 8.0]))
+                        .style(|_theme: &Theme| container::Style {
+                            background: Some(Background::Color(ColorToken::Gray600.to_color())),
+                            border: Border {
+                                radius: 6.0.into(),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        }),
+                    tooltip::Position::Bottom,
+                )
+                .gap(2),
+            );
+        }
+        rows = rows.push(grid_row);
+    }
+    container(rows)
+        .padding(Padding::from([6, 6]))
+        .style(|_theme: &Theme| container::Style {
+            background: Some(Background::Color(ColorToken::Slate700.to_color())),
+            border: Border {
+                color: Color::from_rgba(1.0, 1.0, 1.0, 0.15),
+                width: 1.0,
+                radius: 8.0.into(),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
 impl ScreensharingWindow {
     /// Sends the Stop command and drops the redraw thread handle (detach).
     pub fn stop_redraw_thread(&mut self) {
+        self.clear_effects();
         if self.redraw_thread.take().is_some() {
             if let Err(e) = self.redraw_tx.send(RedrawCommand::Stop) {
                 log::error!("ScreensharingWindow::stop_redraw_thread: failed to send Stop: {e:?}");
