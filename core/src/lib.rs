@@ -40,6 +40,7 @@ pub mod capture {
 }
 
 pub mod graphics {
+    pub(crate) mod effect_renderer;
     pub mod graphics_context;
     pub mod graphics_window_context;
     pub mod yuv_renderer;
@@ -2214,6 +2215,26 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     }
                 }
             }
+            UserEvent::EffectFromParticipant(effect, sender) => {
+                // A trigger queued behind CallEnd (or from a stale room) is dropped.
+                if !self.call_active() {
+                    return;
+                }
+                log::debug!("user_event: EffectFromParticipant: {} {sender}", effect.id);
+                // One effect at a time per surface: a trigger while busy is dropped.
+                if let Some(gfx) = self
+                    .window_manager
+                    .as_mut()
+                    .and_then(|wm| wm.active_gfx_mut())
+                {
+                    gfx.trigger_effect(effect);
+                }
+                if let Some(screensharing_window) = &mut self.screensharing_window {
+                    if screensharing_window.is_visible() {
+                        screensharing_window.trigger_effect(effect);
+                    }
+                }
+            }
             UserEvent::ListAudioDevices(request_id) => {
                 log::debug!("user_event: ListAudioDevices");
                 let devices = self.audio_capturer.list_sources();
@@ -2884,6 +2905,9 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                             ScreenShareInputEvent::DrawClearPaths(ids) => {
                                 rs.publish_draw_clear_paths(ids);
                             }
+                            ScreenShareInputEvent::PlayEffect { id } => {
+                                rs.publish_effect(id);
+                            }
                             ScreenShareInputEvent::ClickAnimation { x, y } => {
                                 rs.publish_click_animation(crate::room_service::ClientPoint {
                                     x,
@@ -3322,6 +3346,8 @@ pub enum UserEvent {
     DrawClearAllPaths(String),
     DrawText(room_service::DrawTextData, String),
     ClickAnimationFromParticipant(room_service::ClientPoint, String),
+    /// A validated screen effect trigger from another participant.
+    EffectFromParticipant(&'static effects::EffectDef, String),
     LocalDrawingEnabled(socket_lib::DrawingEnabled),
     SharerDrawPersistChanged(bool),
     ControllerDrawPersistChanged(bool),

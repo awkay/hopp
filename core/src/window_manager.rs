@@ -428,6 +428,7 @@ impl<'a> WindowManager<'a> {
                 .find(|entry| entry.monitor_id == active_id)
             {
                 entry.gfx.participants_manager_mut().clear();
+                entry.gfx.clear_effects();
                 #[cfg(target_os = "macos")]
                 {
                     // this is needed for the screensharing probing logic to work

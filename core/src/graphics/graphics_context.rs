@@ -4,6 +4,9 @@
 //! such as cursors and markers on top of shared screen content. It uses wgpu for
 //! hardware-accelerated rendering with proper alpha blending and transparent window support.
 
+use crate::effects::player::PlayOutcome;
+use crate::effects::EffectDef;
+use crate::graphics::effect_renderer::{EffectLayer, PixelRect};
 use crate::graphics::graphics_window_context::ContextManager;
 use crate::utils::clock::Clock;
 use crate::utils::geometry::Position;
@@ -157,6 +160,9 @@ pub struct GraphicsContext<'a> {
     surface_present_mode: wgpu::PresentMode,
 
     screen_selection: Option<SelectionOverlayState>,
+
+    /// Screen effect drawn over the shared content (see `effects`).
+    effects: EffectLayer,
 }
 
 impl<'a> GraphicsContext<'a> {
@@ -224,6 +230,12 @@ impl<'a> GraphicsContext<'a> {
         let device = context_manager.overlay_context.device.clone();
 
         let click_animation_renderer = ClickAnimationRenderer::new(clock.clone());
+        let effects = EffectLayer::new(
+            device.clone(),
+            context_manager.overlay_context.queue.clone(),
+            surface_format,
+            clock.clone(),
+        );
 
         let iced_renderer = IcedRenderer::new(context_manager, &window_arc);
 
@@ -245,6 +257,7 @@ impl<'a> GraphicsContext<'a> {
             surface_alpha_mode,
             surface_present_mode,
             screen_selection: None,
+            effects,
         })
     }
 
@@ -348,6 +361,55 @@ impl<'a> GraphicsContext<'a> {
         }
     }
 
+    /// Plays a screen effect centred on the shared content, unless one is already
+    /// playing (then the trigger is dropped). One `Activity` keeps the redraw
+    /// thread ticking for 15 s, longer than any effect (4 s cap).
+    pub fn trigger_effect(&mut self, effect: &'static EffectDef) -> PlayOutcome {
+        let outcome = self.effects.try_play(effect);
+        if outcome == PlayOutcome::Started {
+            self.trigger_render();
+        }
+        outcome
+    }
+
+    /// Stops the current effect and frees its memory (share stopped, call ended).
+    pub fn clear_effects(&mut self) {
+        self.effects.clear();
+    }
+
+    /// The shared content in overlay pixels: the translated (0,0)..(1,1) corners,
+    /// or the whole window when they do not map (window off-screen, selection mode).
+    fn effect_content_rect(
+        &self,
+        position_translator: &dyn Fn(Position) -> Position,
+        target_width: u32,
+        target_height: u32,
+    ) -> PixelRect {
+        let scale = self.window.scale_factor();
+        let top_left = position_translator(Position { x: 0.0, y: 0.0 });
+        let bottom_right = position_translator(Position { x: 1.0, y: 1.0 });
+        let whole = PixelRect {
+            x: 0.0,
+            y: 0.0,
+            width: target_width as f32,
+            height: target_height as f32,
+        };
+        let valid = |p: &Position| p.x.is_finite() && p.y.is_finite() && p.x >= 0.0 && p.y >= 0.0;
+        if !valid(&top_left) || !valid(&bottom_right) {
+            return whole;
+        }
+        let rect = PixelRect {
+            x: (top_left.x * scale) as f32,
+            y: (top_left.y * scale) as f32,
+            width: ((bottom_right.x - top_left.x) * scale) as f32,
+            height: ((bottom_right.y - top_left.y) * scale) as f32,
+        };
+        if rect.width < 32.0 || rect.height < 32.0 {
+            return whole;
+        }
+        rect
+    }
+
     /// Renders the current frame with all overlay elements.
     ///
     /// This method performs a complete render pass for the overlay, drawing all
@@ -394,6 +456,11 @@ impl<'a> GraphicsContext<'a> {
             screen_selection: self.screen_selection,
             window_focused,
         });
+
+        let (target_width, target_height) = (output.texture.width(), output.texture.height());
+        let content = self.effect_content_rect(position_translator, target_width, target_height);
+        self.effects
+            .render(&view, target_width, target_height, content, content);
 
         self.window.pre_present_notify();
 
