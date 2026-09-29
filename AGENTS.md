@@ -15,6 +15,9 @@ not a staging area for upstream `gethopp/hopp` PRs.
   conflicts in favor of our design is fine.
 - **Record divergence.** When a change alters upstream behavior or architecture, add a line to the
   "What differs from upstream" section of `DATAICO.md` so the next person knows it's intentional.
+- **Current fork-only work** (details in `DATAICO.md`): typing text while drawing, low-bandwidth mode,
+  screen effects (see "Screen effects" below; extend them via `core/resources/effects/effects.md`), the
+  ordered request-id IPC (see "IPC Architecture"), and the call-end CPU fix.
 
 ## Project Overview
 

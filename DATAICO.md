@@ -12,7 +12,7 @@ fork-only features (see below).
 | Bundle ID | `com.hopp.app` | `com.dataico.hopp` | separate identity, keychain, TCC grants, signing |
 | Auto-updater | checks `github.com/gethopp/hopp/releases/.../latest.json` | off | upstream updates would replace our build with the stock app |
 | Telemetry | Sentry / PostHog keys from CI | all empty | no data to upstream's accounts |
-| Features | upstream releases | fork `main`, which carries typing text while drawing (PR #306), low-bandwidth mode, and "drawing persists" as the default draw mode | available to us before an upstream release; low-bandwidth mode is fork-only |
+| Features | upstream releases | fork `main`, which carries typing text while drawing (PR #306), low-bandwidth mode, screen effects, "drawing persists" as the default draw mode, and the call-end CPU fix (core stops the screen picker, drawing redraw thread and late camera/share windows when a call ends) | available to us before an upstream release; low-bandwidth mode and screen effects are fork-only |
 | LiveKit Rust SDK | `gethopp/rust-sdks`, branch `hopp` | `awkay/rust-sdks`, branch `hopp-encoding-params` | adds `LocalVideoTrack::set_encoding_parameters`, which low-bandwidth mode needs |
 | Tauri ↔ core IPC | one `Mutex<AppData>` held across send + 10 s wait; replies matched by variant | `CoreClient`: one ordered non-blocking queue, request ids, pipelined async requests, call ids on call messages, `AppData` split into small locks/atomics, no locks or waits on the main thread (see `AGENTS.md` "Protocol rules") | fixes "Hopp is not responding" hangs/deadlocks, late call-end messages ending the next call, stale responses, preferred camera ignored |
 | Core restart (exit code 2) | swaps the socket, re-sends only the LiveKit URL | re-sends the full startup config (App Veil included), rebinds events, ends the call in the UI, backs off (max 3 per 10 min) | the old path silently dropped App Veil and other settings |
@@ -38,6 +38,16 @@ during a call asks for low bandwidth; the screen share then drops to 1080p / 15 
 without restarting, and cameras drop to their lowest quality. It stays on while anyone in the call
 asks for it. The turtle in the sidebar makes every call you join start with it requested. Everyone
 in the call needs this build: an older sharer ignores the request.
+
+**Screen effects** (client-only; no backend or LiveKit server changes). A viewer clicks the wand
+button in the screen-share window header and picks an effect. It plays centred over the shared
+screen, on the sharer's overlay and in every viewer's window, and is never part of the video. Only
+one plays at a time; triggers that arrive while one is playing are dropped. Effects are animated
+WebP files compiled into core and listed in `core/resources/effects/effects.toml`. **To add or change
+an effect, read `core/resources/effects/effects.md`**: manifest fields, size and length limits,
+export recipes, and what the build checks. A GPU error turns effects off in that window for the rest
+of the call instead of crashing core. Everyone needs this build to see effects; older clients log
+and ignore them.
 
 **How the updater is disabled:** with an empty endpoint list, the updater plugin's `check()`
 fails immediately with `EmptyEndpoints` before any network request. The frontend's only caller
@@ -126,7 +136,7 @@ packaging/dataico/build-macos.sh
 ```
 
 The packaging commit only adds files and rebases cleanly. The fork-only feature commits edit
-upstream files, so the rebase can stop with conflicts. Low-bandwidth mode's likely spots are
+upstream files, so the rebase can stop with conflicts. Likely spots are the IPC layer (`core/socket_lib/src/*`, `tauri/src-tauri/src/{lib,main,core_client}.rs`), screen effects (`core/src/window/screensharing_window.rs`, `core/src/graphics/graphics_context.rs`, `core/build.rs`), and for low-bandwidth mode
 `core/src/room_service.rs`, `core/src/lib.rs`, `core/socket_lib/src/lib.rs`,
 `tauri/src-tauri/src/main.rs`, `tauri/src/store/store.ts`,
 `tauri/src/components/ui/call-center.tsx` and `tauri/src/components/sidebar/Sidebar.tsx`.
