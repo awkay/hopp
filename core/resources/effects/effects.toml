@@ -1,0 +1,31 @@
+# Screen effects compiled into hopp_core. See effects.md in this directory for
+# every field, the caps, and how to add an effect. build.rs validates this file
+# and decodes every frame of every asset; any violation fails the build.
+#
+# Ids go on the wire: append-only, never rename or reuse one.
+
+schema = 1
+
+[[effect]]
+id = "thumbs_up"
+label = "Thumbs up"
+file = "thumbs_up.webp"
+loops = 1
+height_fraction = 0.25
+order = 10
+
+[[effect]]
+id = "star_bounce"
+label = "Bouncing star"
+file = "star_bounce.webp"
+loops = 1
+height_fraction = 0.5
+order = 20
+
+[[effect]]
+id = "confetti"
+label = "Confetti"
+file = "confetti.webp"
+loops = 2
+height_fraction = 0.66
+order = 30

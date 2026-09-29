@@ -67,7 +67,7 @@ wgpu = "27.0.1"
 pollster = "0.3.0"
 bytemuck = { version = "1.16", features = [ "derive" ] }
 cgmath = "0.18"
-image = { version = "0.25.5", features = ["png", "jpeg"] }
+image = { version = "0.25.5", features = ["png", "jpeg", "webp"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 raw-window-handle = "0.6.2"
@@ -98,3 +98,13 @@ tract-onnx = "=0.21.4"
 tract-core = "=0.21.4"
 realfft = "3.4"
 rustfft = "6.2"
+
+[build-dependencies]
+# Screen effects: build.rs parses resources/effects/effects.toml and decodes every
+# frame with the same shared validator the crate uses (src/effects/manifest.rs).
+serde = { version = "1.0", features = ["derive"] }
+toml = "1"
+image = { version = "0.25.5", default-features = false, features = ["webp"] }
+
+[dev-dependencies]
+toml = "1"
