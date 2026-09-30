@@ -36,7 +36,7 @@ schema = 1
 id = "thumbs_up"          # required
 label = "Thumbs up"       # required
 file = "thumbs_up.webp"   # required
-loops = 1                 # optional, default 1
+loops = 4                 # optional, default 4
 height_fraction = 0.25    # optional, default 0.33
 order = 10                # optional, default 0
 thumbnail_frame = 7       # optional, default: the most opaque frame
@@ -61,7 +61,7 @@ with the wrong type also fails the build, for example `loops = "infinite"`.
 | `id` | string | `^[a-z0-9_]{1,32}$`, unique | required | The identifier sent over the network. **Append-only: never rename or reuse an id.** Clients running an older or newer build look effects up by id, and they silently drop ids they don't have. |
 | `label` | string | 1 to 24 characters, not blank | required | The tooltip in the picker. It stays on this machine and is never sent. |
 | `file` | string | a bare file name in this directory ending in `.webp`; no `/`, `\`, `..` or leading `.` | required | The asset. It must exist. |
-| `loops` | integer | 1 to 3 | `1` | How many times the frames play. The WebP file's own loop count is ignored. There is no "infinite". |
+| `loops` | integer | 1 to 16 | `4` | How many times the frames play. The WebP file's own loop count is ignored. There is no "infinite". Every bundled effect plays at least 4 times; give very short clips more loops so they stay on screen for about 3 s. |
 | `height_fraction` | float | 0.05 to 0.66 | `0.33` | The height of the effect on screen, as a fraction of the height of the shared screen (or of the shared window). The width follows from the asset's aspect ratio. |
 | `order` | integer | any `i32` | `0` | The position in the picker, sorted ascending. Effects with the same value keep their manifest order. |
 | `thumbnail_frame` | integer | 0 to (frame count - 1) | the frame with the most opaque pixels | The frame the picker thumbnail is made from (see [Picker thumbnail](#picker-thumbnail)). Ignored when `icon` is set. |
@@ -91,8 +91,8 @@ The build enforces all of these limits. They are defined as constants in
 | Frames | at most **72** stored frames | This bounds decode work. It is plenty for about 3 s at 24 fps. Hold frames (see below) instead of duplicating them. |
 | Per-frame delay | **20 to 1000 ms** | Delays of 0 to 10 ms mean different things in different decoders; browsers clamp them to about 100 ms. Anything under 20 ms is faster than a redraw, so those frames would never be seen. The build rejects such delays rather than clamping them. Longer holds are fine up to 1 s. Chain frames if you need more. |
 | One loop | at most **3000 ms** | Effects are reactions, not videos. |
-| `loops` | **1 to 3** | There is no infinite loop. An effect must end without anyone acting. |
-| Total play time | `loops` × loop duration at most **4000 ms** | One effect blocks all others while it plays, so a long one blocks everyone else's reactions. |
+| `loops` | **1 to 16** | There is no infinite loop. An effect must end without anyone acting. 16 lets a 200 ms clip stay on screen for about 3 s. |
+| Total play time | `loops` × loop duration at most **12000 ms** | One effect blocks all others while it plays, so a long one blocks everyone else's reactions. 12 s fits a 3 s loop played 4 times. |
 | File size | at most **3 MB** per file | These bytes are compiled into the binary and stay resident. |
 | All files | at most **24 MB** total | This keeps the binary and resident size bounded. |
 | Effects | at most **24** | The picker must stay a small grid. |
@@ -204,7 +204,7 @@ tests for every rule. For `effects.toml` and each entry it checks:
 
 1. **Parsing.** The TOML must be valid, with no unknown fields and the correct types.
 2. **The manifest.** `schema` must be 1, and there must be at most 24 effects.
-3. **Each entry's fields.** The `id` charset, length and uniqueness; the `label` length; `loops` from 1 to 3; `height_fraction` from 0.05 to 0.66; and a bare `.webp` `file` name.
+3. **Each entry's fields.** The `id` charset, length and uniqueness; the `label` length; `loops` from 1 to 16; `height_fraction` from 0.05 to 0.66; and a bare `.webp` `file` name.
 4. **The file itself.**
    - It must exist and be at most 3 MB.
    - It must have the RIFF/WEBP magic bytes.
@@ -214,7 +214,7 @@ tests for every rule. For `effects.toml` and each entry it checks:
    - There must be at most 72 frames.
    - Each delay must be from 20 to 1000 ms.
    - One loop must last at most 3000 ms.
-   - `loops` × loop must be at most 4000 ms.
+   - `loops` × loop must be at most 12000 ms.
    - `thumbnail_frame` must be within range.
 6. **The picker thumbnail.** An `icon` must exist and pass the PNG rules above. The final thumbnail (from `icon`, or the cropped frame) must pass the 5% coverage check.
 7. **All files together.** They must add up to at most 24 MB.
@@ -225,7 +225,7 @@ The build reports every error at once, not only the first. For example:
 Invalid screen effects in .../core/resources/effects/effects.toml (3 error(s)):
   - effect star_bounce: height_fraction: 0.8 is out of range; must be 0.05..=0.66
   - effect #2: id: "Confetti!" must match ^[a-z0-9_]{1,32}$
-  - effect #2: loops: 4 is out of range; must be 1..=3
+  - effect #2: loops: 17 is out of range; must be 1..=16
 See core/resources/effects/effects.md for the rules.
 ```
 
@@ -246,7 +246,7 @@ Asset errors look like these:
 - `effect wave: canvas: "wave.webp": 1290x40 exceeds the 1280x720 maximum`
 - `effect wave: frame delay: frame 1 lasts 10 ms; must be 20..=1000 ms`
 - `effect wave: file: "wave.webp": has no alpha channel; effects must be transparent`
-- `effect wave: loops: 3 loops of 1500 ms play 4500 ms; must be at most 4000 ms`
+- `effect wave: loops: 9 loops of 1500 ms play 13500 ms; must be at most 12000 ms`
 
 On success, the build generates `$OUT_DIR/effects_gen.rs`. That file holds the
 `EFFECTS` table (id, label, loops, height_fraction, canvas size, the per-frame

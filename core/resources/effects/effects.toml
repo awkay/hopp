@@ -3,6 +3,9 @@
 # and decodes every frame of every asset; any violation fails the build.
 #
 # Ids go on the wire: append-only, never rename or reuse one.
+#
+# Every effect plays at least 4 times; very short clips loop more so they stay
+# on screen for about 3 s.
 
 schema = 1
 
@@ -10,7 +13,7 @@ schema = 1
 id = "thumbs_up"
 label = "Thumbs up"
 file = "thumbs_up.webp"
-loops = 1
+loops = 4
 height_fraction = 0.25
 order = 10
 
@@ -18,7 +21,7 @@ order = 10
 id = "star_bounce"
 label = "Bouncing star"
 file = "star_bounce.webp"
-loops = 1
+loops = 4
 height_fraction = 0.5
 order = 20
 
@@ -28,6 +31,68 @@ label = "Confetti"
 file = "confetti.webp"
 # Scattered small pieces make an empty generated thumbnail; use a drawn icon.
 icon = "confetti_icon.png"
-loops = 2
+loops = 4
 height_fraction = 0.66
 order = 30
+
+[[effect]]
+id = "hello"
+label = "Hello"
+file = "hello.webp"
+# 280 ms clip.
+loops = 11
+height_fraction = 0.33
+order = 40
+
+[[effect]]
+id = "ship_it"
+label = "Ship it"
+file = "ship_it.webp"
+# 400 ms clip.
+loops = 8
+height_fraction = 0.33
+order = 50
+
+[[effect]]
+id = "this_is_fine"
+label = "This is fine"
+file = "this_is_fine.webp"
+loops = 4
+height_fraction = 0.33
+order = 60
+
+[[effect]]
+id = "jerry"
+label = "Jerry"
+file = "jerry.webp"
+loops = 4
+height_fraction = 0.33
+order = 70
+
+[[effect]]
+id = "raccoon"
+label = "Raccoon"
+file = "raccoon.webp"
+# 200 ms clip.
+loops = 15
+height_fraction = 0.33
+order = 80
+
+[[effect]]
+id = "indiana"
+label = "Indiana"
+file = "indiana.webp"
+# 400 ms clip.
+loops = 8
+height_fraction = 0.33
+order = 90
+
+[[effect]]
+id = "panda_flip"
+label = "Panda flip"
+file = "panda_flip.webp"
+# Frame delays scaled by 0.49 from the original (6.1 s per play) to fit the
+# 3 s per-play cap.
+loops = 4
+height_fraction = 0.33
+order = 100
