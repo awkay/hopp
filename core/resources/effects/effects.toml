@@ -96,3 +96,11 @@ file = "panda_flip.webp"
 loops = 4
 height_fraction = 0.33
 order = 100
+
+[[effect]]
+id = "hop"
+label = "Hop"
+file = "hop.webp"
+loops = 4
+height_fraction = 0.33
+order = 110
