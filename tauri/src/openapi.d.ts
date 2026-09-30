@@ -1865,6 +1865,100 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/auth/teammates/{userId}/admin": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    /**
+     * Grant or revoke admin rights for a teammate
+     * @description Caller must be an admin of the target's team. A team always keeps at least one admin, so revoking admin from the last remaining admin (including yourself) is refused. Admins may demote themselves when another admin exists.
+     */
+    put: {
+      parameters: {
+        query?: never;
+        header?: never;
+        path: {
+          /** @description UUID of the teammate whose admin rights change */
+          userId: string;
+        };
+        cookie?: never;
+      };
+      requestBody: {
+        content: {
+          "application/json": {
+            /** @description true to grant admin, false to revoke it */
+            is_admin: boolean;
+          };
+        };
+      };
+      responses: {
+        /** @description Admin rights updated; returns the updated teammate */
+        200: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["BaseUser"];
+          };
+        };
+        /** @description Bad request - missing is_admin, or would remove the team's last admin */
+        400: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Unauthorized */
+        401: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Forbidden - caller is not an admin or target user is not in your team */
+        403: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description User not found */
+        404: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+        /** @description Internal server error */
+        500: {
+          headers: {
+            [name: string]: unknown;
+          };
+          content: {
+            "application/json": components["schemas"]["Error"];
+          };
+        };
+      };
+    };
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/auth/billing/subscription": {
     parameters: {
       query?: never;

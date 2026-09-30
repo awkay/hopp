@@ -4,6 +4,7 @@ import { HoppAvatar } from "@/components/ui/hopp-avatar";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "react-hot-toast";
 import { RemoveTeammateDialog } from "@/components/RemoveTeammateDialog";
+import { TeammateAdminDialog } from "@/components/TeammateAdminDialog";
 
 export function Teammates() {
   const { useQuery, useMutation } = useAPI();
@@ -34,6 +35,22 @@ export function Teammates() {
     }
   };
 
+  const setAdminMutation = useMutation("put", "/api/auth/teammates/{userId}/admin");
+
+  const handleSetAdmin = async (teammateId: string, isAdmin: boolean) => {
+    try {
+      await setAdminMutation.mutateAsync({
+        params: { path: { userId: teammateId } },
+        body: { is_admin: isAdmin },
+      });
+      await refetchTeammates();
+      toast.success(isAdmin ? "Admin rights granted" : "Admin rights removed");
+    } catch (error) {
+      console.error("Failed to update admin rights:", error);
+      toast.error("Failed to update admin rights");
+    }
+  };
+
   // Combine current user with teammates
   const allMembers = user ? [user, ...(teammates || [])] : teammates || [];
 
@@ -60,11 +77,18 @@ export function Teammates() {
             <div className="flex items-center gap-2">
               {member.is_admin && <Badge variant="secondary">Admin</Badge>}
               {member.id !== user?.id && user?.is_admin && (
-                <RemoveTeammateDialog
-                  teammate={member}
-                  onRemove={handleRemoveTeammate}
-                  isPending={removeTeammateMutation.isPending}
-                />
+                <>
+                  <TeammateAdminDialog
+                    teammate={member}
+                    onSetAdmin={handleSetAdmin}
+                    isPending={setAdminMutation.isPending}
+                  />
+                  <RemoveTeammateDialog
+                    teammate={member}
+                    onRemove={handleRemoveTeammate}
+                    isPending={removeTeammateMutation.isPending}
+                  />
+                </>
               )}
             </div>
           </div>

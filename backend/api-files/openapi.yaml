@@ -1373,6 +1373,70 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/auth/teammates/{userId}/admin:
+    put:
+      summary: Grant or revoke admin rights for a teammate
+      description: Caller must be an admin of the target's team. A team always keeps at least one admin, so revoking admin from the last remaining admin (including yourself) is refused. Admins may demote themselves when another admin exists.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: UUID of the teammate whose admin rights change
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - is_admin
+              properties:
+                is_admin:
+                  type: boolean
+                  description: true to grant admin, false to revoke it
+      responses:
+        "200":
+          description: Admin rights updated; returns the updated teammate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BaseUser"
+        "400":
+          description: Bad request - missing is_admin, or would remove the team's last admin
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Forbidden - caller is not an admin or target user is not in your team
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
   /api/auth/billing/subscription:
     get:
       summary: Get current subscription status
