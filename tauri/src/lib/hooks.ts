@@ -223,7 +223,7 @@ export function useJoinCall() {
         });
 
         try {
-          await tauriUtils.callStarted(tokens.audioToken, tokens.videoToken);
+          await tauriUtils.callStarted(tokens.audioToken, tokens.videoToken, "join-call");
         } catch (error) {
           // Only act if this is still the call on screen: a late failure of an earlier
           // start must not end the call the user is in now.

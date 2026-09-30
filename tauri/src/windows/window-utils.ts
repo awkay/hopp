@@ -216,7 +216,8 @@ export class CallStartError extends Error {
   }
 }
 
-const callStarted = async (audioToken: string, videoToken: string): Promise<number> => {
+/** `source` names the UI path starting the call; core logs it to trace duplicate starts. */
+const callStarted = async (audioToken: string, videoToken: string, source: string): Promise<number> => {
   if (!useStore.getState().callTokens) {
     // The call was ended before it could start; don't start one in core with no UI.
     throw new Error("No call to start");
@@ -224,7 +225,7 @@ const callStarted = async (audioToken: string, videoToken: string): Promise<numb
   const callId = newCallId();
   useStore.getState().updateCallTokens({ callId });
   try {
-    await invoke("call_started", { callId, audioToken, videoToken });
+    await invoke("call_started", { callId, audioToken, videoToken, source });
     return callId;
   } catch (error) {
     resetCoreProcess(callId).catch((e) => console.error("Failed to end call after start failure:", e));

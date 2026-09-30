@@ -215,7 +215,7 @@ export interface CommandMap {
   set_sentry_metadata: { args: { userId: string; appVersion: string }; return: void };
 
   // Call
-  call_started: { args: { callId: number; audioToken: string; videoToken: string }; return: void };
+  call_started: { args: { callId: number; audioToken: string; videoToken: string; source?: string }; return: void };
   toggle_call_sleep_prevention: { args: { enabled: boolean }; return: void };
 
   // Server

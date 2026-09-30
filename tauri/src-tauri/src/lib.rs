@@ -510,7 +510,11 @@ pub fn get_log_level() -> LevelFilter {
     let level_value = env::var("LOG_LEVEL").unwrap_or_else(|_| level.to_string());
     env::set_var(
         "RUST_LOG",
-        format!("hopp_core={level_value},sentry_utils={level_value},socket_lib={level_value}"),
+        // livekit/livekit_api at warn surface signal connect retries, reconnects and join
+        // failures, which are otherwise invisible when a call can't connect.
+        format!(
+            "hopp_core={level_value},sentry_utils={level_value},socket_lib={level_value},livekit=warn,livekit_api=warn"
+        ),
     );
     level
 }

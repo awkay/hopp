@@ -84,7 +84,11 @@ export const CallBanner = ({ callerId, toastId }: { callerId: string; toastId: s
                 micLevel: 0,
               });
               try {
-                await tauriUtils.callStarted(data.payload.audioToken, data.payload.videoToken);
+                await tauriUtils.callStarted(
+                  data.payload.audioToken,
+                  data.payload.videoToken,
+                  "incoming-call-accepted",
+                );
               } catch (error) {
                 tauriUtils.clearFailedCall(error);
               }

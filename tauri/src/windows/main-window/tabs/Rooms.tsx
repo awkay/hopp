@@ -310,7 +310,7 @@ export const Rooms = () => {
         });
 
         try {
-          await tauriUtils.callStarted(tokens.audioToken, tokens.videoToken);
+          await tauriUtils.callStarted(tokens.audioToken, tokens.videoToken, "rooms-tab-join");
         } catch (error) {
           if (tauriUtils.clearFailedCall(error)) toast.error("Failed to start call");
           return;
