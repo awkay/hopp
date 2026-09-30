@@ -228,7 +228,8 @@ ENTITLEMENTS="$REPO_ROOT/tauri/src-tauri/entitlements.plist"
 log "Step 4/4: signing and verification"
 
 sig_field() { codesign -dv --verbose=4 "$1" 2>&1 | awk -F= -v k="$2" '$1==k {print substr($0, length(k)+2); exit}'; }
-has_runtime() { codesign -dv --verbose=4 "$1" 2>&1 | grep -Eq '^CodeDirectory .*flags=0x[0-9a-f]*\(.*runtime'; }
+# Capture first: `grep -q` exits on the first match, codesign then dies of SIGPIPE and pipefail fails the check.
+has_runtime() { local info; info="$(codesign -dv --verbose=4 "$1" 2>&1)"; grep -Eq '^CodeDirectory .*flags=0x[0-9a-f]*\(.*runtime' <<<"$info"; }
 authority() { codesign -dv --verbose=4 "$1" 2>&1 | awk -F= '$1=="Authority" {print $2; exit}'; }
 
 notarize_and_staple() {
