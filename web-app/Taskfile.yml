@@ -22,7 +22,7 @@ tasks:
         # Start watching the entire assets directory
         fswatch -o ./static/react/assets 2>/dev/null | while read f; do
             echo "📝 Changes detected in web app, copying to backend..."
-            cp -f "./static/react/assets/index.html" ../backend/web/web-app.html
+            ./scripts/inject-to-backend.sh
             echo "✓ Copied web app to backend"
         done
 
@@ -38,4 +38,4 @@ tasks:
     vars:
       SUFFIX: '{{.SUFFIX| default ""}}'
     cmds:
-      - cp -r ./static/react/assets/index.html ../backend/web/web-app{{.SUFFIX}}.html
+      - ./scripts/inject-to-backend.sh "{{.SUFFIX}}"
