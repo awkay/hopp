@@ -501,8 +501,12 @@ async fn call_started(
     call_id: CallId,
     audio_token: String,
     video_token: String,
+    source: Option<String>,
 ) -> Result<(), String> {
-    log::info!("call_started: call_id={call_id}");
+    log::info!(
+        "call_started: call_id={call_id} source={}",
+        source.as_deref().unwrap_or("unknown")
+    );
     call_state::begin_call(&app, call_id);
     let data = app.state::<AppData>();
     let (user_settings, last_used_mic) = {

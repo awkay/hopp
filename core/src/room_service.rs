@@ -43,6 +43,12 @@ const TOPIC_BANDWIDTH_MODE: &str = "bandwidth_mode";
 const CAMERA_TRACK_NAME: &str = "camera";
 const CAMERA_MAX_BITRATE: u64 = 1_700_000;
 const CAMERA_MAX_FRAMERATE: f64 = 30.0;
+/// Per-attempt LiveKit signal connect timeout (websocket + TLS). The SDK default is 5s,
+/// which a 3G link can't meet: every attempt timed out mid-handshake and retried forever.
+const SIGNAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+/// Upper bound on connecting a room and publishing its initial tracks. Leaves room for
+/// the SDK's join retries at `SIGNAL_CONNECT_TIMEOUT` on a slow link.
+const ROOM_SETUP_TIMEOUT: Duration = Duration::from_secs(90);
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
 pub struct NormalizedRect {
@@ -156,9 +162,10 @@ pub(crate) struct ConnectGate {
 }
 
 impl ConnectGate {
-    /// New connect attempt; returns its generation.
+    /// New connect attempt; returns its generation. Supersedes and cancels any in-flight
+    /// connect, so a stale call can't hold the command loop until it times out.
     pub(crate) fn begin(&mut self) -> u64 {
-        self.generation += 1;
+        self.invalidate();
         self.generation
     }
 
@@ -1110,21 +1117,42 @@ async fn room_service_commands(
                 inner.clear().await;
                 log::info!("room_service_commands: Cleared previous room state");
 
-                log::info!("room_service_commands: Connecting to room and video room in parallel");
+                log::info!(
+                    "room_service_commands: Connecting to room and video room in parallel (url={livekit_server_url}, signal_timeout={}s, setup_timeout={}s)",
+                    SIGNAL_CONNECT_TIMEOUT.as_secs(),
+                    ROOM_SETUP_TIMEOUT.as_secs()
+                );
                 let url = livekit_server_url.clone();
                 let connect_start = Instant::now();
                 let inner_clone = inner.clone();
 
-                let connect_fut = tokio::time::timeout(Duration::from_secs(30), async {
+                let connect_fut = tokio::time::timeout(ROOM_SETUP_TIMEOUT, async {
                     let mut room_options = RoomOptions::default();
                     room_options.dynacast = true;
-                    let (room, rx) = Room::connect(&url, &token, room_options)
-                        .await
-                        .map_err(|e| format!("{e:?}"))?;
+                    room_options.connect_timeout = SIGNAL_CONNECT_TIMEOUT;
+                    let phase_start = Instant::now();
+                    let (room, rx) =
+                        Room::connect(&url, &token, room_options)
+                            .await
+                            .map_err(|e| {
+                                log::error!(
+                                    "room_service_commands: Room::connect failed after {}ms: {e:?}",
+                                    phase_start.elapsed().as_millis()
+                                );
+                                format!("{e:?}")
+                            })?;
+                    log::info!(
+                        "room_service_commands: Room::connect (signal + ICE) took {}ms",
+                        phase_start.elapsed().as_millis()
+                    );
+                    let phase_start = Instant::now();
                     let denoiser =
                         match crate::audio::denoiser::Denoiser::new(noise_cancellation_enabled) {
                             Ok(d) => {
-                                log::info!("DTLN denoiser initialized (tract)");
+                                log::info!(
+                                    "DTLN denoiser initialized (tract) in {}ms",
+                                    phase_start.elapsed().as_millis()
+                                );
                                 Some(d)
                             }
                             Err(e) => {
@@ -1161,6 +1189,7 @@ async fn room_service_commands(
                         RtcVideoSource::Native(camera_source.clone()),
                     );
                     camera_track.mute();
+                    let phase_start = Instant::now();
                     let camera_result = room
                         .local_participant()
                         .publish_track(
@@ -1178,8 +1207,15 @@ async fn room_service_commands(
                         )
                         .await;
                     if let Err(e) = camera_result {
-                        log::error!("room_service_commands: Failed to publish camera track: {e:?}");
+                        log::error!(
+                            "room_service_commands: Failed to publish camera track after {}ms: {e:?}",
+                            phase_start.elapsed().as_millis()
+                        );
                     } else {
+                        log::info!(
+                            "room_service_commands: Camera track published in {}ms",
+                            phase_start.elapsed().as_millis()
+                        );
                         *inner_clone.camera_buffer_source.lock().unwrap() = Some(camera_source);
                         *inner_clone.camera_track.lock().unwrap() = Some(camera_track);
                     }
@@ -1196,13 +1232,29 @@ async fn room_service_commands(
                 //     .await
                 // };
                 let inner_clone_video = inner.clone();
-                let video_connect_fut = tokio::time::timeout(Duration::from_secs(30), async {
+                let video_connect_fut = tokio::time::timeout(ROOM_SETUP_TIMEOUT, async {
                     let mut video_room_options = RoomOptions::default();
                     video_room_options.auto_subscribe = false;
-                    let (video_room, video_rx) =
-                        Room::connect(&url, &video_token, video_room_options)
-                            .await
-                            .map_err(|e| format!("{e:?}"))?;
+                    video_room_options.connect_timeout = SIGNAL_CONNECT_TIMEOUT;
+                    let phase_start = Instant::now();
+                    let (video_room, video_rx) = Room::connect(
+                        &url,
+                        &video_token,
+                        video_room_options,
+                    )
+                    .await
+                    .map_err(|e| {
+                        log::error!(
+                            "room_service_commands: video Room::connect failed after {}ms: {e:?}",
+                            phase_start.elapsed().as_millis()
+                        );
+                        format!("{e:?}")
+                    })?;
+                    log::info!(
+                        "room_service_commands: video Room::connect (signal + ICE) took {}ms",
+                        phase_start.elapsed().as_millis()
+                    );
+                    let phase_start = Instant::now();
 
                     // Publish screen share track (muted) — non-fatal
                     let screen_source = NativeVideoSource::new(
@@ -1241,9 +1293,14 @@ async fn room_service_commands(
                         .await;
                     if let Err(e) = screen_result {
                         log::error!(
-                            "room_service_commands: Failed to publish screen share track: {e:?}"
+                            "room_service_commands: Failed to publish screen share track after {}ms: {e:?}",
+                            phase_start.elapsed().as_millis()
                         );
                     } else {
+                        log::info!(
+                            "room_service_commands: Screen share track published in {}ms",
+                            phase_start.elapsed().as_millis()
+                        );
                         *inner_clone_video.buffer_source.lock().unwrap() = Some(screen_source);
                         *inner_clone_video.screen_share_track.lock().unwrap() = Some(screen_track);
                     }
@@ -2626,7 +2683,18 @@ async fn update_camera_quality(inner: &RoomServiceInner) {
 }
 
 async fn drain_video_room_events(mut receiver: mpsc::UnboundedReceiver<RoomEvent>) {
-    while receiver.recv().await.is_some() {}
+    while let Some(event) = receiver.recv().await {
+        match event {
+            RoomEvent::Reconnecting => {
+                log::warn!("drain_video_room_events: video room connection lost, reconnecting")
+            }
+            RoomEvent::Reconnected => log::info!("drain_video_room_events: video room reconnected"),
+            RoomEvent::Disconnected { reason } => {
+                log::warn!("drain_video_room_events: video room disconnected: {reason:?}")
+            }
+            _ => {}
+        }
+    }
     log::info!("drain_video_room_events: video_room event channel closed");
 }
 
@@ -3459,7 +3527,14 @@ async fn handle_room_events(ctx: RoomEventContext) {
                 log::info!("Connection quality changed: {:?}", quality);
                 *connection_quality.lock().unwrap() = Some(quality);
             }
+            RoomEvent::Reconnecting => {
+                log::warn!("handle_room_events: connection lost, reconnecting");
+            }
+            RoomEvent::Disconnected { reason } => {
+                log::warn!("handle_room_events: disconnected: {reason:?}");
+            }
             RoomEvent::Reconnected => {
+                log::info!("handle_room_events: reconnected");
                 let _ = service_command_tx
                     .send(RoomServiceCommand::PublishAppVeilSnapshot { force: true });
             }
@@ -3499,6 +3574,21 @@ mod connect_gate_tests {
             Err(oneshot::error::TryRecvError::Closed)
         ));
         assert!(!gate.is_current(generation));
+    }
+
+    #[test]
+    fn newer_create_room_cancels_an_armed_connect() {
+        let mut gate = ConnectGate::default();
+        let first = gate.begin();
+        let (tx, mut rx) = oneshot::channel::<()>();
+        assert!(gate.arm(first, vec![tx]));
+        let second = gate.begin();
+        assert!(matches!(
+            rx.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        ));
+        assert!(!gate.is_current(first));
+        assert!(gate.arm(second, vec![]));
     }
 
     #[test]
