@@ -1,22 +1,24 @@
-name: Publish Backend Docker Image
+name: Publish Dataico Backend Image
+
+# Builds the backend image (with the web app injected) for our self-hosted server and
+# pushes it to ghcr.io/<owner>/hopp-backend. arm64 only: the host is Graviton (c7g).
+# Deploy by setting hoppImage in the infra repo (lib/config.ts) to the printed tag.
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
-    inputs:
-      tag:
-        description: "Docker image tag (e.g., v0.0.33)"
-        required: true
-        type: string
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "web-app/**"
+      - ".github/workflows/publish-dataico-backend.yml"
 
 jobs:
   publish:
     runs-on: ubuntu-latest
-    environment: Backend image
     permissions:
       contents: read
+      packages: write
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -43,22 +45,20 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Log in to Docker Hub
+      - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Determine image tags
         id: tags
         run: |
-          if [[ -n "${{ github.event.inputs.tag }}" ]]; then
-            TAG="${{ github.event.inputs.tag }}"
-          else
-            TAG="${GITHUB_REF#refs/tags/}"
-          fi
-          echo "version=$TAG" >> "$GITHUB_OUTPUT"
-          echo "tags=iparaskev/hopp-backend:${TAG},iparaskev/hopp-backend:latest" >> "$GITHUB_OUTPUT"
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/hopp-backend"
+          TAG="dataico-${GITHUB_SHA::7}"
+          echo "tags=${IMAGE}:${TAG},${IMAGE}:dataico-latest" >> "$GITHUB_OUTPUT"
+          echo "Image: ${IMAGE}:${TAG}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -66,6 +66,6 @@ jobs:
           context: backend
           push: true
           tags: ${{ steps.tags.outputs.tags }}
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
