@@ -1251,6 +1251,22 @@ impl ScreensharingWindow {
         prev.last_click_count + 1
     }
 
+    /// Records a button press at the cursor and returns its multi-click count.
+    fn register_mouse_press(&mut self, button: u32) -> u32 {
+        // Logical pixel positions (same approach as Chromium).
+        let (x, y) = match &self.cursor {
+            mouse::Cursor::Available(pos) => (pos.x, pos.y),
+            _ => (0.0, 0.0),
+        };
+        let clicks = self.get_mouse_click_count(x, y, button);
+        self.state.last_click_count = clicks;
+        self.state.last_click_button = button;
+        self.state.last_click_time = StdInstant::now();
+        self.state.last_click_x = x;
+        self.state.last_click_y = y;
+        clicks
+    }
+
     /// Update window cursor based on active tab, mouse position, and local control ownership.
     ///
     /// - Outside participant area → always the OS default cursor.
@@ -1457,6 +1473,16 @@ impl ScreensharingWindow {
                     if self.state.active_tab == "draw" {
                         match button {
                             winit::event::MouseButton::Left => {
+                                // A double-click also plays the point tab's click animation.
+                                if down && self.register_mouse_press(0) == 2 {
+                                    self.click_animation_renderer.enable_click_animation(
+                                        crate::utils::geometry::Position { x: pct_x, y: pct_y },
+                                    );
+                                    input_events.push(ScreenShareInputEvent::ClickAnimation {
+                                        x: pct_x,
+                                        y: pct_y,
+                                    });
+                                }
                                 if down && self.state.text_input.is_pending() {
                                     // Clicking places pending text instead of starting a stroke.
                                     let update = self.state.text_input.commit();
@@ -1518,24 +1544,8 @@ impl ScreensharingWindow {
                             winit::event::MouseButton::Other(n) => *n as u32,
                         };
 
-                        // Compute multi-click count on press using logical
-                        // pixel positions (same approach as Chromium).
-                        let logical_x = match &self.cursor {
-                            mouse::Cursor::Available(pos) => pos.x,
-                            _ => 0.0,
-                        };
-                        let logical_y = match &self.cursor {
-                            mouse::Cursor::Available(pos) => pos.y,
-                            _ => 0.0,
-                        };
                         let clicks = if down {
-                            let c = self.get_mouse_click_count(logical_x, logical_y, button_num);
-                            self.state.last_click_count = c;
-                            self.state.last_click_button = button_num;
-                            self.state.last_click_time = StdInstant::now();
-                            self.state.last_click_x = logical_x;
-                            self.state.last_click_y = logical_y;
-                            c
+                            self.register_mouse_press(button_num)
                         } else {
                             self.state.last_click_count
                         };
