@@ -412,6 +412,7 @@ func (s *Server) setupRoutes() {
 	protectedAPI.PATCH("/team", auth.UpdateTeam)
 	protectedAPI.GET("/teammates", auth.Teammates)
 	protectedAPI.DELETE("/teammates/:userId", auth.RemoveTeammate)
+	protectedAPI.PUT("/teammates/:userId/admin", auth.SetTeammateAdmin)
 
 	protectedAPI.GET("/websocket", handlers.CreateWSHandler(&s.ServerState))
 	protectedAPI.GET("/get-invite-uuid", auth.GetInviteUUID)

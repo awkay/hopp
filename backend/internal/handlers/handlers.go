@@ -1457,6 +1457,105 @@ func (h *AuthHandler) RemoveTeammate(c echo.Context) error {
 	return c.NoContent(http.StatusNoContent)
 }
 
+// SetTeammateAdmin grants or revokes admin rights for a member of the caller's
+// team (fork feature). The caller must be an admin. A team always keeps at least
+// one admin: revoking the last one (including yourself) is refused with 400.
+func (h *AuthHandler) SetTeammateAdmin(c echo.Context) error {
+	user, isAuthenticated := h.getAuthenticatedUserFromJWT(c)
+	if !isAuthenticated {
+		return c.String(http.StatusUnauthorized, "Unauthorized request")
+	}
+
+	if user.TeamID == nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "User is not part of any team")
+	}
+
+	teammateID := c.Param("userId")
+	if teammateID == "" {
+		return echo.NewHTTPError(http.StatusBadRequest, "userId is required")
+	}
+
+	var req struct {
+		IsAdmin *bool `json:"is_admin"`
+	}
+	if err := c.Bind(&req); err != nil || req.IsAdmin == nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "is_admin (boolean) is required")
+	}
+	makeAdmin := *req.IsAdmin
+
+	if !user.IsAdmin {
+		return echo.NewHTTPError(http.StatusForbidden, "admin required")
+	}
+
+	var teammate models.User
+	if err := h.DB.Select("id, team_id, is_admin").Where("id = ?", teammateID).First(&teammate).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return echo.NewHTTPError(http.StatusNotFound, "user not found")
+		}
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to load user")
+	}
+
+	if !sameTeam(user.TeamID, teammate.TeamID) {
+		return echo.NewHTTPError(http.StatusForbidden, "user not in your team")
+	}
+
+	errLastAdmin := errors.New("last admin")
+	errNotAdmin := errors.New("not admin")
+	if err := h.DB.Transaction(func(tx *gorm.DB) error {
+		// Serialize admin changes per team so two admins demoting each other
+		// concurrently cannot leave the team with none. SQLite (tests) already
+		// serializes writers and has no FOR UPDATE.
+		if tx.Dialector.Name() == "postgres" {
+			if err := tx.Exec("SELECT id FROM teams WHERE id = ? FOR UPDATE", *user.TeamID).Error; err != nil {
+				return err
+			}
+		}
+
+		// Re-check under the lock: the caller may have just been demoted.
+		var callerIsAdmin bool
+		if err := tx.Model(&models.User{}).Where("id = ? AND team_id = ?", user.ID, *user.TeamID).
+			Select("is_admin").Scan(&callerIsAdmin).Error; err != nil {
+			return err
+		}
+		if !callerIsAdmin {
+			return errNotAdmin
+		}
+
+		if !makeAdmin {
+			var otherAdmins int64
+			if err := tx.Model(&models.User{}).
+				Where("team_id = ? AND is_admin = ? AND id <> ?", *user.TeamID, true, teammate.ID).
+				Count(&otherAdmins).Error; err != nil {
+				return err
+			}
+			if otherAdmins == 0 {
+				return errLastAdmin
+			}
+		}
+
+		return tx.Model(&models.User{}).
+			Where("id = ? AND team_id = ?", teammate.ID, *user.TeamID).
+			Update("is_admin", makeAdmin).Error
+	}); err != nil {
+		switch {
+		case errors.Is(err, errLastAdmin):
+			return echo.NewHTTPError(http.StatusBadRequest, "cannot remove the last admin of the team")
+		case errors.Is(err, errNotAdmin):
+			return echo.NewHTTPError(http.StatusForbidden, "admin required")
+		}
+		c.Logger().Error("SetTeammateAdmin error:", err)
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to update admin rights")
+	}
+
+	var updated models.User
+	if err := h.DB.Select("id, first_name, last_name, email, avatar_url, team_id, is_admin, created_at, updated_at").
+		Where("id = ?", teammate.ID).First(&updated).Error; err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "failed to load user")
+	}
+
+	return c.JSON(http.StatusOK, updated)
+}
+
 // UnsubscribeUser handles both GET and POST requests for unsubscribing users.
 // Follows instructions from:
 // https://resend.com/docs/dashboard/emails/add-unsubscribe-to-transactional-emails
