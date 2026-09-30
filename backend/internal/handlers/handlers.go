@@ -1505,7 +1505,7 @@ func (h *AuthHandler) SetTeammateAdmin(c echo.Context) error {
 		// Serialize admin changes per team so two admins demoting each other
 		// concurrently cannot leave the team with none. SQLite (tests) already
 		// serializes writers and has no FOR UPDATE.
-		if tx.Dialector.Name() == "postgres" {
+		if tx.Name() == "postgres" {
 			if err := tx.Exec("SELECT id FROM teams WHERE id = ? FOR UPDATE", *user.TeamID).Error; err != nil {
 				return err
 			}
