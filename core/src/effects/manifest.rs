@@ -31,9 +31,9 @@ pub const MAX_FRAME_DELAY_MS: u32 = 1000;
 pub const MAX_LOOP_MS: u32 = 3000;
 /// `loops` bounds (inclusive).
 pub const MIN_LOOPS: u32 = 1;
-pub const MAX_LOOPS: u32 = 3;
+pub const MAX_LOOPS: u32 = 16;
 /// Longest total play time (`loops` x loop duration).
-pub const MAX_TOTAL_MS: u32 = 4000;
+pub const MAX_TOTAL_MS: u32 = 12000;
 /// Largest single asset file.
 pub const MAX_FILE_BYTES: usize = 3 * 1024 * 1024;
 /// Largest sum of all asset files.
@@ -95,7 +95,7 @@ pub struct EffectEntry {
 }
 
 fn default_loops() -> u32 {
-    1
+    4
 }
 
 fn default_height_fraction() -> f64 {
@@ -947,7 +947,7 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(parsed.effects[0].loops, 1);
+        assert_eq!(parsed.effects[0].loops, 4);
         assert_eq!(parsed.effects[0].height_fraction, DEFAULT_HEIGHT_FRACTION);
         assert_eq!(parsed.effects[0].thumbnail_frame, None);
 
@@ -1119,17 +1119,17 @@ mod tests {
 
     #[test]
     fn rejects_loops_out_of_range_and_total_over_the_cap() {
-        for loops in [0, 4, 100] {
+        for loops in [0, 17, 100] {
             let mut bad = entry("a", "valid.webp");
             bad.loops = loops;
             assert_single_error(vec![bad], "loops", "out of range");
         }
-        // 3 x 1500 ms = 4500 ms > 4000 ms.
+        // 9 x 1500 ms = 13500 ms > 12000 ms.
         let mut long = entry("a", "loop_1500.webp");
-        long.loops = 3;
-        assert_single_error(vec![long], "loops", "4500 ms");
+        long.loops = 9;
+        assert_single_error(vec![long], "loops", "13500 ms");
         let mut ok = entry("a", "loop_1500.webp");
-        ok.loops = 2;
+        ok.loops = 8;
         assert!(validate(&manifest(vec![ok]), fixtures).is_ok());
     }
 
