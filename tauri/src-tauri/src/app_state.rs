@@ -224,6 +224,10 @@ struct AppStateInternal {
 
     /// User-facing settings from the Settings window
     pub user_settings: Option<UserSettings>,
+
+    /// User IDs of the teammates starred as favorites, without duplicates.
+    #[serde(default)]
+    pub favorite_teammates: Vec<String>,
 }
 
 /// Legacy version of the application state structure.
@@ -249,6 +253,7 @@ impl Default for AppStateInternal {
     /// - Sharer draw persist: none
     /// - Controller draw persist: none
     /// - Drawing hint shown: none
+    /// - Favorite teammates: none
     fn default() -> Self {
         AppStateInternal {
             tray_notification: true,
@@ -261,6 +266,7 @@ impl Default for AppStateInternal {
             controller_draw_persist: None,
             drawing_hint_shown: None,
             user_settings: None,
+            favorite_teammates: Vec::new(),
         }
     }
 }
@@ -591,6 +597,58 @@ impl AppState {
         Ok(enabled_bundle_ids)
     }
 
+    /// Gets the user IDs of the favorite teammates.
+    pub fn favorite_teammates(&self) -> Vec<String> {
+        let _lock = self.lock.lock().unwrap();
+        self.state.favorite_teammates.clone()
+    }
+
+    /// Adds `user_id` to (or removes it from) the favorite teammates and saves to disk.
+    /// On a failed save the in-memory list is left unchanged.
+    pub fn set_favorite_teammate(&mut self, user_id: String, favorite: bool) -> Result<(), String> {
+        log::info!("set_favorite_teammate: {user_id} {favorite}");
+        let _lock = self.lock.lock().unwrap();
+        let is_favorite = self.state.favorite_teammates.contains(&user_id);
+        if is_favorite == favorite {
+            return Ok(());
+        }
+        let previous = self.state.favorite_teammates.clone();
+        if favorite {
+            self.state.favorite_teammates.push(user_id);
+        } else {
+            self.state.favorite_teammates.retain(|id| *id != user_id);
+        }
+        if !self.save() {
+            self.state.favorite_teammates = previous;
+            return Err("Failed to save favorite teammates".to_string());
+        }
+        Ok(())
+    }
+
+    /// Removes the favorite teammates whose user ID is not in `known_user_ids` and saves to
+    /// disk. Nothing is saved when no ID is removed. On a failed save the in-memory list is
+    /// left unchanged.
+    pub fn retain_favorite_teammates(&mut self, known_user_ids: &[String]) -> Result<(), String> {
+        let known: HashSet<&str> = known_user_ids.iter().map(String::as_str).collect();
+        let _lock = self.lock.lock().unwrap();
+        let (kept, removed): (Vec<String>, Vec<String>) = self
+            .state
+            .favorite_teammates
+            .iter()
+            .cloned()
+            .partition(|id| known.contains(id.as_str()));
+        if removed.is_empty() {
+            return Ok(());
+        }
+        log::info!("retain_favorite_teammates: removing {removed:?}");
+        let previous = std::mem::replace(&mut self.state.favorite_teammates, kept);
+        if !self.save() {
+            self.state.favorite_teammates = previous;
+            return Err("Failed to save favorite teammates".to_string());
+        }
+        Ok(())
+    }
+
     /// Saves the current state to disk.
     ///
     /// # Returns
@@ -718,6 +776,79 @@ mod app_veil_tests {
             state.user_settings().app_veil_applications,
             vec![row("com.example.two", true)]
         );
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod favorite_teammates_tests {
+    use super::*;
+
+    fn temp_directory(name: &str) -> PathBuf {
+        let directory = std::env::temp_dir().join(format!(
+            "hopp-{name}-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        directory
+    }
+
+    #[test]
+    fn state_file_without_favorites_loads_with_none() {
+        let mut legacy = serde_json::to_value(AppStateInternal::default()).unwrap();
+        legacy.as_object_mut().unwrap().remove("favorite_teammates");
+        let state: AppStateInternal = serde_json::from_value(legacy).unwrap();
+        assert!(state.favorite_teammates.is_empty());
+    }
+
+    #[test]
+    fn favorites_toggle_without_duplicates_and_persist() {
+        let directory = temp_directory("favorite-teammates");
+        let mut state = AppState::new(&directory);
+        state.set_favorite_teammate("a".to_string(), true).unwrap();
+        state.set_favorite_teammate("b".to_string(), true).unwrap();
+        state.set_favorite_teammate("a".to_string(), true).unwrap();
+        state.set_favorite_teammate("c".to_string(), false).unwrap();
+        drop(state);
+
+        let mut state = AppState::new(&directory);
+        assert_eq!(state.favorite_teammates(), vec!["a", "b"]);
+        state.set_favorite_teammate("a".to_string(), false).unwrap();
+        drop(state);
+
+        let state = AppState::new(&directory);
+        assert_eq!(state.favorite_teammates(), vec!["b"]);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn retain_prunes_unknown_ids_and_saves_only_on_change() {
+        let directory = temp_directory("retain-favorite-teammates");
+        let state_path = directory.join(get_app_state_filename());
+        let mut state = AppState::new(&directory);
+        for id in ["a", "b", "c"] {
+            state.set_favorite_teammate(id.to_string(), true).unwrap();
+        }
+
+        let known = vec!["a".to_string(), "c".to_string(), "d".to_string()];
+        state.retain_favorite_teammates(&known).unwrap();
+        assert_eq!(state.favorite_teammates(), vec!["a", "c"]);
+        drop(state);
+
+        let mut state = AppState::new(&directory);
+        assert_eq!(state.favorite_teammates(), vec!["a", "c"]);
+
+        // Nothing to prune: the state file is not written again.
+        std::fs::remove_file(&state_path).unwrap();
+        state.retain_favorite_teammates(&known).unwrap();
+        assert_eq!(state.favorite_teammates(), vec!["a", "c"]);
+        assert!(!state_path.exists());
+
+        // An empty teammate list removes every favorite.
+        state.retain_favorite_teammates(&[]).unwrap();
+        assert!(state.favorite_teammates().is_empty());
+        assert!(state_path.exists());
         std::fs::remove_dir_all(directory).unwrap();
     }
 }

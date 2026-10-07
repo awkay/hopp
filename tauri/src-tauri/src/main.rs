@@ -338,6 +338,35 @@ fn set_last_used_camera(app: tauri::AppHandle, camera: String) {
 }
 
 #[tauri::command(async)]
+fn get_favorite_teammates(app: tauri::AppHandle) -> Vec<String> {
+    log::info!("get_favorite_teammates");
+    app.state::<AppData>()
+        .settings()
+        .app_state
+        .favorite_teammates()
+}
+
+#[tauri::command(async)]
+fn set_favorite_teammate(
+    app: tauri::AppHandle,
+    user_id: String,
+    favorite: bool,
+) -> Result<(), String> {
+    app.state::<AppData>()
+        .settings()
+        .app_state
+        .set_favorite_teammate(user_id, favorite)
+}
+
+#[tauri::command(async)]
+fn retain_favorite_teammates(app: tauri::AppHandle, known_ids: Vec<String>) -> Result<(), String> {
+    app.state::<AppData>()
+        .settings()
+        .app_state
+        .retain_favorite_teammates(&known_ids)
+}
+
+#[tauri::command(async)]
 fn get_sharer_draw_persist(app: tauri::AppHandle) -> bool {
     log::info!("get_sharer_draw_persist");
     let value = app
@@ -1390,6 +1419,9 @@ fn main() {
             get_available_content,
             store_token_cmd,
             get_stored_token,
+            get_favorite_teammates,
+            set_favorite_teammate,
+            retain_favorite_teammates,
             delete_stored_token,
             play_sound,
             stop_sound,
