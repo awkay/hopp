@@ -9,6 +9,7 @@ fork-only features (see below).
 | | Upstream | Dataico build | Why |
 |---|---|---|---|
 | Server | Hopp cloud | `hopp.apps.dataico.world` (`VITE_API_BASE_URL`) | our self-hosted backend |
+| Sidebar "Profile" | opens `pair.gethopp.app` (Hopp cloud) | opens `/settings` on our server (`Constants.webAppUrl`, so a custom server URL is respected) | our accounts live on our server, and `/settings` is the profile page |
 | Bundle ID | `com.hopp.app` | `com.dataico.hopp` | separate identity, keychain, TCC grants, signing |
 | Auto-updater | checks `github.com/gethopp/hopp/releases/.../latest.json` | off | upstream updates would replace our build with the stock app |
 | Window style (macOS) | menu bar app only: no Dock icon outside calls, borderless always-on-top window under the tray icon that hides on focus loss | Settings > Call settings > Window style, applied on the next launch (the settings window offers a restart): "Menu bar" (default, upstream behavior); "Floating window" (Dock icon and Cmd-Tab for the whole session, the same borderless fixed-size window, not always-on-top, dragged by its sidebar, remembers its position, Esc / Cmd-W hide it); "Regular window" (Dock icon and Cmd-Tab, normal titled resizable window). Both non-default styles: no tray positioning, no hide on focus loss, closing hides, Dock click reopens, optional menu bar icon | people who use Cmd-Tab or a window manager (e.g. AeroSpace, which floats the borderless window and tiles the regular one) could not treat Hopp as a normal app |
@@ -69,7 +70,6 @@ in Settings is still shown but has no effect.
 - "Report issue" -> copy logs reads `~/Library/Logs/com.hopp.app/hopp.log`; our logs are in
   `~/Library/Logs/com.dataico.hopp/`.
 - The app's own bundle may appear in the "hide applications while sharing" picker.
-- Sidebar "Profile" opens `pair.gethopp.app`.
 
 ## Prerequisites
 
