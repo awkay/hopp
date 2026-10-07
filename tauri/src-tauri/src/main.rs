@@ -1223,6 +1223,24 @@ fn main() {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
                 /*
+                 * Make the menubar popup a plain borderless window. Tauri gives it the
+                 * miniaturizable and full-size-content-view style bits, and any style bit makes
+                 * it report itself as a standard window. While we are Regular (in a call) tiling
+                 * window managers like AeroSpace then adopt it into a workspace and switch to
+                 * that workspace every time the tray icon shows it.
+                 */
+                if let Some(window) = app.get_webview_window("main") {
+                    match window.ns_window() {
+                        Ok(ns_window) => {
+                            let ns_window: &objc2_app_kit::NSWindow =
+                                unsafe { &*ns_window.cast() };
+                            ns_window.setStyleMask(objc2_app_kit::NSWindowStyleMask::Borderless);
+                        }
+                        Err(e) => log::error!("Failed to get the main NSWindow: {e:?}"),
+                    }
+                }
+
+                /*
                  * First show the notification window which explains that hopp lives in the
                  * menubar. Then show the permissions window if needed.
                  */
