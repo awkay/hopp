@@ -68,12 +68,120 @@ fn default_screen_share_resolution() -> ScreenShareResolution {
     ScreenShareResolution::P4K
 }
 
+/// How the app presents itself on macOS. Other platforms always use `MenuBar`.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowStyle {
+    /// Menu bar app: no Dock icon outside calls, borderless main window under the tray icon
+    /// that hides on focus loss.
+    #[default]
+    MenuBar,
+    /// Dock icon for the whole session; the main window keeps the borderless fixed-size
+    /// look, is moved by dragging and remembers its position.
+    Floating,
+    /// Regular app: Dock icon for the whole session, normal titled main window.
+    Regular,
+}
+
+/// The window style a session runs with. Read once at launch, so setting changes apply on
+/// the next launch.
+#[derive(Debug, Serialize, Clone, Copy, PartialEq, Eq)]
+pub struct WindowStyleSettings {
+    pub window_style: WindowStyle,
+    /// Whether the menu bar (tray) icon exists. Always true in the `MenuBar` style.
+    pub show_menu_bar_icon: bool,
+}
+
+impl WindowStyleSettings {
+    /// The effective style for `settings` on the current platform.
+    pub fn effective(settings: &UserSettings) -> Self {
+        let window_style = if cfg!(target_os = "macos") {
+            settings.window_style
+        } else {
+            WindowStyle::MenuBar
+        };
+        WindowStyleSettings {
+            window_style,
+            show_menu_bar_icon: window_style == WindowStyle::MenuBar || settings.show_menu_bar_icon,
+        }
+    }
+
+    pub fn is_regular(&self) -> bool {
+        self.window_style == WindowStyle::Regular
+    }
+
+    pub fn is_floating(&self) -> bool {
+        self.window_style == WindowStyle::Floating
+    }
+
+    /// Whether the app keeps its Dock icon (Regular activation policy) for the whole session
+    /// and the main window is a standalone window: never positioned under the tray, not
+    /// hidden on focus loss.
+    pub fn has_dock_icon(&self) -> bool {
+        self.window_style != WindowStyle::MenuBar
+    }
+}
+
+/// Top-left corner of a window in logical (point) desktop coordinates.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq)]
+pub struct WindowPosition {
+    pub x: f64,
+    pub y: f64,
+}
+
+/// A rectangle in logical (point) desktop coordinates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LogicalRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+impl LogicalRect {
+    fn overlap_area(&self, other: &LogicalRect) -> f64 {
+        let width = (self.x + self.width).min(other.x + other.width) - self.x.max(other.x);
+        let height = (self.y + self.height).min(other.y + other.height) - self.y.max(other.y);
+        width.max(0.0) * height.max(0.0)
+    }
+}
+
+/// `saved` if at least half of a `width` x `height` window placed there lies within a single
+/// one of `work_areas`; `None` (the caller centers the window) otherwise or without `saved`.
+///
+/// Example: a 400x500 window saved at x = 1700 with one 1920-wide work area keeps
+/// 220 of its 400 points of width on screen (55%), so it is restored; at x = 1800 only
+/// 30% would be visible, so it is centered instead.
+pub fn restorable_window_position(
+    saved: Option<WindowPosition>,
+    width: f64,
+    height: f64,
+    work_areas: &[LogicalRect],
+) -> Option<WindowPosition> {
+    let position = saved?;
+    let window = LogicalRect {
+        x: position.x,
+        y: position.y,
+        width,
+        height,
+    };
+    let half = width * height / 2.0;
+    work_areas
+        .iter()
+        .any(|area| area.overlap_area(&window) >= half)
+        .then_some(position)
+}
+
 /// User-facing settings exposed in the Settings window.
 /// All fields are non-optional with sensible defaults.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct UserSettings {
     pub call_feedback_popup: bool,
     pub show_dock_icon_in_call: bool,
+    #[serde(default)]
+    pub window_style: WindowStyle,
+    #[serde(default = "default_true")]
+    pub show_menu_bar_icon: bool,
     pub start_camera_on_call: bool,
     pub start_mic_on_call: bool,
     #[serde(default = "default_true")]
@@ -104,6 +212,8 @@ impl Default for UserSettings {
         UserSettings {
             call_feedback_popup: true,
             show_dock_icon_in_call: true,
+            window_style: WindowStyle::MenuBar,
+            show_menu_bar_icon: true,
             start_camera_on_call: false,
             start_mic_on_call: true,
             remote_control_enabled: true,
@@ -212,6 +322,9 @@ struct AppStateInternal {
     /// The user's preferred interaction mode for screen sharing sessions
     pub last_mode: Option<StoredMode>,
 
+    /// Last position of the main window in the floating window style
+    pub main_window_position: Option<WindowPosition>,
+
     /// Whether the sharer's drawing mode should persist until right-click (default: true)
     #[serde(alias = "drawing_permanent")]
     pub sharer_draw_persist: Option<bool>,
@@ -250,6 +363,7 @@ impl Default for AppStateInternal {
     /// - User JWT: none
     /// - Hopp server URL: none
     /// - Last mode: none
+    /// - Main window position: none
     /// - Sharer draw persist: none
     /// - Controller draw persist: none
     /// - Drawing hint shown: none
@@ -262,6 +376,7 @@ impl Default for AppStateInternal {
             first_run: true,
             user_jwt: None,
             last_mode: None,
+            main_window_position: None,
             sharer_draw_persist: None,
             controller_draw_persist: None,
             drawing_hint_shown: None,
@@ -508,6 +623,21 @@ impl AppState {
         }
     }
 
+    /// Gets the last saved position of the main window (floating window style).
+    pub fn main_window_position(&self) -> Option<WindowPosition> {
+        let _lock = self.lock.lock().unwrap();
+        self.state.main_window_position
+    }
+
+    /// Updates the saved main window position and saves to disk.
+    pub fn set_main_window_position(&mut self, position: WindowPosition) {
+        let _lock = self.lock.lock().unwrap();
+        self.state.main_window_position = Some(position);
+        if !self.save() {
+            log::error!("set_main_window_position: Failed to save app state");
+        }
+    }
+
     /// Gets whether the sharer's drawing mode should persist until right-click.
     pub fn sharer_draw_persist(&self) -> bool {
         let _lock = self.lock.lock().unwrap();
@@ -686,6 +816,122 @@ impl AppState {
             Err(e) => log::error!("Failed to serialize app state: {e}"),
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod window_style_tests {
+    use super::*;
+
+    #[test]
+    fn window_style_defaults_for_settings_saved_without_it() {
+        let mut legacy = serde_json::to_value(UserSettings::default()).unwrap();
+        let object = legacy.as_object_mut().unwrap();
+        object.remove("window_style");
+        object.remove("show_menu_bar_icon");
+        let settings: UserSettings = serde_json::from_value(legacy).unwrap();
+        assert_eq!(settings.window_style, WindowStyle::MenuBar);
+        assert!(settings.show_menu_bar_icon);
+
+        let mut regular = serde_json::to_value(UserSettings::default()).unwrap();
+        regular["window_style"] = serde_json::json!("regular");
+        regular["show_menu_bar_icon"] = serde_json::json!(false);
+        let settings: UserSettings = serde_json::from_value(regular).unwrap();
+        assert_eq!(settings.window_style, WindowStyle::Regular);
+        assert!(!settings.show_menu_bar_icon);
+
+        let mut floating = serde_json::to_value(UserSettings::default()).unwrap();
+        floating["window_style"] = serde_json::json!("floating");
+        let settings: UserSettings = serde_json::from_value(floating).unwrap();
+        assert_eq!(settings.window_style, WindowStyle::Floating);
+    }
+
+    #[test]
+    fn saved_window_position_is_restored_only_when_half_visible() {
+        let screen = LogicalRect {
+            x: 0.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1080.0,
+        };
+        let second = LogicalRect {
+            x: 1920.0,
+            y: 0.0,
+            width: 1440.0,
+            height: 900.0,
+        };
+        let at = |x, y| Some(WindowPosition { x, y });
+
+        assert_eq!(
+            restorable_window_position(None, 400.0, 500.0, &[screen]),
+            None
+        );
+        assert_eq!(
+            restorable_window_position(at(100.0, 100.0), 400.0, 500.0, &[screen]),
+            at(100.0, 100.0)
+        );
+        // 55% of the width on screen: restored; 30%: centered.
+        assert_eq!(
+            restorable_window_position(at(1700.0, 100.0), 400.0, 500.0, &[screen]),
+            at(1700.0, 100.0)
+        );
+        assert_eq!(
+            restorable_window_position(at(1800.0, 100.0), 400.0, 500.0, &[screen]),
+            None
+        );
+        // Exactly half below the bottom edge still counts.
+        assert_eq!(
+            restorable_window_position(at(0.0, 830.0), 400.0, 500.0, &[screen]),
+            at(0.0, 830.0)
+        );
+        // On the second monitor, which is later unplugged.
+        assert_eq!(
+            restorable_window_position(at(2200.0, 200.0), 400.0, 500.0, &[screen, second]),
+            at(2200.0, 200.0)
+        );
+        assert_eq!(
+            restorable_window_position(at(2200.0, 200.0), 400.0, 500.0, &[screen]),
+            None
+        );
+        // Across two monitors and partly below the smaller one: less than half on each.
+        assert_eq!(
+            restorable_window_position(at(1770.0, 600.0), 400.0, 500.0, &[screen, second]),
+            None
+        );
+        assert_eq!(
+            restorable_window_position(at(0.0, 0.0), 400.0, 500.0, &[]),
+            None
+        );
+    }
+
+    #[test]
+    fn menu_bar_style_always_shows_the_menu_bar_icon() {
+        let settings = UserSettings {
+            show_menu_bar_icon: false,
+            ..UserSettings::default()
+        };
+        let effective = WindowStyleSettings::effective(&settings);
+        assert_eq!(effective.window_style, WindowStyle::MenuBar);
+        assert!(effective.show_menu_bar_icon);
+
+        assert!(!effective.has_dock_icon());
+
+        for style in [WindowStyle::Floating, WindowStyle::Regular] {
+            let settings = UserSettings {
+                window_style: style,
+                show_menu_bar_icon: false,
+                ..UserSettings::default()
+            };
+            let effective = WindowStyleSettings::effective(&settings);
+            if cfg!(target_os = "macos") {
+                assert_eq!(effective.window_style, style);
+                assert!(effective.has_dock_icon());
+                assert!(!effective.show_menu_bar_icon);
+            } else {
+                assert_eq!(effective.window_style, WindowStyle::MenuBar);
+                assert!(effective.show_menu_bar_icon);
+            }
+        }
     }
 }
 

@@ -532,7 +532,7 @@ function App() {
       <ScrollArea
         key={tab}
         type="scroll"
-        className="h-100% overflow-y-scroll overflow-x-hidden w-[350px] relative h-full"
+        className="main-scroll-area h-100% overflow-y-scroll overflow-x-hidden w-[350px] relative h-full"
       >
         {callTokens && (
           <div className={tab === "call" ? "" : "hidden"}>

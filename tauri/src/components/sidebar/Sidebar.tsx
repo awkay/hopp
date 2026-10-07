@@ -19,7 +19,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { appVersion, tauriUtils } from "@/windows/window-utils.ts";
+import { appVersion, isFloatingMainWindow, tauriUtils } from "@/windows/window-utils.ts";
 import { Constants, OS } from "@/constants";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { downloadAndRelaunch, hasPendingUpdate, installAndRelaunch } from "@/update";
@@ -300,6 +300,8 @@ const CallPageButton = () => {
 export const Sidebar = () => {
   const { tab, setTab, user, reset } = useStore();
   const queryClient = useQueryClient();
+  // The floating main window is borderless: its sidebar background moves it.
+  const dragRegion = isFloatingMainWindow() ? "" : undefined;
 
   useEffect(() => {
     // If user is not set, show login tab
@@ -310,8 +312,11 @@ export const Sidebar = () => {
 
   return (
     <TooltipProvider>
-      <div className="w-[50px] min-w-[50px] h-full bg-slate-100 border-r border-gray-200 flex flex-col">
-        <div className="py-3 flex flex-col gap-2 items-center">
+      <div
+        className="w-[50px] min-w-[50px] h-full bg-slate-100 border-r border-gray-200 flex flex-col"
+        data-tauri-drag-region={dragRegion}
+      >
+        <div className="py-3 flex flex-col gap-2 items-center" data-tauri-drag-region={dragRegion}>
           {getAvailableTabs(!!user).map((t) => (
             <SidebarButton key={t.key} active={t.key === tab} label={t.label} onClick={() => setTab(t.key)}>
               {t.icon}
@@ -324,21 +329,21 @@ export const Sidebar = () => {
           )}
         </div>
         <Separator className="w-[70%] mx-auto" />
-        <div className="flex justify-center w-full pt-2">
+        <div className="flex justify-center w-full pt-2" data-tauri-drag-region={dragRegion}>
           <CallPageButton />
         </div>
         {/* Bottom user section */}
-        <div className="flex flex-col gap-1 mt-auto">
+        <div className="flex flex-col gap-1 mt-auto" data-tauri-drag-region={dragRegion}>
           {user && (
-            <div className="flex justify-center w-full">
+            <div className="flex justify-center w-full" data-tauri-drag-region={dragRegion}>
               <LowBandwidthDefaultButton />
             </div>
           )}
-          <div className="flex justify-center w-full">
+          <div className="flex justify-center w-full" data-tauri-drag-region={dragRegion}>
             <DownloadNewVersionButton />
           </div>
           {user && <TrialCountdownAvatarFill user={user} />}
-          <div className="mt-[-5px] h-12 w-full flex items-center justify-center">
+          <div className="mt-[-5px] h-12 w-full flex items-center justify-center" data-tauri-drag-region={dragRegion}>
             <DropdownMenu>
               <DropdownMenuTrigger>
                 {!user && (

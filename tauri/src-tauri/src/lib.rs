@@ -149,8 +149,11 @@ pub struct AppData {
     /// Written on the main thread together with the policy switch.
     pub activation_policy_regular: Arc<AtomicBool>,
 
-    /// Tray icon state. Only touched on the main thread.
+    /// Tray icon state. Only touched on the main thread. `None` when there is no tray icon.
     pub tray_state: Mutex<Option<tray::TrayState>>,
+
+    /// The window style this session runs with (fixed at launch).
+    pub window_style: app_state::WindowStyleSettings,
 
     /// macOS app activation observer — keeps the NSNotificationCenter observer alive.
     #[cfg(target_os = "macos")]
@@ -178,6 +181,7 @@ impl AppData {
         app_state: app_state::AppState,
         suppress_hide_on_call_end: Arc<AtomicBool>,
     ) -> Self {
+        let window_style = app_state::WindowStyleSettings::effective(&app_state.user_settings());
         AppData {
             core: core_client::CoreClient::new(),
             settings: Mutex::new(Settings {
@@ -194,6 +198,7 @@ impl AppData {
             suppress_hide_on_call_end,
             activation_policy_regular: Arc::new(AtomicBool::new(false)),
             tray_state: Mutex::new(None),
+            window_style,
             #[cfg(target_os = "macos")]
             activation_observer: Mutex::new(None),
             #[cfg(target_os = "macos")]
@@ -607,7 +612,157 @@ pub fn center_window_on_tray(window: &WebviewWindow, tray_rect: Rect, show_windo
     }
 }
 
-/// Add a tray icon to the app on macos, on windows we don't use it.
+/// Creates the main window from its `tauri.conf.json` entry (`create: false` there).
+/// - Menu bar style: the hidden borderless popover the config describes.
+/// - Floating style: the same borderless fixed-size window, but a normal-level window that
+///   is shown at once, at its saved position when enough of it is on screen.
+/// - Regular style: a normal titled, resizable window, shown at once.
+///
+/// The frontend gets the style as a class on `<html>` (`floating-window` / `regular-window`,
+/// see App.css), set before the first paint.
+pub fn create_main_window(app: &App<Wry>) -> Result<(), Box<dyn std::error::Error>> {
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|w| w.label == "main")
+        .ok_or("main window missing from tauri.conf.json")?;
+    #[allow(unused_mut)]
+    let mut builder = WebviewWindowBuilder::from_config(app.handle(), config)?;
+    #[cfg(target_os = "macos")]
+    {
+        let window_style = app.state::<AppData>().window_style;
+        if window_style.is_regular() {
+            // The main window UI has no dark variant, so the title bar stays light too.
+            builder = builder
+                .title("Hopp")
+                .decorations(true)
+                .title_bar_style(TitleBarStyle::Visible)
+                .hidden_title(false)
+                .transparent(false)
+                .resizable(true)
+                .maximizable(true)
+                .min_inner_size(config.width, config.height)
+                .theme(Some(tauri::Theme::Light))
+                .initialization_script("document.documentElement.classList.add('regular-window');")
+                .center();
+        } else if window_style.is_floating() {
+            builder = builder.title("Hopp").initialization_script(
+                "document.documentElement.classList.add('floating-window');",
+            );
+            let saved = app
+                .state::<AppData>()
+                .settings()
+                .app_state
+                .main_window_position();
+            let work_areas = monitor_work_areas(app.handle());
+            builder = match app_state::restorable_window_position(
+                saved,
+                config.width,
+                config.height,
+                &work_areas,
+            ) {
+                Some(position) => builder.position(position.x, position.y),
+                None => builder.center(),
+            };
+        }
+        if window_style.has_dock_icon() {
+            builder = builder
+                .always_on_top(false)
+                .skip_taskbar(false)
+                .visible(true)
+                .focused(true);
+        }
+        let window = builder.build()?;
+        if window_style.is_floating() {
+            // Borderless windows are not closable by default, so Cmd-W (the Window menu's
+            // Close, `performClose:`) would only beep. Closable gives no visible button.
+            let _ = window.set_closable(true);
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    builder.build()?;
+    Ok(())
+}
+
+/// Work areas of all monitors in logical (point) desktop coordinates.
+#[cfg(target_os = "macos")]
+fn monitor_work_areas(app: &AppHandle) -> Vec<app_state::LogicalRect> {
+    match app.available_monitors() {
+        Ok(monitors) => monitors
+            .iter()
+            .map(|monitor| {
+                let scale = monitor.scale_factor();
+                let area = monitor.work_area();
+                app_state::LogicalRect {
+                    x: area.position.x as f64 / scale,
+                    y: area.position.y as f64 / scale,
+                    width: area.size.width as f64 / scale,
+                    height: area.size.height as f64 / scale,
+                }
+            })
+            .collect(),
+        Err(e) => {
+            log::warn!("monitor_work_areas: failed to list monitors: {e:?}");
+            Vec::new()
+        }
+    }
+}
+
+/// Saves the floating main window's position `delay` after a move, unless it moved again in
+/// the meantime. `generation` counts moves; `scale_factor` is the window's.
+#[cfg(target_os = "macos")]
+pub fn save_main_window_position_debounced(
+    app: &AppHandle,
+    position: PhysicalPosition<i32>,
+    scale_factor: f64,
+    generation: Arc<std::sync::atomic::AtomicU64>,
+    delay: Duration,
+) {
+    let logical = position.to_logical::<f64>(scale_factor);
+    let this_move = generation.fetch_add(1, Ordering::SeqCst) + 1;
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(delay).await;
+        if generation.load(Ordering::SeqCst) != this_move {
+            return;
+        }
+        app.state::<AppData>()
+            .settings()
+            .app_state
+            .set_main_window_position(app_state::WindowPosition {
+                x: logical.x,
+                y: logical.y,
+            });
+    });
+}
+
+/// Shows, restores and focuses `window`.
+#[cfg(target_os = "macos")]
+pub fn show_main_window(window: &WebviewWindow) {
+    let _ = window.show();
+    let _ = window.unminimize();
+    let _ = window.set_focus();
+}
+
+/// Hides the Dock icon again (Accessory policy) once a temporary reason for it (a call, the
+/// permissions or tray notification window) is gone. No-op in the floating and regular
+/// window styles, where the Dock icon stays for the whole session.
+#[cfg(target_os = "macos")]
+pub fn restore_accessory_policy(app: &AppHandle) {
+    let data = app.state::<AppData>();
+    if data.window_style.has_dock_icon() {
+        return;
+    }
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+    data.activation_policy_regular
+        .store(false, Ordering::Relaxed);
+}
+
+/// Add a tray icon to the app on macos, on windows we don't use it. No tray icon is
+/// created when the window style turns it off; in the floating and regular styles the
+/// window is never positioned relative to the tray.
 #[allow(unused_variables)]
 pub fn setup_tray_icon(
     app: &mut App<Wry>,
@@ -617,6 +772,12 @@ pub fn setup_tray_icon(
 ) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "macos")]
     {
+        let window_style = app.state::<AppData>().window_style;
+        if !window_style.show_menu_bar_icon {
+            log::info!("setup_tray_icon: menu bar icon turned off");
+            return Ok(());
+        }
+        let dock_style = window_style.has_dock_icon();
         let location_set_clone = location_set.clone();
         let app_handle = app.handle().clone();
 
@@ -652,6 +813,10 @@ pub fn setup_tray_icon(
 
                     let app_handle = tray.app_handle();
                     if let Some(window) = app_handle.get_webview_window("main") {
+                        if dock_style {
+                            show_main_window(&window);
+                            return;
+                        }
                         match window.is_visible() {
                             Ok(true) => {
                                 let _ = window.hide();
@@ -687,6 +852,10 @@ pub fn setup_tray_icon(
             .tray_state
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = Some(tray_state);
+
+        if dock_style {
+            return Ok(());
+        }
 
         let app_handle = app.handle().clone();
 

@@ -12,8 +12,11 @@ import {
   type InstalledApplication,
   type ScreenSharePickerMode,
   type ScreenShareResolution,
+  type UserSettings,
+  type WindowStyle,
 } from "@/core_payloads";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { tauriUtils } from "@/windows/window-utils";
 import { OS, URLS } from "@/constants";
 import posthog from "posthog-js";
@@ -505,14 +508,20 @@ function SettingsWindow() {
                       typedInvoke("set_call_feedback_popup", { enabled: v }).then(() => refetchSettings());
                     }}
                   />
-                  <CheckboxRow
-                    title="Show dock icon when in call"
-                    description="Hide dock icon to save space when you are in a call"
-                    checked={settings.show_dock_icon_in_call}
-                    onCheckedChange={(v) => {
-                      typedInvoke("set_show_dock_icon_in_call", { enabled: v }).then(() => refetchSettings());
-                    }}
-                  />
+                  {OS === "macos" && settings.window_style !== "menu_bar" ?
+                    <span className="text-sm text-gray-500 dark:text-gray-400">
+                      The Dock icon is always shown in the floating and regular window styles.
+                    </span>
+                  : <CheckboxRow
+                      title="Show dock icon when in call"
+                      description="Hide dock icon to save space when you are in a call"
+                      checked={settings.show_dock_icon_in_call}
+                      onCheckedChange={(v) => {
+                        typedInvoke("set_show_dock_icon_in_call", { enabled: v }).then(() => refetchSettings());
+                      }}
+                    />
+                  }
+                  {OS === "macos" && <WindowStyleRow settings={settings} onChanged={() => refetchSettings()} />}
                 </div>
 
                 <hr className="h-px w-full border-none bg-gray-300 dark:bg-gray-600" />
@@ -686,6 +695,93 @@ function SettingsWindow() {
           </main>
         </div>
       </div>
+    </div>
+  );
+}
+
+const windowStyleItems = [
+  {
+    id: "menu_bar",
+    title: "Menu bar",
+    description: "Opens from the menu bar icon and hides when you click elsewhere",
+  },
+  {
+    id: "floating",
+    title: "Floating window",
+    description: "Dock icon, Cmd-Tab and a compact window you drag by its sidebar; Esc hides it",
+  },
+  {
+    id: "regular",
+    title: "Regular window",
+    description: "Dock icon, Cmd-Tab and a normal window you can move and resize",
+  },
+] satisfies Array<{ id: WindowStyle; title: string; description: string }>;
+
+/** Whether the menu bar icon is shown for a style; the menu bar style always shows it. */
+function showsMenuBarIcon(style: WindowStyle, showMenuBarIcon: boolean) {
+  return style === "menu_bar" || showMenuBarIcon;
+}
+
+/** macOS window style and menu bar icon settings, which apply on the next launch. */
+function WindowStyleRow({ settings, onChanged }: { settings: UserSettings; onChanged: () => void }) {
+  const { data: launchStyle } = useQuery({
+    queryKey: ["launch-window-style"],
+    queryFn: () => typedInvoke("get_launch_window_style"),
+    staleTime: Infinity,
+  });
+
+  const restartNeeded =
+    launchStyle !== undefined &&
+    (launchStyle.window_style !== settings.window_style ||
+      launchStyle.show_menu_bar_icon !== showsMenuBarIcon(settings.window_style, settings.show_menu_bar_icon));
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-col">
+        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Window style</span>
+        <span className="text-sm text-gray-500 dark:text-gray-400">How Hopp shows up on your Mac</span>
+      </div>
+      <div className="flex flex-col gap-2">
+        {windowStyleItems.map((item) => (
+          <label key={item.id} className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="radio"
+              name="window-style"
+              className="mt-0.5 size-4 cursor-pointer accent-slate-700 dark:accent-slate-300"
+              checked={settings.window_style === item.id}
+              onChange={(event) => {
+                if (event.target.checked && settings.window_style !== item.id) {
+                  typedInvoke("set_window_style", { style: item.id }).then(onChanged);
+                }
+              }}
+            />
+            <div className="flex flex-col">
+              <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{item.title}</span>
+              <span className="text-sm text-gray-500 dark:text-gray-400">{item.description}</span>
+            </div>
+          </label>
+        ))}
+      </div>
+      {settings.window_style !== "menu_bar" && (
+        <div className="ml-6">
+          <CheckboxRow
+            title="Show menu bar icon"
+            description="Also keep the Hopp icon in the menu bar"
+            checked={settings.show_menu_bar_icon}
+            onCheckedChange={(v) => {
+              typedInvoke("set_show_menu_bar_icon", { enabled: v }).then(onChanged);
+            }}
+          />
+        </div>
+      )}
+      {restartNeeded && (
+        <div className="flex items-center justify-between gap-3 rounded-md border border-gray-300 px-3 py-2 dark:border-gray-600">
+          <span className="text-sm text-gray-700 dark:text-gray-300">Restart Hopp to apply</span>
+          <Button size="sm" onClick={() => relaunch()}>
+            Restart Hopp
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

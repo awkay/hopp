@@ -51,7 +51,20 @@ impl AppActivationObserver {
                     return;
                 }
 
-                // Regular mode is either when permissions/notification windows are open, or when we are in a call.
+                // Floating/regular window style: activating the app by clicking one of its windows
+                // must not pull the main window over it.
+                if app_handle.state::<AppData>().window_style.has_dock_icon()
+                    && app_handle
+                        .webview_windows()
+                        .values()
+                        .any(|w| w.is_focused().unwrap_or(false))
+                {
+                    log::info!("app_activation: a window is already focused, skipping");
+                    return;
+                }
+
+                // Regular mode is either when permissions/notification windows are open, when we are in a call,
+                // or the whole session in the floating and regular window styles.
                 // This runs on the main thread: only atomics here, never a lock or a wait.
                 if app_handle
                     .state::<AppData>()
