@@ -98,9 +98,23 @@ export interface InstalledApplication {
   icon_png: number[] | null;
 }
 
+/**
+ * macOS only: menu bar popover (default), or a Dock icon for the whole session with either a
+ * floating borderless main window or a normal titled one.
+ */
+export type WindowStyle = "menu_bar" | "floating" | "regular";
+
+/** The window style the running session uses (settings changes apply on the next launch). */
+export interface WindowStyleSettings {
+  window_style: WindowStyle;
+  show_menu_bar_icon: boolean;
+}
+
 export interface UserSettings {
   call_feedback_popup: boolean;
   show_dock_icon_in_call: boolean;
+  window_style: WindowStyle;
+  show_menu_bar_icon: boolean;
   start_camera_on_call: boolean;
   start_mic_on_call: boolean;
   remote_control_enabled: boolean;
@@ -234,6 +248,9 @@ export interface CommandMap {
   set_call_feedback_popup: { args: { enabled: boolean }; return: void };
   set_telemetry_enabled: { args: { enabled: boolean }; return: void };
   set_show_dock_icon_in_call: { args: { enabled: boolean }; return: void };
+  set_window_style: { args: { style: WindowStyle }; return: void };
+  set_show_menu_bar_icon: { args: { enabled: boolean }; return: void };
+  get_launch_window_style: { args: void; return: WindowStyleSettings };
   set_auto_update_enabled: { args: { enabled: boolean }; return: void };
   set_start_camera_on_call: { args: { enabled: boolean }; return: void };
   set_start_mic_on_call: { args: { enabled: boolean }; return: void };

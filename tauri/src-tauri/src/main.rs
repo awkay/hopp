@@ -18,15 +18,18 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_log::{Target, TargetKind};
 
 use hopp::{
-    app_state::{AppState, AppVeilApplication, UserSettings},
+    app_state::{AppState, AppVeilApplication, UserSettings, WindowStyle, WindowStyleSettings},
     application_catalog::InstalledApplication,
     call_state, connect_core,
     core_client::{CoreError, REQUEST_TIMEOUT},
-    get_log_level, get_log_path, get_sentry_dsn, permissions, ping_core, ping_frontend,
-    setup_start_on_launch, setup_tray_icon, AppData,
+    create_main_window, get_log_level, get_log_path, get_sentry_dsn, permissions, ping_core,
+    ping_frontend, setup_start_on_launch, setup_tray_icon, AppData,
 };
 #[cfg(target_os = "macos")]
-use hopp::{disable_app_nap, set_window_corner_radius_and_decorations, CORNER_RADIUS};
+use hopp::{
+    disable_app_nap, restore_accessory_policy, save_main_window_position_debounced,
+    set_window_corner_radius_and_decorations, show_main_window, CORNER_RADIUS,
+};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -34,6 +37,10 @@ use std::{env, sync::Arc};
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use tauri::PhysicalPosition;
+
+/// How long the floating main window must stay put before its position is saved.
+#[cfg(target_os = "macos")]
+const MAIN_WINDOW_POSITION_SAVE_DELAY: Duration = Duration::from_millis(500);
 
 /// CallStart only dispatches the room connect in core, so its answer is quick.
 const CALL_START_TIMEOUT: Duration = Duration::from_secs(10);
@@ -810,6 +817,26 @@ fn set_show_dock_icon_in_call(app: tauri::AppHandle, enabled: bool) {
     update_user_setting(&app, |s| s.show_dock_icon_in_call = enabled);
 }
 
+/// Takes effect on the next launch.
+#[tauri::command(async)]
+fn set_window_style(app: tauri::AppHandle, style: WindowStyle) {
+    log::info!("set_window_style: {style:?}");
+    update_user_setting(&app, |s| s.window_style = style);
+}
+
+/// Takes effect on the next launch.
+#[tauri::command(async)]
+fn set_show_menu_bar_icon(app: tauri::AppHandle, enabled: bool) {
+    log::info!("set_show_menu_bar_icon: {enabled}");
+    update_user_setting(&app, |s| s.show_menu_bar_icon = enabled);
+}
+
+/// The window style this session runs with (the saved settings may differ until a restart).
+#[tauri::command(async)]
+fn get_launch_window_style(app: tauri::AppHandle) -> WindowStyleSettings {
+    app.state::<AppData>().window_style
+}
+
 #[tauri::command(async)]
 fn set_auto_update_enabled(app: tauri::AppHandle, enabled: bool) {
     log::info!("set_auto_update_enabled: {enabled}");
@@ -1079,6 +1106,10 @@ fn main() {
     let suppress_hide_on_call_end = Arc::new(AtomicBool::new(false));
     let suppress_hide_on_call_end_clone = suppress_hide_on_call_end.clone();
 
+    /* Counts main window moves, to save the floating window position once it settles. */
+    #[cfg(target_os = "macos")]
+    let main_window_moves = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
     let log_level = get_log_level();
     let mut app = tauri::Builder::default().plugin(tauri_plugin_opener::init());
     if !cfg!(debug_assertions) {
@@ -1097,8 +1128,7 @@ fn main() {
                     let main_window = app.get_webview_window("main");
                     if let Some(window) = main_window {
                         log::info!("Single instance handler: showing main window");
-                        let _ = window.show();
-                        let _ = window.set_focus();
+                        show_main_window(&window);
                     } else {
                         log::error!("Main window not found");
                     }
@@ -1162,6 +1192,7 @@ fn main() {
                 app_state,
                 suppress_hide_on_call_end.clone(),
             ));
+            create_main_window(app)?;
 
             // Spawns core, connects, sends the full startup configuration (same code path as
             // a restart) and installs the connection. Core events are handled on the
@@ -1248,8 +1279,18 @@ fn main() {
             #[cfg(target_os = "macos")]
             {
                 disable_app_nap();
-                /* Start as Accessory — switch to Regular during calls or when permission windows are visible */
-                app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                /*
+                 * Menu bar style: start as Accessory, switch to Regular during calls or when
+                 * permission windows are visible. Floating and regular styles: Regular for the
+                 * whole session, and the main window (already shown) can be reopened right away.
+                 */
+                let dock_style = app.state::<AppData>().window_style.has_dock_icon();
+                if dock_style {
+                    app.set_activation_policy(tauri::ActivationPolicy::Regular);
+                    *location_set_setup.lock().unwrap_or_else(|e| e.into_inner()) = true;
+                } else {
+                    app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                }
 
                 /*
                  * Make the menubar popup a plain borderless window. Tauri gives it the
@@ -1271,11 +1312,15 @@ fn main() {
 
                 /*
                  * First show the notification window which explains that hopp lives in the
-                 * menubar. Then show the permissions window if needed.
+                 * menubar (menu bar style only). Then show the permissions window if needed.
                  */
-                let mut show_dock = false;
-                let show_tray_notification_selection =
-                    app.state::<AppData>().settings().app_state.tray_notification();
+                let mut show_dock = dock_style;
+                let show_tray_notification_selection = !dock_style
+                    && app
+                        .state::<AppData>()
+                        .settings()
+                        .app_state
+                        .tray_notification();
                 if show_tray_notification_selection {
                     let height = 250.;
                     let width = 450.;
@@ -1357,7 +1402,8 @@ fn main() {
                 {
                     let data = app.state::<AppData>();
                     if show_dock {
-                        data.activation_policy_regular.store(true, Ordering::Relaxed);
+                        data.activation_policy_regular
+                            .store(true, Ordering::Relaxed);
                     }
                     if !cfg!(debug_assertions) {
                         *data
@@ -1377,6 +1423,21 @@ fn main() {
             Ok(())
         })
         .on_window_event(move |window, event| {
+            #[cfg(target_os = "macos")]
+            if let tauri::WindowEvent::Moved(position) = event {
+                let floating = window
+                    .try_state::<AppData>()
+                    .is_some_and(|data| data.window_style.is_floating());
+                if floating && window.label() == "main" {
+                    save_main_window_position_debounced(
+                        window.app_handle(),
+                        *position,
+                        window.scale_factor().unwrap_or(1.0),
+                        main_window_moves.clone(),
+                        MAIN_WINDOW_POSITION_SAVE_DELAY,
+                    );
+                }
+            }
             if let tauri::WindowEvent::Focused(is_focused) = event {
                 #[cfg(any(target_os = "windows", target_os = "linux"))]
                 if *is_focused && window.label() == "main" {
@@ -1398,10 +1459,14 @@ fn main() {
                 }
 
                 // detect click outside of the focused window and hide the app
+                let dock_style = window
+                    .try_state::<AppData>()
+                    .is_some_and(|data| data.window_style.has_dock_icon());
                 let deactivate_hiding = deactivate_hiding.lock().unwrap();
                 let reopen_requested = reopen_requested.lock().unwrap();
                 if !is_focused
                     && window.label() == "main"
+                    && !dock_style
                     && !cfg!(debug_assertions)
                     && !*deactivate_hiding
                     && !*reopen_requested
@@ -1465,6 +1530,9 @@ fn main() {
             set_call_feedback_popup,
             set_telemetry_enabled,
             set_show_dock_icon_in_call,
+            set_window_style,
+            set_show_menu_bar_icon,
+            get_launch_window_style,
             set_auto_update_enabled,
             set_start_camera_on_call,
             set_start_mic_on_call,
@@ -1499,26 +1567,67 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error while running tauri application");
 
-    app.run(move |app_handle, event| match event {
-        tauri::RunEvent::ExitRequested { .. } => {
-            log::info!("Exit requested");
-            // Every quit path (tray menu, Cmd+Q, quit_app, core's ExitRequested) ends here:
-            // make sure core gets CallEnd before we go. Bounded (1 s) and normally instant,
-            // since the writer thread just has to drain the queue.
+    /*
+     * Core must get CallEnd before we go. Bounded (1 s) and normally instant, since the
+     * writer thread just has to drain the queue. Sent once: app.exit() raises both
+     * ExitRequested and Exit.
+     */
+    let call_end_sent_on_exit = AtomicBool::new(false);
+    let end_call_before_exit = move |app_handle: &tauri::AppHandle| {
+        if !call_end_sent_on_exit.swap(true, Ordering::SeqCst) {
             app_handle
                 .state::<AppData>()
                 .core
                 .send_before_exit(Message::CallEnd(None));
+        }
+    };
+
+    app.run(move |app_handle, event| match event {
+        tauri::RunEvent::ExitRequested { .. } => {
+            log::info!("Exit requested");
+            // Tray menu, quit_app, core's ExitRequested and relaunch end here.
+            end_call_before_exit(app_handle);
             sentry_utils::upload_logs_event("Tauri app quit".to_string());
             sentry_utils::flush(std::time::Duration::from_secs(2));
         }
+        tauri::RunEvent::Exit => {
+            // The app menu's Quit (Cmd+Q) and Dock > Quit terminate the app without
+            // ExitRequested.
+            log::info!("Exit");
+            end_call_before_exit(app_handle);
+        }
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen { .. } => {
+            // Dock icon click.
+            if app_handle.state::<AppData>().window_style.has_dock_icon() {
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let hidden = !window.is_visible().unwrap_or(false)
+                        || window.is_minimized().unwrap_or(false);
+                    if hidden {
+                        log::info!("Reopen: showing main window");
+                        show_main_window(&window);
+                    }
+                }
+            }
+        }
         tauri::RunEvent::WindowEvent {
             label,
-            event: tauri::WindowEvent::CloseRequested { .. },
+            event: tauri::WindowEvent::CloseRequested { api, .. },
             ..
         } => {
             log::info!("Close requested for window: {label}");
-            if label == "trayNotification" {
+            if label == "main" {
+                #[cfg(target_os = "macos")]
+                if app_handle.state::<AppData>().window_style.has_dock_icon() {
+                    // Closing hides the main window; Cmd+Q / Dock > Quit quit the app.
+                    api.prevent_close();
+                    if let Some(window) = app_handle.get_webview_window("main") {
+                        let _ = window.hide();
+                    }
+                }
+                #[cfg(not(target_os = "macos"))]
+                let _ = api;
+            } else if label == "trayNotification" {
                 /* Make the permissions window visible in this case. */
                 let permissions_window = app_handle.get_webview_window("permissions");
                 if let Some(window) = permissions_window {
@@ -1527,24 +1636,11 @@ fn main() {
                     let _ = window.set_focus();
                 } else {
                     #[cfg(target_os = "macos")]
-                    {
-                        let _ =
-                            app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
-                        app_handle
-                            .state::<AppData>()
-                            .activation_policy_regular
-                            .store(false, Ordering::Relaxed);
-                    }
+                    restore_accessory_policy(app_handle);
                 }
             } else if label == "permissions" {
                 #[cfg(target_os = "macos")]
-                {
-                    let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
-                    app_handle
-                        .state::<AppData>()
-                        .activation_policy_regular
-                        .store(false, Ordering::Relaxed);
-                }
+                restore_accessory_policy(app_handle);
             }
         }
         _ => {}

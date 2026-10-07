@@ -20,6 +20,8 @@ import { BOTTOM_ARROW, POSTHOG_API_KEY, POSTHOG_HOST } from "@/constants";
 import { typedInvoke } from "@/core_payloads";
 import { listen } from "@tauri-apps/api/event";
 import posthog from "posthog-js";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { isFloatingMainWindow } from "@/windows/window-utils";
 
 const options: Partial<PostHogConfig> = {
   api_host: POSTHOG_HOST,
@@ -60,6 +62,29 @@ if (BOTTOM_ARROW) {
 
 if (OS === "macos") {
   disableWebViewAppNap();
+}
+
+/**
+ * Floating window style: Escape hides the main window, unless something else uses it: a
+ * menu, popover or dialog (Radix marks the event handled when it closes one, and any open one
+ * also counts), a focused text field, or an IME composition.
+ */
+function hideOnEscape(event: KeyboardEvent) {
+  if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
+  const active = document.activeElement;
+  if (active instanceof HTMLElement && (active.isContentEditable || active.closest("input, textarea, select"))) {
+    return;
+  }
+  const openLayer = document.querySelector(
+    '[data-radix-popper-content-wrapper], [role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"]',
+  );
+  if (openLayer) return;
+  getCurrentWindow().hide();
+}
+
+if (isFloatingMainWindow()) {
+  window.addEventListener("keydown", hideOnEscape);
 }
 
 listen<boolean>("telemetry_enabled_changed", (event) => {

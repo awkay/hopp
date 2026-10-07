@@ -157,7 +157,7 @@ fn apply_call_ended_effects(app: &AppHandle, data: &AppData) {
     let posted = app.run_on_main_thread(move || {
         shortcuts::unregister_call_shortcuts(&app_main);
         #[cfg(target_os = "macos")]
-        {
+        if !app_main.state::<AppData>().window_style.has_dock_icon() {
             let data = app_main.state::<AppData>();
             // Suppress the hide-on-blur caused by the policy switch; set in the same
             // main-thread closure as the switch and reset by a timer started only after it.

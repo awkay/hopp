@@ -452,3 +452,9 @@ export const tauriUtils = {
   getUserSettings,
   getCallStartPreferences,
 };
+
+/**
+ * Whether this is the main window in the floating window style (macOS). The window's
+ * initialization script sets the class before any app script runs.
+ */
+export const isFloatingMainWindow = () => document.documentElement.classList.contains("floating-window");

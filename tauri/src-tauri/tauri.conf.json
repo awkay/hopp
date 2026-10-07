@@ -50,6 +50,7 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "hopp-windowbar",
         "width": 400,
         "height": 500,

@@ -396,6 +396,39 @@ body {
   overflow: hidden;
 }
 
+/*
+ * Main window in the floating and regular window styles (macOS): not anchored to the tray
+ * icon, so no arrow and the content fills the window. Floating keeps the rounded borderless
+ * look; regular is a titled, resizable window. The class is set on <html> by the window's
+ * initialization script (`create_main_window`).
+ */
+html.floating-window body.arrow,
+html.floating-window body.arrow_bottom,
+html.regular-window body.arrow,
+html.regular-window body.arrow_bottom {
+  padding: 0 !important;
+  background-image: none;
+}
+
+html.floating-window .main-app,
+html.regular-window .main-app {
+  height: 100vh;
+}
+
+html.regular-window .main-app {
+  border-radius: 0;
+}
+
+html.regular-window #app-body {
+  max-width: none;
+}
+
+html.regular-window .main-scroll-area {
+  flex: 1 1 0%;
+  width: auto;
+  min-width: 0;
+}
+
 .container {
   padding: 0;
   overflow: hidden;
