@@ -9,6 +9,7 @@ fork-only features (see below).
 | | Upstream | Dataico build | Why |
 |---|---|---|---|
 | Server | Hopp cloud | `hopp.apps.dataico.world` (`VITE_API_BASE_URL`) | our self-hosted backend |
+| Sidebar "Profile" | opens `pair.gethopp.app` (Hopp cloud) | opens `/settings` on our server (`Constants.webAppUrl`, so a custom server URL is respected) | our accounts live on our server, and `/settings` is the profile page |
 | Bundle ID | `com.hopp.app` | `com.dataico.hopp` | separate identity, keychain, TCC grants, signing |
 | Auto-updater | checks `github.com/gethopp/hopp/releases/.../latest.json` | off | upstream updates would replace our build with the stock app |
 | Telemetry | Sentry / PostHog keys from CI | all empty | no data to upstream's accounts |
@@ -62,7 +63,6 @@ in Settings is still shown but has no effect.
 - "Report issue" -> copy logs reads `~/Library/Logs/com.hopp.app/hopp.log`; our logs are in
   `~/Library/Logs/com.dataico.hopp/`.
 - The app's own bundle may appear in the "hide applications while sharing" picker.
-- Sidebar "Profile" opens `pair.gethopp.app`.
 
 ## Prerequisites
 
