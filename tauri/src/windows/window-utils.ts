@@ -36,6 +36,56 @@ const getStoredToken = async () => {
   return await invoke<string | null>("get_stored_token");
 };
 
+const getFavoriteTeammates = async (): Promise<string[]> => {
+  try {
+    return await invoke<string[]>("get_favorite_teammates");
+  } catch (err) {
+    console.error("Failed to load favorite teammates:", err);
+    return [];
+  }
+};
+
+let favoriteTeammateWrites: Promise<void> = Promise.resolve();
+
+/**
+ * Stars or unstars a teammate. The store changes at once; the write to the app state runs
+ * after earlier ones finish, so writes land in toggle order. A failed write restores the
+ * previous value.
+ */
+const toggleFavoriteTeammate = (userId: string) => {
+  const { favoriteTeammateIds, setFavoriteTeammate } = useStore.getState();
+  const favorite = !favoriteTeammateIds.includes(userId);
+  setFavoriteTeammate(userId, favorite);
+  favoriteTeammateWrites = favoriteTeammateWrites.then(async () => {
+    try {
+      await invoke("set_favorite_teammate", { userId, favorite });
+    } catch (err) {
+      console.error("Failed to save favorite teammate:", err);
+      useStore.getState().setFavoriteTeammate(userId, !favorite);
+    }
+  });
+};
+
+/**
+ * Removes the favorites whose user ID is not in `knownIds`, from the app state and the store.
+ * `knownIds` must be the full teammate list of a successful fetch. Runs after earlier toggles
+ * finish, so it never reorders with them.
+ */
+const pruneFavoriteTeammates = (knownIds: string[]) => {
+  favoriteTeammateWrites = favoriteTeammateWrites.then(async () => {
+    try {
+      await invoke("retain_favorite_teammates", { knownIds });
+      const known = new Set(knownIds);
+      const { favoriteTeammateIds, setFavoriteTeammateIds } = useStore.getState();
+      if (favoriteTeammateIds.some((id) => !known.has(id))) {
+        setFavoriteTeammateIds(favoriteTeammateIds.filter((id) => known.has(id)));
+      }
+    } catch (err) {
+      console.error("Failed to prune favorite teammates:", err);
+    }
+  });
+};
+
 const deleteStoredToken = async () => {
   if (isTauri) {
     try {
@@ -358,6 +408,9 @@ export const tauriUtils = {
   closeCameraWindow,
   storeTokenBackend,
   getStoredToken,
+  getFavoriteTeammates,
+  toggleFavoriteTeammate,
+  pruneFavoriteTeammates,
   deleteStoredToken,
   stopSharing,
   endCallCleanup,

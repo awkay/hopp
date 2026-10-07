@@ -1,7 +1,7 @@
 import { components } from "@/openapi";
 import clsx from "clsx";
 import { Button } from "./button";
-import { HiPhone, HiPhoneArrowDownLeft, HiPhoneArrowUpRight } from "react-icons/hi2";
+import { HiOutlineStar, HiPhone, HiPhoneArrowDownLeft, HiPhoneArrowUpRight, HiStar } from "react-icons/hi2";
 import { socketService } from "@/services/socket";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
@@ -67,6 +67,7 @@ export const ParticipantRow = (props: {
   const callsPresence = useStore((state) => state.callsPresence);
   const teammates = useStore((state) => state.teammates);
   const currentUser = useStore((state) => state.user);
+  const isFavorite = useStore((state) => state.favoriteTeammateIds.includes(props.user.id));
 
   const userPresence = callsPresence?.[props.user.id];
 
@@ -416,7 +417,7 @@ export const ParticipantRow = (props: {
   }, [isInviting, cancelInvite, props.user.first_name, props.user.id, setInviting]);
 
   return (
-    <div className="grid grid-cols-[max-content_minmax(0,1fr)_max-content] gap-2 w-full items-center">
+    <div className="group grid grid-cols-[max-content_minmax(0,1fr)_max-content] gap-2 w-full items-center">
       <HoppAvatar
         src={props.user.avatar_url || undefined}
         firstName={props.user.first_name}
@@ -430,7 +431,29 @@ export const ParticipantRow = (props: {
       />
 
       <div className="flex flex-col justify-center h-10 overflow-hidden">
-        <TruncatedName text={`${props.user.first_name} ${props.user.last_name}`} className="medium" />
+        <div className="flex items-center gap-1 min-w-0">
+          <TruncatedName text={`${props.user.first_name} ${props.user.last_name}`} className="medium min-w-0" />
+          <button
+            type="button"
+            aria-label={isFavorite ? "Remove from favorites" : "Add to favorites"}
+            aria-pressed={isFavorite}
+            title={isFavorite ? "Remove from favorites" : "Add to favorites"}
+            onClick={(e) => {
+              e.stopPropagation();
+              tauriUtils.toggleFavoriteTeammate(props.user.id);
+            }}
+            className={clsx(
+              "shrink-0 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-300",
+              isFavorite ?
+                "text-amber-400 hover:text-amber-500"
+              : "text-slate-400 hover:text-amber-400 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100",
+            )}
+          >
+            {isFavorite ?
+              <HiStar className="size-3.5" />
+            : <HiOutlineStar className="size-3.5" />}
+          </button>
+        </div>
 
         <div className="muted truncate text-xs text-slate-500">
           {userPresence ?

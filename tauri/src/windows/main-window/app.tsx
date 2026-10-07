@@ -76,7 +76,12 @@ function App() {
   });
 
   // Get current user's teammates
-  const { error: teammatesError, refetch: refetchTeammates } = useQuery("get", "/api/auth/teammates", undefined, {
+  const {
+    data: fetchedTeammates,
+    dataUpdatedAt: teammatesUpdatedAt,
+    error: teammatesError,
+    refetch: refetchTeammates,
+  } = useQuery("get", "/api/auth/teammates", undefined, {
     enabled: !!authToken,
     refetchInterval: 10_000,
     refetchIntervalInBackground: true,
@@ -87,6 +92,13 @@ function App() {
       return data;
     },
   });
+
+  // Drop stored favorites that are no longer teammates. `dataUpdatedAt` changes only when a
+  // fetch succeeds, so a failed or in-flight fetch never prunes.
+  useEffect(() => {
+    if (!isTauri() || !fetchedTeammates) return;
+    tauriUtils.pruneFavoriteTeammates(fetchedTeammates.map((teammate) => teammate.id));
+  }, [teammatesUpdatedAt]);
 
   // Poll call presence every 10 seconds
   const { refetch: refetchCallsPresence } = useQuery("get", "/api/auth/calls/presence", undefined, {
@@ -141,6 +153,12 @@ function App() {
         setAuthToken(token);
       }
     })();
+  }, []);
+
+  // Load favorite teammates (stored locally) on app start
+  useEffect(() => {
+    if (!isTauri()) return;
+    tauriUtils.getFavoriteTeammates().then((ids) => useStore.getState().setFavoriteTeammateIds(ids));
   }, []);
 
   // Deep link handling
