@@ -53,6 +53,47 @@ pub(crate) enum RedrawCommand {
     Stop,
 }
 
+/// Covers the monitor containing `position` (the active overlay's origin), or the window's
+/// current monitor.
+///
+/// Not `set_maximized` on macOS: that is `NSWindow zoom:`, which toggles between the zoomed
+/// frame and the previous one, so every other show left the window at 1x1 and drawing did
+/// nothing. It also zooms on whatever screen the window is on, not the shared one.
+fn cover_monitor(window: &Window, position: Option<LogicalPosition<f64>>) {
+    #[cfg(target_os = "macos")]
+    {
+        let monitor = position
+            .and_then(|position| {
+                window.available_monitors().find(|monitor| {
+                    let scale = monitor.scale_factor();
+                    let origin: LogicalPosition<f64> = monitor.position().to_logical(scale);
+                    let size: LogicalSize<f64> = monitor.size().to_logical(scale);
+                    position.x >= origin.x
+                        && position.x < origin.x + size.width
+                        && position.y >= origin.y
+                        && position.y < origin.y + size.height
+                })
+            })
+            .or_else(|| window.current_monitor());
+        let Some(monitor) = monitor else {
+            log::warn!("DrawingWindow: no monitor to cover");
+            return;
+        };
+        let scale = monitor.scale_factor();
+        // Size first: AppKit keeps the bottom-left corner when resizing, and
+        // set_outer_position places the top-left using the current size.
+        let _ = window.request_inner_size(monitor.size().to_logical::<f64>(scale));
+        window.set_outer_position(monitor.position().to_logical::<f64>(scale));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        if let Some(position) = position {
+            window.set_outer_position(position);
+        }
+        window.set_maximized(true);
+    }
+}
+
 fn valid_frame(frame: Frame) -> bool {
     frame.origin_x.is_finite()
         && frame.origin_y.is_finite()
@@ -244,7 +285,7 @@ impl DrawingWindow {
         })?;
         let window = Arc::new(window);
 
-        window.set_maximized(true);
+        cover_monitor(&window, position);
         window.focus_window();
 
         #[cfg(target_os = "macos")]
@@ -409,10 +450,7 @@ impl DrawingWindow {
         capture_frame: Option<Arc<Mutex<Frame>>>,
     ) {
         self.capture_frame = capture_frame;
-        if let Some(pos) = position {
-            self.window.set_outer_position(pos);
-        }
-        self.window.set_maximized(true);
+        cover_monitor(&self.window, position);
 
         self.left_mouse_pressed = false;
         self.current_path_id = 0;
@@ -442,8 +480,7 @@ impl DrawingWindow {
 
     pub fn move_to(&mut self, position: Option<LogicalPosition<f64>>) {
         if let Some(position) = position {
-            self.window.set_outer_position(position);
-            self.window.set_maximized(true);
+            cover_monitor(&self.window, Some(position));
             self.update_draw_y_transform();
             self.window.request_redraw();
         }
