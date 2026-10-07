@@ -1237,19 +1237,16 @@ async fn room_service_commands(
                     video_room_options.auto_subscribe = false;
                     video_room_options.connect_timeout = SIGNAL_CONNECT_TIMEOUT;
                     let phase_start = Instant::now();
-                    let (video_room, video_rx) = Room::connect(
-                        &url,
-                        &video_token,
-                        video_room_options,
-                    )
-                    .await
-                    .map_err(|e| {
-                        log::error!(
+                    let (video_room, video_rx) =
+                        Room::connect(&url, &video_token, video_room_options)
+                            .await
+                            .map_err(|e| {
+                                log::error!(
                             "room_service_commands: video Room::connect failed after {}ms: {e:?}",
                             phase_start.elapsed().as_millis()
                         );
-                        format!("{e:?}")
-                    })?;
+                                format!("{e:?}")
+                            })?;
                     log::info!(
                         "room_service_commands: video Room::connect (signal + ICE) took {}ms",
                         phase_start.elapsed().as_millis()
