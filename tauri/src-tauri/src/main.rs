@@ -1298,15 +1298,21 @@ fn main() {
                  * it report itself as a standard window. While we are Regular (in a call) tiling
                  * window managers like AeroSpace then adopt it into a workspace and switch to
                  * that workspace every time the tray icon shows it.
+                 * Menu bar style only: in the floating and regular styles the main window is a
+                 * standalone window and needs its style bits (closable for Cmd-W, the regular
+                 * style's title bar and resizing).
                  */
-                if let Some(window) = app.get_webview_window("main") {
-                    match window.ns_window() {
-                        Ok(ns_window) => {
-                            let ns_window: &objc2_app_kit::NSWindow =
-                                unsafe { &*ns_window.cast() };
-                            ns_window.setStyleMask(objc2_app_kit::NSWindowStyleMask::Borderless);
+                if !dock_style {
+                    if let Some(window) = app.get_webview_window("main") {
+                        match window.ns_window() {
+                            Ok(ns_window) => {
+                                let ns_window: &objc2_app_kit::NSWindow =
+                                    unsafe { &*ns_window.cast() };
+                                ns_window
+                                    .setStyleMask(objc2_app_kit::NSWindowStyleMask::Borderless);
+                            }
+                            Err(e) => log::error!("Failed to get the main NSWindow: {e:?}"),
                         }
-                        Err(e) => log::error!("Failed to get the main NSWindow: {e:?}"),
                     }
                 }
 
