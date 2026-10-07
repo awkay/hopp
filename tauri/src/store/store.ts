@@ -63,6 +63,8 @@ type State = {
   customServerUrl: string | null;
   livekitUrl: string | null;
   callsPresence: { [userId: string]: components["schemas"]["CallPresence"] } | null;
+  // User IDs of the starred teammates, persisted locally in the Tauri app state
+  favoriteTeammateIds: string[];
 };
 
 type Actions = {
@@ -86,6 +88,8 @@ type Actions = {
   setCustomServerUrl: (url: string | null) => void;
   setLivekitUrl: (url: string | null) => void;
   setCallsPresence: (presence: { [userId: string]: components["schemas"]["CallPresence"] } | null) => void;
+  setFavoriteTeammateIds: (ids: string[]) => void;
+  setFavoriteTeammate: (userId: string, favorite: boolean) => void;
 };
 
 const initialState: State = {
@@ -104,6 +108,7 @@ const initialState: State = {
   customServerUrl: null,
   livekitUrl: null,
   callsPresence: null,
+  favoriteTeammateIds: [],
 };
 
 /**
@@ -178,6 +183,15 @@ const useStore = create<State & Actions>()(
       set((state) => {
         state.callsPresence = presence;
       }),
+    setFavoriteTeammateIds: (ids) =>
+      set((state) => {
+        state.favoriteTeammateIds = ids;
+      }),
+    setFavoriteTeammate: (userId, favorite) =>
+      set((state) => {
+        const ids = state.favoriteTeammateIds.filter((id) => id !== userId);
+        state.favoriteTeammateIds = favorite ? [...ids, userId] : ids;
+      }),
     setTab: (tab) =>
       set((state) => {
         state.tab = tab;
@@ -189,11 +203,14 @@ const useStore = create<State & Actions>()(
     reset: () =>
       set((state) => {
         // First clear the auth token to prevent re-fetching
-        // Then reset all other state properties, but preserve customServerUrl
+        // Then reset all other state properties, but preserve the locally stored
+        // customServerUrl and favoriteTeammateIds
         const preservedCustomServerUrl = state.customServerUrl;
+        const preservedFavoriteTeammateIds = state.favoriteTeammateIds;
         Object.assign(state, {
           ...initialState,
           customServerUrl: preservedCustomServerUrl,
+          favoriteTeammateIds: preservedFavoriteTeammateIds,
         });
       }),
   })),

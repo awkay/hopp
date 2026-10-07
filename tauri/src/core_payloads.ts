@@ -156,6 +156,11 @@ export interface CommandMap {
   // Token management
   store_token_cmd: { args: { token: string }; return: void };
   get_stored_token: { args: void; return: string | null };
+  /** User IDs of the teammates starred as favorites (stored locally). */
+  get_favorite_teammates: { args: void; return: string[] };
+  set_favorite_teammate: { args: { userId: string; favorite: boolean }; return: void };
+  /** Removes stored favorites whose user ID is not in `knownIds`; saves only if one is removed. */
+  retain_favorite_teammates: { args: { knownIds: string[] }; return: void };
   delete_stored_token: { args: void; return: void };
 
   // Sound

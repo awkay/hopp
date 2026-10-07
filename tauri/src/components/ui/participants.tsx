@@ -1,11 +1,13 @@
 import { components } from "@/openapi";
 import { ParticipantRow } from "./participant-row-wo-livekit";
 import { ScrollArea } from "./scroll-area";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import Fuse from "fuse.js";
+import clsx from "clsx";
 import { Input } from "./input";
 import { HiMagnifyingGlass } from "react-icons/hi2";
 import { useAPI } from "@/services/query";
+import useStore from "@/store/store";
 
 interface ParticipantsProps {
   teammates: components["schemas"]["BaseUser"][];
@@ -39,8 +41,17 @@ export const Participants = ({ teammates }: ParticipantsProps) => {
     setFilteredTeammates(filteredTeammates);
   }, [teammates, searchQuery]);
 
-  const onlineTeammates = filteredTeammates?.filter((teammate) => teammate.is_active) || [];
-  const offlineTeammates = filteredTeammates?.filter((teammate) => !teammate.is_active) || [];
+  const favoriteTeammateIds = useStore((state) => state.favoriteTeammateIds);
+  const favoriteIds = useMemo(() => new Set(favoriteTeammateIds), [favoriteTeammateIds]);
+
+  const favoriteTeammates = filteredTeammates?.filter((teammate) => favoriteIds.has(teammate.id)) || [];
+  const otherTeammates = filteredTeammates?.filter((teammate) => !favoriteIds.has(teammate.id)) || [];
+  const sortedFavoriteTeammates = [
+    ...favoriteTeammates.filter((teammate) => teammate.is_active),
+    ...favoriteTeammates.filter((teammate) => !teammate.is_active),
+  ];
+  const onlineTeammates = otherTeammates.filter((teammate) => teammate.is_active);
+  const offlineTeammates = otherTeammates.filter((teammate) => !teammate.is_active);
 
   return (
     <div className="flex flex-col gap-2 w-full">
@@ -55,8 +66,28 @@ export const Participants = ({ teammates }: ParticipantsProps) => {
         />
       </div>
 
+      {sortedFavoriteTeammates.length > 0 && (
+        <div>
+          <h3 className="muted text-xs text-slate-500 font-medium mb-2">
+            Favorites ({sortedFavoriteTeammates.length})
+          </h3>
+          <div className="flex flex-col gap-2">
+            {sortedFavoriteTeammates.map((teammate) => (
+              <ParticipantRow key={teammate.id} user={teammate} rooms={rooms || []} />
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="">
-        <h3 className="muted text-xs text-slate-500 font-medium mb-2">Online ({onlineTeammates.length})</h3>
+        <h3
+          className={clsx(
+            "muted text-xs text-slate-500 font-medium",
+            sortedFavoriteTeammates.length > 0 ? "my-2" : "mb-2",
+          )}
+        >
+          Online ({onlineTeammates.length})
+        </h3>
         <div className="flex flex-col gap-2">
           {onlineTeammates.map((teammate) => (
             <ParticipantRow key={teammate.id} user={teammate} rooms={rooms || []} />
