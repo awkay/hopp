@@ -168,6 +168,8 @@ export interface CommandMap {
 
   // Logs
   get_logs: { args: void; return: string };
+  /** Reveals the app state file in the platform file manager (its folder if the file is missing). */
+  reveal_settings_file: { args: void; return: void };
 
   // UI
   set_deactivate_hiding: { args: { deactivate: boolean }; return: void };

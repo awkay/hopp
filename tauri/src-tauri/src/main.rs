@@ -208,6 +208,22 @@ fn get_logs(_app: tauri::AppHandle) -> String {
     }
 }
 
+/// Reveals the app state file (settings, login token, ...) in the platform file
+/// manager, or its folder when the file does not exist.
+#[tauri::command(async)]
+fn reveal_settings_file(app: tauri::AppHandle) -> Result<(), String> {
+    let file = app.state::<AppData>().settings().app_state.file_path();
+    let target = match file.parent() {
+        Some(folder) if !file.exists() => folder,
+        _ => file.as_path(),
+    };
+    log::info!("reveal_settings_file: {}", target.display());
+    tauri_plugin_opener::reveal_item_in_dir(target).map_err(|e| {
+        log::error!("Failed to reveal {}: {e}", target.display());
+        format!("Failed to reveal {}: {e}", target.display())
+    })
+}
+
 #[tauri::command(async)]
 fn set_deactivate_hiding(app: tauri::AppHandle, deactivate: bool) {
     log::debug!("set_deactivate_hiding: {deactivate}");
@@ -1377,6 +1393,7 @@ fn main() {
             stop_sound,
             reset_core_process,
             get_logs,
+            reveal_settings_file,
             set_deactivate_hiding,
             set_controller_cursor,
             open_accessibility_settings,
