@@ -794,8 +794,13 @@ impl AppState {
     /// This method assumes the caller already holds the internal lock.
     /// It should only be called from other methods that have acquired the lock.
     fn save(&self) -> bool {
-        let app_state_path = self.root_folder.join(get_app_state_filename());
-        Self::write_file(&app_state_path, &self.state)
+        Self::write_file(&self.file_path(), &self.state)
+    }
+
+    /// Path of the JSON file the state is persisted to. The file may not exist
+    /// (e.g. if writing it failed).
+    pub fn file_path(&self) -> PathBuf {
+        self.root_folder.join(get_app_state_filename())
     }
 
     /// Writes the state data to a file in JSON format.

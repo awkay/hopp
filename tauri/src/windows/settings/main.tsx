@@ -21,6 +21,7 @@ import { tauriUtils } from "@/windows/window-utils";
 import { OS, URLS } from "@/constants";
 import posthog from "posthog-js";
 import useStore from "@/store/store";
+import toast, { Toaster } from "react-hot-toast";
 
 const queryClient = new QueryClient();
 
@@ -38,6 +39,7 @@ const screenSharePickerModeItems = [
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
+      <Toaster position="bottom-right" />
       <SettingsWindow />
     </QueryClientProvider>
   </React.StrictMode>,
@@ -704,6 +706,21 @@ function SettingsWindow() {
             )}
           </main>
         </div>
+
+        <footer className="pt-3">
+          <button
+            type="button"
+            className="text-xs text-gray-500 underline-offset-2 hover:text-gray-700 hover:underline dark:text-gray-400 dark:hover:text-gray-200"
+            onClick={() => {
+              typedInvoke("reveal_settings_file").catch((error) => {
+                console.error("Failed to reveal settings file", error);
+                toast.error("Could not show the settings file");
+              });
+            }}
+          >
+            {OS === "macos" ? "Show settings file in Finder" : "Show settings file"}
+          </button>
+        </footer>
       </div>
     </div>
   );
