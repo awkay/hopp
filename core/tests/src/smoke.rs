@@ -282,10 +282,13 @@ async fn viewer_hang(conn: &CoreConn, core_pid: Option<u32>) -> io::Result<()> {
     // Core resolves a sharer's name through its audio identity, so join with both, like a client.
     let sharer_audio = Participant::join(FAKE_SHARER).await?;
     let sharer = Participant::join_track(FAKE_SHARER, "video").await?;
-    let source = NativeVideoSource::new(WebrtcVideoResolution {
-        width: 1280,
-        height: 720,
-    });
+    let source = NativeVideoSource::new(
+        WebrtcVideoResolution {
+            width: 1280,
+            height: 720,
+        },
+        true,
+    );
     let pusher = tokio::spawn(push_frames(source.clone()));
     let track = LocalVideoTrack::create_video_track("screen_share", RtcVideoSource::Native(source));
     // Like the app: the track is published muted at call start and unmuted to share.
@@ -599,6 +602,7 @@ async fn push_frames(source: NativeVideoSource) {
         source.capture_frame(&VideoFrame {
             rotation: VideoRotation::VideoRotation0,
             timestamp_us: 0,
+            frame_metadata: None,
             buffer,
         });
         luma = luma.wrapping_add(4);

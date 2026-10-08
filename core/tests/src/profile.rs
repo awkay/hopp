@@ -13,7 +13,9 @@ use crate::screenshare_client;
 use crate::smoke::{Participant, ROOM_EVENT_TIMEOUT};
 use clap::ValueEnum;
 use futures::StreamExt;
-use livekit::options::{TrackPublishOptions, VideoCodec, VideoEncoding};
+use livekit::options::{
+    DegradationPreference, TrackPublishOptions, VideoCodec, VideoEncoding, VideoEncodingUpdate,
+};
 use livekit::prelude::*;
 use livekit::webrtc::audio_frame::AudioFrame;
 use livekit::webrtc::audio_source::native::NativeAudioSource;
@@ -175,17 +177,20 @@ async fn run_until_stopped(ready_file: &Path, stop_file: &Path) -> io::Result<()
 
 async fn publish_screen(participant: &Participant) -> io::Result<JoinHandle<()>> {
     let picture = ScrollingPicture::new(SCREEN.0, SCREEN.1);
-    let source = NativeVideoSource::new(WebrtcVideoResolution {
-        width: SCREEN.0,
-        height: SCREEN.1,
-    });
+    let source = NativeVideoSource::new(
+        WebrtcVideoResolution {
+            width: SCREEN.0,
+            height: SCREEN.1,
+        },
+        true,
+    );
     let track =
         LocalVideoTrack::create_video_track("screen_share", RtcVideoSource::Native(source.clone()));
     participant
         .room
         .local_participant()
         .publish_track(
-            LocalTrack::Video(track),
+            LocalTrack::Video(track.clone()),
             TrackPublishOptions {
                 source: TrackSource::Screenshare,
                 video_codec: VideoCodec::H264,
@@ -199,16 +204,31 @@ async fn publish_screen(participant: &Participant) -> io::Result<JoinHandle<()>>
         )
         .await
         .map_err(|e| io::Error::other(format!("publishing the fake screen share failed: {e:?}")))?;
+    // Like core's own share (`apply_screen_share_encoding`): under CPU or bandwidth pressure, drop
+    // frames rather than resolution. WebRTC's default scaled this share down to 1128x732.
+    track
+        .set_encoding_parameters(VideoEncodingUpdate {
+            max_bitrate: Some(SCREEN_BITRATE),
+            max_framerate: Some(SCREEN_FPS),
+            scale_resolution_down_by: Some(1.0),
+            degradation_preference: Some(DegradationPreference::MaintainResolution),
+        })
+        .map_err(|e| {
+            io::Error::other(format!("setting the fake share's encoding failed: {e:?}"))
+        })?;
     // Scrolling a document by a few lines per frame.
     Ok(tokio::spawn(push_video(source, picture, SCREEN_FPS, 6)))
 }
 
 async fn publish_camera(participant: &Participant, speed: u32) -> io::Result<JoinHandle<()>> {
     let picture = ScrollingPicture::new(CAMERA.0, CAMERA.1);
-    let source = NativeVideoSource::new(WebrtcVideoResolution {
-        width: CAMERA.0,
-        height: CAMERA.1,
-    });
+    let source = NativeVideoSource::new(
+        WebrtcVideoResolution {
+            width: CAMERA.0,
+            height: CAMERA.1,
+        },
+        false,
+    );
     let track =
         LocalVideoTrack::create_video_track("camera", RtcVideoSource::Native(source.clone()));
     participant
@@ -291,13 +311,13 @@ async fn push_video(
         source.capture_frame(&VideoFrame {
             rotation: VideoRotation::VideoRotation0,
             timestamp_us: 0,
+            frame_metadata: None,
             buffer: picture.frame(offset),
         });
         offset = (offset + rows_per_frame) % picture.height;
     }
 }
 
-/// Decodes the share, as a real viewer would, and counts the frames.
 /// What the fake viewer received: the decoded size and the time between frames.
 #[derive(Default)]
 struct FrameLog {
@@ -332,6 +352,7 @@ impl FrameLog {
     }
 }
 
+/// Decodes the share, as a real viewer would, and logs each frame.
 async fn log_frames(track: RemoteVideoTrack, frames: Arc<Mutex<FrameLog>>) {
     let mut stream = NativeVideoStream::new(track.rtc_track());
     while let Some(frame) = stream.next().await {
