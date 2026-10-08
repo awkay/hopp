@@ -4,7 +4,7 @@
 //! never held across I/O to core or waits, so they can't deadlock with a command waiting
 //! for a response.
 
-use crate::{call_state, AppData};
+use crate::{call_state, tray, AppData};
 use socket_lib::client::IncomingHandler;
 use socket_lib::Message;
 use std::sync::atomic::Ordering;
@@ -47,6 +47,18 @@ impl IncomingHandler for CoreEventHandler {
                     "core_events: participants snapshot ({} participants)",
                     snapshot.len()
                 );
+                let local_sharing = snapshot
+                    .iter()
+                    .any(|p| p.identity == "local" && p.is_screensharing);
+                let data = app.state::<AppData>();
+                let settings = data.settings();
+                let show = local_sharing
+                    && settings
+                        .app_state
+                        .user_settings()
+                        .show_menu_bar_sharing_buttons;
+                tray::update_sharing_controls(app, show);
+                drop(settings);
                 self.emit("core_participants_snapshot", &snapshot);
             }
             Message::RoleChange(event) => {
@@ -127,6 +139,7 @@ impl IncomingHandler for CoreEventHandler {
                 app.state::<AppData>()
                     .drawing_enabled
                     .store(false, Ordering::Relaxed);
+                tray::update_drawing_icon(app);
                 #[cfg(not(target_os = "macos"))]
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.set_always_on_top(false);

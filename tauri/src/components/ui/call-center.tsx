@@ -443,8 +443,13 @@ function DrawingEnableButton() {
     const unlisten = listen("core_drawing_disabled", () => {
       setDrawingEnabled(false);
     });
+    // Drawing can also be toggled from the menu-bar button while sharing.
+    const unlistenChanged = listen<boolean>("drawing_enabled_changed", (event) => {
+      setDrawingEnabled(event.payload);
+    });
     return () => {
       unlisten.then((fn) => fn());
+      unlistenChanged.then((fn) => fn());
     };
   }, []);
 

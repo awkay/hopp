@@ -115,6 +115,7 @@ export interface UserSettings {
   show_dock_icon_in_call: boolean;
   window_style: WindowStyle;
   show_menu_bar_icon: boolean;
+  show_menu_bar_sharing_buttons: boolean;
   start_camera_on_call: boolean;
   start_mic_on_call: boolean;
   remote_control_enabled: boolean;
@@ -251,6 +252,7 @@ export interface CommandMap {
   set_window_style: { args: { style: WindowStyle }; return: void };
   set_show_menu_bar_icon: { args: { enabled: boolean }; return: void };
   get_launch_window_style: { args: void; return: WindowStyleSettings };
+  set_show_menu_bar_sharing_buttons: { args: { enabled: boolean }; return: void };
   set_auto_update_enabled: { args: { enabled: boolean }; return: void };
   set_start_camera_on_call: { args: { enabled: boolean }; return: void };
   set_start_mic_on_call: { args: { enabled: boolean }; return: void };

@@ -182,6 +182,9 @@ pub struct UserSettings {
     pub window_style: WindowStyle,
     #[serde(default = "default_true")]
     pub show_menu_bar_icon: bool,
+    /// macOS: draw / stop sharing buttons next to the menu-bar icon while sharing.
+    #[serde(default = "default_true")]
+    pub show_menu_bar_sharing_buttons: bool,
     pub start_camera_on_call: bool,
     pub start_mic_on_call: bool,
     #[serde(default = "default_true")]
@@ -214,6 +217,7 @@ impl Default for UserSettings {
             show_dock_icon_in_call: true,
             window_style: WindowStyle::MenuBar,
             show_menu_bar_icon: true,
+            show_menu_bar_sharing_buttons: true,
             start_camera_on_call: false,
             start_mic_on_call: true,
             remote_control_enabled: true,

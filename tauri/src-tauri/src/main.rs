@@ -4,8 +4,8 @@
 use hopp::sounds::{self, SoundConfig};
 use log::LevelFilter;
 use socket_lib::{
-    AudioCaptureMessage, AudioDevice, CallId, CameraDevice, DrawingEnabled, Message,
-    ScreenSharePickerMode, ScreenShareResolution, SentryMetadata,
+    AudioCaptureMessage, AudioDevice, CallId, CameraDevice, Message, ScreenSharePickerMode,
+    ScreenShareResolution, SentryMetadata,
 };
 use tauri::Manager;
 use tauri::{
@@ -427,32 +427,7 @@ fn get_drawing_enabled(app: tauri::AppHandle) -> bool {
 
 #[tauri::command(async)]
 fn set_drawing_enabled(app: tauri::AppHandle, enabled: bool, permanent: bool) {
-    log::info!("set_drawing_enabled: enabled={enabled} permanent={permanent}");
-    let data = app.state::<AppData>();
-
-    if data.drawing_enabled.swap(enabled, Ordering::Relaxed) == enabled {
-        return;
-    }
-
-    if data
-        .core
-        .send(Message::DrawingEnabled(DrawingEnabled { permanent }))
-        .is_err()
-    {
-        data.drawing_enabled.store(!enabled, Ordering::Relaxed);
-        return;
-    }
-
-    if let Some(window) = app.get_webview_window("main") {
-        #[cfg(not(target_os = "macos"))]
-        let _ = window.set_always_on_top(enabled);
-        if enabled {
-            #[cfg(target_os = "macos")]
-            let _ = window.hide();
-            #[cfg(target_os = "windows")]
-            let _ = window.minimize();
-        }
-    }
+    hopp::set_drawing_enabled(&app, enabled, permanent);
 }
 
 #[tauri::command(async)]
@@ -835,6 +810,22 @@ fn set_show_menu_bar_icon(app: tauri::AppHandle, enabled: bool) {
 #[tauri::command(async)]
 fn get_launch_window_style(app: tauri::AppHandle) -> WindowStyleSettings {
     app.state::<AppData>().window_style
+}
+
+#[tauri::command(async)]
+fn set_show_menu_bar_sharing_buttons(app: tauri::AppHandle, enabled: bool) {
+    log::info!("set_show_menu_bar_sharing_buttons: {enabled}");
+    let data = app.state::<AppData>();
+    // Save and post under the settings lock, in order with the snapshot handler.
+    let mut settings = data.settings();
+    settings
+        .app_state
+        .update_user_setting(|s| s.show_menu_bar_sharing_buttons = enabled);
+    hopp::tray::update_sharing_controls(
+        &app,
+        enabled && data.is_screensharing.load(Ordering::Relaxed),
+    );
+    drop(settings);
 }
 
 #[tauri::command(async)]
@@ -1539,6 +1530,7 @@ fn main() {
             set_window_style,
             set_show_menu_bar_icon,
             get_launch_window_style,
+            set_show_menu_bar_sharing_buttons,
             set_auto_update_enabled,
             set_start_camera_on_call,
             set_start_mic_on_call,

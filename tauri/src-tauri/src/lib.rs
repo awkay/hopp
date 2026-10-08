@@ -18,9 +18,7 @@ use sounds::SoundEntry;
 use std::collections::VecDeque;
 use std::env;
 use std::path::PathBuf;
-#[cfg(target_os = "macos")]
-use std::sync::atomic::Ordering;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::time::Instant;
@@ -34,7 +32,7 @@ use tauri_plugin_autostart::AutoLaunchManager;
 use tauri_plugin_shell::{process::CommandChild, process::CommandEvent, ShellExt};
 
 use socket_lib::call::CallTracker;
-use socket_lib::{EventSocket, Message, SentryMetadata, SocketSender};
+use socket_lib::{DrawingEnabled, EventSocket, Message, SentryMetadata, SocketSender};
 #[cfg(target_os = "macos")]
 use tauri::{LogicalPosition, PhysicalPosition, PhysicalSize};
 
@@ -154,6 +152,9 @@ pub struct AppData {
 
     /// The window style this session runs with (fixed at launch).
     pub window_style: app_state::WindowStyleSettings,
+    /// Whether the menu-bar item shows the draw / stop sharing buttons (written on the main
+    /// thread together with the icon; read when placing the popup and handling clicks).
+    pub tray_sharing_controls: AtomicBool,
 
     /// macOS app activation observer — keeps the NSNotificationCenter observer alive.
     #[cfg(target_os = "macos")]
@@ -199,6 +200,7 @@ impl AppData {
             activation_policy_regular: Arc::new(AtomicBool::new(false)),
             tray_state: Mutex::new(None),
             window_style,
+            tray_sharing_controls: AtomicBool::new(false),
             #[cfg(target_os = "macos")]
             activation_observer: Mutex::new(None),
             #[cfg(target_os = "macos")]
@@ -211,6 +213,42 @@ impl AppData {
 
     pub fn settings(&self) -> std::sync::MutexGuard<'_, Settings> {
         self.settings.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// Turns the sharer's local drawing on or off. Used by the popup and the menu-bar draw
+/// button; emits `drawing_enabled_changed` so the popup reflects either.
+pub fn set_drawing_enabled(app: &AppHandle, enabled: bool, permanent: bool) {
+    log::info!("set_drawing_enabled: enabled={enabled} permanent={permanent}");
+    let data = app.state::<AppData>();
+
+    if data.drawing_enabled.swap(enabled, Ordering::Relaxed) == enabled {
+        return;
+    }
+
+    if data
+        .core
+        .send(Message::DrawingEnabled(DrawingEnabled { permanent }))
+        .is_err()
+    {
+        data.drawing_enabled.store(!enabled, Ordering::Relaxed);
+        return;
+    }
+
+    if let Err(e) = app.emit("drawing_enabled_changed", enabled) {
+        log::error!("set_drawing_enabled: failed to emit drawing_enabled_changed: {e:?}");
+    }
+    tray::update_drawing_icon(app);
+
+    if let Some(window) = app.get_webview_window("main") {
+        #[cfg(not(target_os = "macos"))]
+        let _ = window.set_always_on_top(enabled);
+        if enabled {
+            #[cfg(target_os = "macos")]
+            let _ = window.hide();
+            #[cfg(target_os = "windows")]
+            let _ = window.minimize();
+        }
     }
 }
 
@@ -600,8 +638,20 @@ pub fn center_window_on_tray(window: &WebviewWindow, tray_rect: Rect, show_windo
         // we should change this as well.
         window_size = PhysicalSize::new(400, 500);
     }
-    let x =
-        ((tray_pos.x as f64) + tray_size.width / 2.0 - (window_size.width as f64) / 2.0) / scale;
+    // While sharing, the item also holds the draw and stop buttons left of the Hopp icon;
+    // center on the Hopp icon.
+    let extra_width = if window
+        .state::<AppData>()
+        .tray_sharing_controls
+        .load(Ordering::Relaxed)
+    {
+        tray::SHARING_CONTROLS_EXTRA_WIDTH * scale
+    } else {
+        0.0
+    };
+    let x = ((tray_pos.x as f64) + extra_width + (tray_size.width - extra_width) / 2.0
+        - (window_size.width as f64) / 2.0)
+        / scale;
     let y = (tray_pos.y as f64) / scale;
 
     let new_position = LogicalPosition::new(x, y);
@@ -787,7 +837,7 @@ pub fn setup_tray_icon(
             .show_menu_on_left_click(false)
             .icon_as_template(true);
 
-        if let Some(icon) = tray::load_tray_icon(&app_handle, "tray-dark-default.png") {
+        if let Some(icon) = tray::load_tray_icon(&app_handle, tray::HOPP_ICON) {
             log::info!("setup_tray_icon: Using template icon tray-dark-default.png");
             builder = builder.icon(icon);
         } else if let Some(icon) = app.default_window_icon() {
@@ -801,6 +851,8 @@ pub fn setup_tray_icon(
                 if let TrayIconEvent::Click {
                     button: MouseButton::Left,
                     button_state: MouseButtonState::Up,
+                    position,
+                    rect,
                     ..
                 } = event
                 {
@@ -812,6 +864,9 @@ pub fn setup_tray_icon(
                     });
 
                     let app_handle = tray.app_handle();
+                    if tray::handle_sharing_controls_click(app_handle, position, rect) {
+                        return;
+                    }
                     if let Some(window) = app_handle.get_webview_window("main") {
                         if dock_style {
                             show_main_window(&window);

@@ -12,7 +12,7 @@
 //! fire-and-forget closure while the call lock is held, so they run in transition order.
 
 use crate::core_client::CoreError;
-use crate::{shortcuts, AppData};
+use crate::{shortcuts, tray, AppData};
 use serde::Serialize;
 use socket_lib::{CallId, CallStartResultMessage, Message};
 use std::sync::atomic::Ordering;
@@ -147,6 +147,7 @@ pub fn refresh_call_shortcuts(app: &AppHandle) {
 fn apply_call_ended_effects(app: &AppHandle, data: &AppData) {
     data.is_camera_on.store(false, Ordering::Relaxed);
     data.is_screensharing.store(false, Ordering::Relaxed);
+    tray::update_sharing_controls(app, false);
     #[cfg(target_os = "macos")]
     data.sleep_prevention
         .lock()

@@ -522,6 +522,16 @@ function SettingsWindow() {
                     />
                   }
                   {OS === "macos" && <WindowStyleRow settings={settings} onChanged={() => refetchSettings()} />}
+                  {OS === "macos" && showsMenuBarIcon(settings.window_style, settings.show_menu_bar_icon) && (
+                    <CheckboxRow
+                      title="Show sharing buttons in menu bar"
+                      description="Add draw and stop sharing buttons next to the menu bar icon while you share your screen"
+                      checked={settings.show_menu_bar_sharing_buttons}
+                      onCheckedChange={(v) => {
+                        typedInvoke("set_show_menu_bar_sharing_buttons", { enabled: v }).then(() => refetchSettings());
+                      }}
+                    />
+                  )}
                 </div>
 
                 <hr className="h-px w-full border-none bg-gray-300 dark:bg-gray-600" />
