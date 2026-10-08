@@ -11,6 +11,69 @@ The test suite provides automated testing for:
 - **Clipboard functionality** - Testing clipboard operations including copy, cut, and paste with single and multiple payloads
 - **Screenshare functionality** - Testing screen sharing capabilities via socket communication
 
+## Smoke scenarios (self-checking)
+
+`smoke.sh` runs scenarios that check their own results: each one drives a fresh core over its
+socket the way the Tauri app does, joins the LiveKit room as other participants where needed, and
+prints `PASS` or `FAIL` with the reason. Nobody has to watch the screen.
+
+```bash
+./smoke.sh                        # every scenario except network-drop (or: task smoke)
+./smoke.sh bandwidth screenshare  # just these
+./smoke.sh --net bad              # every scenario over a bad connection
+./smoke.sh network-drop           # opt-in: cuts LiveKit traffic for 10 s mid-call
+./smoke.sh --list
+```
+
+| Scenario | Checks |
+| --- | --- |
+| `call-lifecycle` | Core joins the room (seen by another participant), reports itself and the others, leaves on `CallEnd`, goes idle (CPU) |
+| `call-restart` | Five calls back to back, each joined and ended |
+| `call-end-race` | Calls ended before their room connects don't break the next call |
+| `stale-call-end` | A late `CallEnd` for the previous call is only acknowledged; the current call stays up |
+| `bandwidth` | Low-bandwidth mode: local toggle, request sent to others, remote request, requester leaving |
+| `viewer-hang` | Core views a fake sharer through a mute/unmute storm, keeps answering, goes idle after the call |
+| `screenshare` | Core shares the screen, another participant receives frames, the share stops cleanly |
+| `network-drop` | The call survives a 10 s outage of all LiveKit traffic (opt-in, needs sudo) |
+
+One-time setup:
+
+- `brew install livekit`. The script starts `livekit-server --dev` when nothing answers at
+  `LIVEKIT_URL` (default `ws://localhost:7880`, key `devkey` / `secret`).
+- Stable Rust (`CARGO_TOOLCHAIN=<name> ./smoke.sh` builds with another rustup toolchain).
+- The terminal running the script needs Microphone access (every call starts the mic) and, for
+  `screenshare`, Screen Recording. macOS asks on the first run; re-run after granting.
+
+### Network conditions
+
+`netem.sh` throttles traffic with macOS's built-in shaper (dummynet), so calls run over an emulated
+connection. It needs root and only touches its own pf anchor and pipes.
+
+```bash
+sudo ./netem.sh bad                   # good | medium | bad | 3g | drop (see the table in the script)
+sudo ./netem.sh 3g --remote <host>    # throttle a real call through <host> instead of local LiveKit
+sudo ./netem.sh drop --for 10         # 10 s outage, then back to the previous profile
+sudo ./netem.sh status
+sudo ./netem.sh off
+```
+
+Locally it shapes LiveKit's ports on `lo0`: upload (to the server) is mostly the sharer's video,
+download is what viewers receive. Switching profiles takes effect immediately, also mid-call, so it
+works for manual testing with the real app too. `smoke.sh --net <profile>` runs the suite with a
+profile applied and turns it off at the end.
+
+### Notes
+
+`viewer-hang` opens core's screen-share window for about half a minute. Logs land in `out/`:
+`<scenario>.log` (harness) and `<scenario>.core.log` (core). The exit status is the number of
+failed scenarios. The scenarios live in `src/smoke.rs`; the socket client they share (request ids,
+call ids, keepalive) is `src/ipc.rs`.
+
+## Manual scenarios
+
+The commands below drive core and fake participants, but most of them need a person watching the
+screen to judge the result.
+
 ## Prerequisites
 
 - Rust (latest stable version)

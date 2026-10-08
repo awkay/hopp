@@ -17,6 +17,7 @@ mod remote_drawing;
 mod remote_keyboard;
 mod screenshare_client;
 mod screensharing;
+mod smoke;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -108,6 +109,14 @@ enum Commands {
     },
     /// Reproduce screenshare deadlock hang
     HangRepro,
+    /// Run a self-checking scenario; exits non-zero on failure (see smoke.sh)
+    Smoke {
+        #[arg(value_enum)]
+        scenario: smoke::Scenario,
+        /// PID of the core under test, to check it goes idle after calls
+        #[arg(long)]
+        core_pid: Option<u32>,
+    },
 }
 
 #[derive(Clone, ValueEnum, Debug)]
@@ -473,6 +482,12 @@ async fn main() -> io::Result<()> {
             println!("Running screenshare deadlock hang reproduction test...");
             hang_repro::test_screenshare_reconnect_hang().await?;
             println!("Hang reproduction test finished.");
+        }
+        Commands::Smoke {
+            scenario,
+            core_pid,
+        } => {
+            smoke::run(scenario, core_pid).await?;
         }
         Commands::LocalDrawing { test_type } => {
             match test_type {

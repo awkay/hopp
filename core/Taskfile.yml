@@ -45,6 +45,11 @@ tasks:
     cmds:
       - cargo run -- {{.CLI_ARGS}}
 
+  smoke:
+    desc: Run the self-checking smoke scenarios, a fresh core each (e.g. task smoke -- bandwidth)
+    cmds:
+      - ./tests/smoke.sh {{.CLI_ARGS}}
+
   release:
     desc: Builds release core process, it takes two argument vars, OS (mac | win) and AARCH (arm64 | x64)
     vars:
