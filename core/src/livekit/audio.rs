@@ -67,6 +67,7 @@ impl AudioPublisher {
         let processing_task = audio_handle.spawn(process_audio_samples(
             sample_rx,
             native_source,
+            track.clone(),
             sample_rate,
             processor,
             denoiser,
@@ -102,6 +103,7 @@ impl AudioPublisher {
 async fn process_audio_samples(
     mut rx: mpsc::UnboundedReceiver<Vec<i16>>,
     audio_source: NativeAudioSource,
+    track: LocalAudioTrack,
     sample_rate: u32,
     processor: SharedProcessor,
     mut denoiser: Option<Denoiser>,
@@ -144,6 +146,9 @@ async fn process_audio_samples(
             buffer.drain(..drop_samples);
         }
 
+        // Muted by us (`AudioPublisher::mute`) or by the server.
+        let muted = track.is_muted();
+
         // Process all complete frames
         while buffer.len() >= samples_per_unit {
             chunk.copy_from_slice(&buffer[..samples_per_unit]);
@@ -153,7 +158,7 @@ async fn process_audio_samples(
                 let _ = p.process_stream(&mut chunk, sample_rate as i32, AUDIO_NUM_CHANNELS as i32);
             }
             if let Some(ref mut denoiser) = denoiser {
-                denoiser.process(&mut chunk);
+                denoiser.process(&mut chunk, muted);
             }
             capture_frame(&audio_source, &chunk, samples_per_unit, sample_rate).await;
         }

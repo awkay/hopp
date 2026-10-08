@@ -88,6 +88,15 @@ impl DtlnEngine {
         })
     }
 
+    /// Back to the state of a new engine: empty sample history and zeroed LSTM state (a `None`
+    /// state tensor runs as zeros).
+    fn reset(&mut self) {
+        self.in_buffer.fill(0.0);
+        self.out_buffer.fill(0.0);
+        self.spectral_mem = None;
+        self.signal_mem = None;
+    }
+
     fn feed(&mut self, samples: &[f32]) -> Result<[f32; BLOCK_SHIFT], String> {
         debug_assert_eq!(samples.len(), BLOCK_SHIFT);
 
@@ -194,6 +203,8 @@ impl DtlnEngine {
 pub struct Denoiser {
     engine: DtlnEngine,
     enabled: Arc<AtomicBool>,
+    /// Some blocks were skipped (muted or turned off) since the engine last ran.
+    paused: bool,
     input_queue: Vec<f32>,
     output_queue: Vec<f32>,
 }
@@ -204,6 +215,7 @@ impl Denoiser {
         Ok(Self {
             engine,
             enabled,
+            paused: false,
             input_queue: Vec::with_capacity(BLOCK_SHIFT * 4),
             output_queue: Vec::with_capacity(BLOCK_SHIFT * 4),
         })
@@ -213,9 +225,22 @@ impl Denoiser {
         self.enabled.load(Ordering::Relaxed)
     }
 
-    pub fn process(&mut self, samples: &mut [i16]) {
-        if !self.is_enabled() {
+    /// Denoises `samples` in place.
+    ///
+    /// Does nothing while noise cancellation is off or the mic is `muted`: WebRTC sends silence
+    /// for a muted track, so the model's work would be thrown away (about 3% of a core). When it
+    /// resumes, it starts from a fresh state, as at the start of a call, so audio from before the
+    /// pause doesn't bleed into the first blocks after it.
+    pub fn process(&mut self, samples: &mut [i16], muted: bool) {
+        if muted || !self.is_enabled() {
+            self.paused = true;
             return;
+        }
+        if self.paused {
+            self.paused = false;
+            self.engine.reset();
+            self.input_queue.clear();
+            self.output_queue.clear();
         }
 
         // Queue new input samples as f32.
@@ -257,6 +282,43 @@ impl Denoiser {
         self.output_queue.drain(..available);
         for slot in samples[available..].iter_mut() {
             *slot = 0;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 200 ms of a 16 kHz tone, in 10 ms frames.
+    fn frames() -> Vec<Vec<i16>> {
+        (0..20)
+            .map(|frame| {
+                (0..160)
+                    .map(|n| (((frame * 160 + n) as f32 * 0.07).sin() * 8000.0) as i16)
+                    .collect()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn resumes_after_a_mute_as_if_new() {
+        let enabled = Arc::new(AtomicBool::new(true));
+        let mut fresh = Denoiser::new(enabled.clone()).unwrap();
+        let mut resumed = Denoiser::new(enabled).unwrap();
+        for frame in frames() {
+            resumed.process(&mut frame.clone(), false);
+        }
+
+        let mut muted = frames()[0].clone();
+        resumed.process(&mut muted, true);
+        assert_eq!(muted, frames()[0], "muted audio passes through untouched");
+
+        for frame in frames() {
+            let (mut expected, mut actual) = (frame.clone(), frame);
+            fresh.process(&mut expected, false);
+            resumed.process(&mut actual, false);
+            assert_eq!(actual, expected);
         }
     }
 }
