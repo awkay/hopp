@@ -321,6 +321,8 @@ pub enum ServerError {
     StreamCreationError,
     #[error("Failed to get stream extent for screen share")]
     StreamExtentError,
+    #[error("No display available to share (is the display asleep?)")]
+    NoDisplayAvailable,
     #[error("Failed to create overlay window")]
     WindowCreationError,
     #[error("Failed to set cursor hittest for overlay window")]
@@ -776,6 +778,11 @@ impl<'a> Application<'a> {
             }
         };
 
+        if is_display_share && monitors.is_empty() {
+            // macOS lists no displays while they sleep; picking one would panic.
+            log::error!("screenshare: no displays available, are they asleep?");
+            return Err(ServerError::NoDisplayAvailable);
+        }
         let selected_monitor = is_display_share
             .then(|| screen_capturer.get_selected_monitor(&monitors, screenshare_input.content.id));
         let scale = selected_monitor
