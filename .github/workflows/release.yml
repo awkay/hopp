@@ -66,7 +66,7 @@ jobs:
             echo "HOPP_EOF"
           } >> "$GITHUB_OUTPUT"
 
-  # Build for all platforms using matrix strategy
+  # Build the Apple Silicon macOS app
   build-release:
     needs: prepare-notes
     permissions:
@@ -77,14 +77,8 @@ jobs:
       matrix:
         include:
           - platform: "macos-26"
-            args: "--target x86_64-apple-darwin --config src-tauri/tauri.conf.rel.json"
-            target: "x86_64-apple-darwin"
-          - platform: "macos-26"
             args: "--target aarch64-apple-darwin --config src-tauri/tauri.conf.rel.json"
             target: "aarch64-apple-darwin"
-          - platform: "windows-latest"
-            args: "--target x86_64-pc-windows-msvc --config src-tauri/tauri.conf.rel.json"
-            target: "x86_64-pc-windows-msvc"
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -117,8 +111,6 @@ jobs:
         run: |
           if [[ "$RUNNER_OS" == "macOS" ]]; then
             brew install go-task/tap/go-task
-          elif [[ "$RUNNER_OS" == "Windows" ]]; then
-            choco install go-task
           else
             # Linux
             sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
@@ -144,14 +136,6 @@ jobs:
             "aarch64-apple-darwin")
               echo "task_os=mac" >> $GITHUB_OUTPUT
               echo "task_arch=arm64" >> $GITHUB_OUTPUT
-              ;;
-            "x86_64-apple-darwin")
-              echo "task_os=mac" >> $GITHUB_OUTPUT
-              echo "task_arch=x64" >> $GITHUB_OUTPUT
-              ;;
-            "x86_64-pc-windows-msvc")
-              echo "task_os=win" >> $GITHUB_OUTPUT
-              echo "task_arch=x64" >> $GITHUB_OUTPUT
               ;;
             *)
               echo "task_os=linux" >> $GITHUB_OUTPUT
@@ -193,11 +177,8 @@ jobs:
         shell: bash
         id: vite_vars
         run: |
-          # Set VITE_BOTTOM_ARROW based on platform (true for Windows, false for others)
-          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
-            echo "vite_bottom_arrow=true" >> $GITHUB_OUTPUT
-            echo "vite_os=windows" >> $GITHUB_OUTPUT
-          elif [[ "${{ matrix.target }}" == *"linux"* ]]; then
+          # VITE_BOTTOM_ARROW is only true on Windows, which we do not build
+          if [[ "${{ matrix.target }}" == *"linux"* ]]; then
             echo "vite_bottom_arrow=false" >> $GITHUB_OUTPUT
             echo "vite_os=linux" >> $GITHUB_OUTPUT
           else
@@ -237,15 +218,3 @@ jobs:
           includeUpdaterJson: true
           updaterJsonPreferNsis: false
           updaterJsonKeepUniversal: false
-
-      - name: Zip Windows MSI for browser-safe download
-        if: matrix.platform == 'windows-latest'
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $msi = Get-ChildItem -Path "tauri/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi" -Filter "hopp_*_x64_en-US.msi" | Select-Object -First 1
-          if (-not $msi) { throw "MSI not found" }
-          $zip = Join-Path $env:RUNNER_TEMP "hopp_x64_en-US.msi.zip"
-          Compress-Archive -Path $msi.FullName -DestinationPath $zip -Force
-          gh release upload "${{ github.event.inputs.version }}" $zip --clobber --repo "$env:GITHUB_REPOSITORY"
