@@ -7319,6 +7319,7 @@ __metadata:
     "@radix-ui/react-switch": "npm:^1.2.6"
     "@radix-ui/react-tooltip": "npm:^1.2.8"
     "@tailwindcss/postcss": "npm:^4.1.13"
+    "@tailwindcss/vite": "npm:^4.1.13"
     "@tanstack/react-form": "npm:^1.23.8"
     "@tanstack/react-query": "npm:^5.66.3"
     "@tanstack/react-query-devtools": "npm:^5.66.3"
