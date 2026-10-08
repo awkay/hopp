@@ -1,6 +1,37 @@
 # Hopp (Dataico fork)
 
-## Fork policy (read first)
+## Invariants (read first)
+
+§SPEC-WORKTREE: Work on each spec in its own dedicated Git worktree and feature branch, including
+spec drafting and implementation. Never work on two specs in the same worktree or implement a spec
+in the main checkout.
+
+§WORKTREE-CONTEXT: Every worktree must have a root-level [workingcontext.md](workingcontext.md)
+with meaningful, non-empty content for the current session. This file is local and Git-ignored;
+never commit it. Initialize it from [workingcontext.md.template](workingcontext.md.template) when
+creating the worktree, filling in the actual session scope; if there are no discoveries yet, say so
+explicitly. Read existing context before refreshing it for a new session, preserving relevant
+branch discoveries until they are captured in the spec's committed notes. Record quirks, gotchas
+and useful notes as they are discovered, and keep them accurate. This file holds session context
+and discoveries, not plans or progress; status remains only in `docs/TRACKER.md`. Promote lasting
+discoveries into the appropriate project docs before merging.
+
+§READ-WORKING-CONTEXT: Always read this worktree's [workingcontext.md](workingcontext.md) in full
+at the start of every session, before investigating or changing the project, even if `CLAUDE.md` was
+provided automatically. If it is missing or empty, initialize it from `workingcontext.md.template`
+and fill in meaningful session context before continuing; never leave it empty or with only a
+heading or placeholder.
+
+§SPEC-NOTES: Every successfully completed spec must preserve its discoveries in a committed
+`docs/specs/<ID>-<slug>/notes.md`, linked at the end of `docs/specs/<ID>-<slug>.md`. Carry forward
+all relevant knowledge from the worktree's `workingcontext.md`: notes, quirks, awkward behavior,
+gotchas and bugs, distinguishing resolved bugs from remaining limitations. This is an essential
+artifact of the work, not disposable scratch context; preserve the non-obvious details even when
+lasting guidance is also promoted to other docs. If nothing was discovered, explicitly say so in a
+non-empty file. Do not mark the spec complete, merge it or remove its worktree until the notes are
+included in the committed deliverable.
+
+## Fork policy
 
 This is the `awkay/hopp` fork, maintained for our own users (Dataico build, see `DATAICO.md`). It is
 not a staging area for upstream `gethopp/hopp` PRs.

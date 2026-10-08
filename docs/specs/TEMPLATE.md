@@ -24,6 +24,9 @@ data-channel topics, endpoints or persisted settings. Upstream files changed (re
 
 - [ ] ...
 - [ ] `DATAICO.md` divergence row; anything that stays true after shipping moved into a `docs/` topic doc
+- [ ] Preserve discoveries from `workingcontext.md` in `docs/specs/<ID>-<slug>/notes.md` and link
+      below before marking complete, merging or removing the worktree. Include notes, quirks,
+      awkward behavior, gotchas and bugs (resolved vs. remaining); explicitly say if none were found.
 
 ## Verification
 
@@ -32,3 +35,10 @@ Per behavior: the test to run, or manual steps for someone running the app.
 ## Decisions
 
 - **Q:** ... **A:** ... (date)
+
+## Completion notes
+
+[Notes, quirks, awkward behavior, gotchas and bugs](<ID>-<slug>/notes.md)
+
+<!-- Replace the link with this spec's actual path. The non-empty notes.md is a committed,
+per-spec artifact inherited from workingcontext.md, not a link back to disposable branch context. -->

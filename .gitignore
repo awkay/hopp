@@ -30,6 +30,7 @@ dist-ssr
 
 openspec/changes
 CLAUDE.local.md
+/workingcontext.md
 .claude/*
 !.claude/settings.json
 */scripts

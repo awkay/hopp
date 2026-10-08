@@ -1,0 +1,20 @@
+# Working context
+
+<!-- Copy to workingcontext.md in this worktree. That file is local session context: never commit
+it. Replace the scope below with actual session context before beginning work. Read existing local
+context before refreshing it; preserve relevant discoveries until captured in committed spec notes. -->
+
+## Session scope
+
+<Describe this session's scope and identify the spec and branch, if applicable.>
+
+## Discoveries
+
+No session-specific discoveries recorded yet. Record notes, quirks, awkward behavior, gotchas and
+bugs here as they are found; distinguish resolved bugs from remaining limitations.
+
+## Preservation
+
+Before completing a spec, merging or removing its worktree, carry relevant discoveries into the
+committed `docs/specs/<ID>-<slug>/notes.md` and link it at the end of the spec. Keep feature status
+and multi-session progress only in `docs/TRACKER.md`, not here.
