@@ -65,10 +65,9 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
-      - name: Install Rust MSRV
-        uses: dtolnay/rust-toolchain@1.96.1
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.96.1"
           components: clippy
 
       - name: Cache Cargo builds
@@ -113,3 +112,91 @@ jobs:
       - name: Build
         working-directory: core
         run: cargo build --release --target ${{ matrix.target }}
+
+  unit-tests:
+    name: Unit tests on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    needs: check-files
+    if: ${{ needs.check-files.outputs.core-changed == 'true' || github.event_name == 'workflow_dispatch' }}
+    strategy:
+      matrix:
+        include:
+          - os: macos-26
+            target: aarch64-apple-darwin
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core -> target
+
+      # --lib: plain `cargo test` also picks up tests/src/main.rs (the separate harness crate)
+      # as an integration test of hopp_core, which doesn't compile there.
+      - name: Run unit tests
+        working-directory: core
+        run: cargo test --workspace --lib
+
+  # The IPC protocol tests, without building the rest of core: fast feedback.
+  socket-lib-tests:
+    name: socket_lib tests
+    runs-on: ubuntu-latest
+    needs: check-files
+    if: ${{ needs.check-files.outputs.core-changed == 'true' || github.event_name == 'workflow_dispatch' }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core -> target
+
+      - name: Run socket_lib tests
+        working-directory: core
+        run: cargo test -p socket_lib
+
+  # The test harness (core/tests) is a separate crate; build it so changes to socket_lib
+  # can't break it unnoticed again. Its smoke scenarios need a mic and screen access, so
+  # they run locally (core/tests/smoke.sh), not here.
+  harness-build:
+    name: Build test harness on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    needs: check-files
+    if: ${{ needs.check-files.outputs.core-changed == 'true' || github.event_name == 'workflow_dispatch' }}
+    strategy:
+      matrix:
+        include:
+          - os: macos-26
+            target: aarch64-apple-darwin
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core/tests -> target
+
+      - name: Build harness
+        working-directory: core/tests
+        run: cargo build

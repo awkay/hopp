@@ -21,6 +21,8 @@ jobs:
         run: |
           go mod download
 
-      - name: Run integration tests
+      # Unit tests under internal/ plus the integration tests (in-memory SQLite and
+      # miniredis, no services needed).
+      - name: Run tests
         working-directory: backend
-        run: go test -tags=integration ./test/integration/... -v
+        run: go test -tags=integration ./... -v

@@ -23,6 +23,9 @@ jobs:
           filters: |
             tauri:
               - 'tauri/src-tauri/**'
+              # path dependencies of the Tauri crate (the IPC protocol)
+              - 'core/socket_lib/**'
+              - 'core/sentry_utils/**'
       - run: |
           echo "Last commit:"
           git --no-pager log --decorate=short --pretty=format:'%Cred%h%Creset -%C(yellow)%d%Creset %s %Cgreen(%cr) %C(bold blue)<%an>%Creset' -n1
@@ -68,10 +71,9 @@ jobs:
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
-      - name: Install Rust MSRV
-        uses: dtolnay/rust-toolchain@1.96.1
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: "1.96.1"
           components: clippy
 
       - name: Cache Cargo builds
@@ -136,3 +138,42 @@ jobs:
       - name: Build
         working-directory: tauri/src-tauri
         run: cargo build --release --target ${{ matrix.target }}
+
+  unit-tests:
+    name: Unit tests on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    needs: check-files
+    if: ${{ needs.check-files.outputs.tauri-changed == 'true' || github.event_name == 'workflow_dispatch' }}
+    strategy:
+      matrix:
+        include:
+          - os: macos-26
+            target: aarch64-apple-darwin
+
+    env:
+      SENTRY_DSN_RUST: ""
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tauri/src-tauri -> target
+
+      - name: Create hopp_core debug
+        working-directory: core
+        shell: bash
+        run: |
+          mkdir -p target/debug
+          touch target/debug/hopp_core-${{ matrix.target }}
+
+      - name: Run unit tests
+        working-directory: tauri/src-tauri
+        run: cargo test
