@@ -50,6 +50,10 @@ const CAMERA_FPS: f64 = 30.0;
 const CAMERA_BITRATE: u64 = 1_700_000;
 /// The size the app asks core to share at by default (`ScreenShareResolution::P4K`).
 const SHARE_RESOLUTION: (f64, f64) = (4096.0, 2160.0);
+/// How long core is in the call before it shares: past the 5 s after which core stops the
+/// keepalive frames of its muted screen track (`room_service::end_video_keepalive`), so the run
+/// covers starting a share on a track that has gone quiet, as in most real calls.
+const SHARE_AFTER: Duration = Duration::from_secs(7);
 /// Gives up if profile.sh never creates the stop file.
 const MAX_RUN: Duration = Duration::from_secs(600);
 
@@ -129,8 +133,10 @@ async fn sharer(conn: &CoreConn, ready_file: &Path, stop_file: &Path) -> io::Res
         publish_camera(&viewer, 3).await?,
     ];
 
+    tokio::time::sleep(SHARE_AFTER).await;
     step("core shares the screen");
     let (width, height) = SHARE_RESOLUTION;
+    let share_started = Instant::now();
     conn.start_screenshare(display, width, height)?;
 
     step("fake viewer watches the share and draws on the overlay");
@@ -144,7 +150,10 @@ async fn sharer(conn: &CoreConn, ready_file: &Path, stop_file: &Path) -> io::Res
             _ => None,
         })
         .await?;
-    let frames = Arc::new(Mutex::new(FrameLog::default()));
+    let frames = Arc::new(Mutex::new(FrameLog {
+        share_started: Some(share_started),
+        ..FrameLog::default()
+    }));
     tasks.push(tokio::spawn(log_frames(track, frames.clone())));
     tasks.push(tokio::spawn(drive_overlay(viewer.room.local_participant())));
 
@@ -321,6 +330,8 @@ async fn push_video(
 /// What the fake viewer received: the decoded size and the time between frames.
 #[derive(Default)]
 struct FrameLog {
+    share_started: Option<Instant>,
+    first_frame_after: Option<Duration>,
     frames: u32,
     size: (u32, u32),
     last_at: Option<Instant>,
@@ -340,10 +351,11 @@ impl FrameLog {
             intervals[rank.clamp(1, intervals.len()) - 1]
         };
         format!(
-            "fake viewer received {} frames at {}x{}, {fps:.1} fps; interval_ms p50={:.1} p95={:.1} p99={:.1} max={:.1}",
+            "fake viewer received {} frames at {}x{}, {fps:.1} fps, the first {} ms after the share started; interval_ms p50={:.1} p95={:.1} p99={:.1} max={:.1}",
             self.frames,
             self.size.0,
             self.size.1,
+            self.first_frame_after.map_or(0, |after| after.as_millis()),
             percentile(0.50),
             percentile(0.95),
             percentile(0.99),
@@ -359,6 +371,9 @@ async fn log_frames(track: RemoteVideoTrack, frames: Arc<Mutex<FrameLog>>) {
         let now = Instant::now();
         let mut log = frames.lock().unwrap();
         log.frames += 1;
+        if log.frames == 1 {
+            log.first_frame_after = log.share_started.map(|started| now - started);
+        }
         log.size = (frame.buffer.width(), frame.buffer.height());
         if let Some(last) = log.last_at.replace(now) {
             log.intervals_ms.push((now - last).as_secs_f64() * 1000.0);
