@@ -29,6 +29,6 @@ dist-ssr
 .yarn/install-state.gz
 
 openspec/changes
-CLAUDE.md
+CLAUDE.local.md
 .claude/
 */scripts
