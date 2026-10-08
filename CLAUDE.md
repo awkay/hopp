@@ -51,9 +51,10 @@ app, a dev server or an install (`task dev`, `yarn dev`, `task go`,
 - **Web app** (`web-app/`): `yarn tsc -b` and `yarn lint`.
 - **Backend** (`backend/`): `go vet ./...`, `go test -tags=integration ./...` (in-memory SQLite and
   miniredis, no services needed) and `golangci-lint run --config ../.golangcli.yml`.
-- **Formatting:** `cargo fmt` in each Rust crate you changed, `yarn prettier --write <files>` for
-  TS/JS. CI rejects unformatted Rust, and the pre-commit hook that would format it only runs where
-  someone ran `pre-commit install`.
+- **Formatting:** a hook in `.claude/settings.json` runs `rustfmt` on every `.rs` file you edit
+  or write. Rust changed another way (a script, `sed`, a merge) still needs `cargo fmt` in its
+  crate. `yarn prettier --write <files>` for TS/JS. CI rejects unformatted Rust, and the pre-commit
+  hook that would format it only runs where someone ran `pre-commit install`.
 
 ## Code style
 
