@@ -662,16 +662,6 @@ function SettingsWindow() {
                     });
                   }}
                 />
-                {OS === "macos" && (
-                  <CheckboxRow
-                    title="Automatic updates"
-                    description="Download and install updates automatically when you're not in a call"
-                    checked={settings.auto_update_enabled}
-                    onCheckedChange={(v) => {
-                      typedInvoke("set_auto_update_enabled", { enabled: v }).then(() => refetchSettings());
-                    }}
-                  />
-                )}
                 <div className="flex flex-col gap-1">
                   <span className="text-sm font-medium text-gray-700 dark:text-gray-300">Custom Backend URL</span>
                   <span className="text-sm text-gray-500 dark:text-gray-400">

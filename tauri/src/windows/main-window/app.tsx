@@ -7,6 +7,7 @@ import { tauriUtils } from "@/windows/window-utils.ts";
 import { Sidebar } from "@/components/sidebar/Sidebar";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Debug } from "./tabs/Debug";
+import { WhatsNew } from "./tabs/WhatsNew";
 import { Login } from "./login";
 import { Report } from "./report";
 import { useAPI } from "@/services/query";
@@ -33,6 +34,8 @@ import { useDisableNativeContextMenu } from "@/lib/hooks";
 import { processDeepLinkUrl } from "@/lib/deepLinkUtils";
 import { Rooms } from "./tabs/Rooms";
 import { pollUpdates } from "@/lib/auto-update";
+import { handleAppStart } from "@/lib/after-update";
+import { logWarn } from "@/lib/log";
 
 function App() {
   const {
@@ -40,9 +43,8 @@ function App() {
     authToken,
     callTokens,
     teammates,
-    updateInProgress,
+    whatsNewSince,
     setCallTokens,
-    setNeedsUpdate,
     setUser,
     setTab,
     setTeammates,
@@ -188,15 +190,21 @@ function App() {
     };
   }, []);
 
-  // Check for updates (and auto-install when idle on macOS)
+  // Check for updates; nothing is downloaded until the user clicks the update tile
   useEffect(() => {
     if (!isTauri()) return;
 
-    pollUpdates(setNeedsUpdate);
-    const interval = setInterval(() => pollUpdates(setNeedsUpdate), 15 * 60 * 1000);
+    pollUpdates();
+    const interval = setInterval(pollUpdates, 15 * 60 * 1000);
 
     return () => clearInterval(interval);
-  }, [setNeedsUpdate]);
+  }, []);
+
+  // Confirm an update and offer its release notes
+  useEffect(() => {
+    if (!isTauri()) return;
+    handleAppStart().catch((err) => logWarn("Failed to handle the update state at startup", err));
+  }, []);
 
   // Auto-navigate to the call page on call join, and away from it on call end.
   const prevInCallRef = useRef(false);
@@ -282,8 +290,8 @@ function App() {
       if (data.type === "incoming_call") {
         setIncomingCallCallerId(data.payload.caller_id);
 
-        /* Reject call if update in progress */
-        if (updateInProgress) {
+        /* Reject call if update in progress. Read from the store: this listener is registered once. */
+        if (useStore.getState().updateInProgress) {
           handleReject();
           return;
         }
@@ -556,6 +564,7 @@ function App() {
           )}
         </div>
         {tab === "debug" && <Debug />}
+        {tab === "whats-new" && <WhatsNew sinceVersion={whatsNewSince} />}
         {tab === "invite" && <Invite />}
         {tab === "login" && <Login />}
         {tab === "rooms" && <Rooms />}

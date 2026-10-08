@@ -14,9 +14,11 @@ In this order:
    Desktop, OrbStack or colima) for Postgres and Redis. `livekit` provides `livekit-server`.
    Optional: `livekit-cli` (the `lk` command, only for `task livekit:generate-user-token`) and
    `fswatch` (web app live reload).
-3. **mise** installs node, go, task and golangci-lint at the versions in `mise.toml` (each line says
-   why). Add `eval "$(mise activate zsh)"` to `~/.zshrc`, open a new shell, then from the repo root
-   run `mise trust` and `mise install`. Check: `node -v` in the repo prints `v20.x`.
+3. **mise** installs node, go, task, golangci-lint and gh (only releases use it) at the versions in
+   `mise.toml` (each line says why). Add `eval "$(mise activate zsh)"` to `~/.zshrc`, open a new
+   shell, then from the repo root run `mise trust` and `mise install`. Check: `node -v` in the repo
+   prints `v20.x`. If `mise install` fails on `gh` with "GitHub attestations verification failed"
+   (seen with mise 2025.9.15), update mise or `brew install gh`.
 4. **Yarn:** `corepack enable`, run in the repo so it installs into mise's Node 20. `yarn` then runs
    the Yarn 4.9.2 checked into `.yarn/releases/`.
 5. **Rust** via rustup (https://rustup.rs), not mise or brew. CI uses the latest stable, so run
@@ -75,8 +77,8 @@ its own grants, and an unsigned build loses them on every rebuild (`DATAICO.md`,
 - **The first core build is slow:** it downloads libwebrtc (several hundred MB). See
   `LK_CUSTOM_WEBRTC` in `DATAICO.md`, "Prerequisites".
 - **Installing your build:** `task -d packaging/dataico install` from the repo root builds the
-  current checkout and replaces `/Applications/hopp.app`. Signing, notarization and logs:
-  `DATAICO.md`.
+  current checkout and replaces `/Applications/hopp.app`. Signing, notarization, in-app updates,
+  releasing (`task -d packaging/dataico release`) and logs: `DATAICO.md`.
 
 ## Where work lives
 

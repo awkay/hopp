@@ -2,13 +2,14 @@
 #
 #   task -d packaging/dataico build     # or `task build` in this directory
 #   task -d packaging/dataico install
+#   task -d packaging/dataico release VERSION=1.0.35   # DRY_RUN=1 stops after the build
 #
 # Not included from the root Taskfile.yml on purpose: Task merges the root `dotenv`
 # (packaging/.env, tauri/.env) and every included Taskfile's `env` into one environment that
 # all tasks get, included ones too. build-macos.sh lets the environment win over its defaults,
 # so a dev VITE_API_BASE_URL in tauri/.env would be baked into the release build. As its own
 # entrypoint with no `env` / `dotenv` here, the scripts see exactly your shell's environment;
-# override by exporting a variable or in packaging/dataico/.env (read by build-macos.sh).
+# override by exporting a variable or in packaging/dataico/.env (read by both scripts).
 
 version: "3"
 
@@ -23,3 +24,12 @@ tasks:
     cmds:
       - task: build
       - ../../scripts/install-macos.sh
+
+  release:
+    desc: "Release VERSION: notes, version bump, notarized build, tag, push, GitHub release (DRY_RUN=1 stops after the build)"
+    requires:
+      vars: [VERSION]
+    interactive: true # opens $EDITOR for the release notes
+    cmds:
+      # Task variables aren't exported: pass DRY_RUN on, from the command line or the shell.
+      - DRY_RUN={{.DRY_RUN | default "" | shellQuote}} ./release.sh {{shellQuote .VERSION}}

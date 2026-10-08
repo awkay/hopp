@@ -64,6 +64,10 @@ sysinfo = "0.35.2"
 tauri-plugin-opener = "2"
 window-vibrancy = "0.6.0"
 
+[dev-dependencies]
+# Paused virtual time in `#[tokio::test(start_paused = true)]`.
+tokio = { version = "1", features = ["test-util"] }
+
 [patch.crates-io]
 tray-icon = { git = "https://github.com/gethopp/tray-icon", branch = "handle_macos_27" }
 

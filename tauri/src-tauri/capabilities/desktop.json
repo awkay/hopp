@@ -5,6 +5,7 @@
   "permissions": [
     "global-shortcut:default",
     "updater:default",
+    "log:default",
     "autostart:allow-enable",
     "autostart:allow-disable",
     "autostart:allow-is-enabled",

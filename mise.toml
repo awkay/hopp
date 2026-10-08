@@ -5,3 +5,4 @@ node = "20"              # .nvmrc; the pinned Yarn 4.9.2 breaks on newer Node
 go = "1.25"              # backend/go.mod, CI
 task = "3"               # Taskfile.yml
 golangci-lint = "2.8.0"  # .pre-commit-config.yaml
+gh = "2"                 # packaging/dataico/release.sh (GitHub releases)

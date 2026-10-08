@@ -10,8 +10,27 @@ import type { BandwidthModeState, CoreParticipantState, CoreRoleEvent } from "@/
 
 const windowName = getCurrentWindow().label;
 
-export const SidebarTabs = ["user-list", "invite", "debug", "login", "report-issue", "rooms", "call"] as const;
+export const SidebarTabs = [
+  "user-list",
+  "invite",
+  "debug",
+  "login",
+  "report-issue",
+  "rooms",
+  "call",
+  "whats-new",
+] as const;
 export type Tab = (typeof SidebarTabs)[number];
+
+/** The "What's new" tile shown after an upgrade (spec 0004, B11). */
+export type WhatsNewTile = {
+  /** The running version, which the tile names. */
+  version: string;
+  /** The version the user came from; null when unknown. */
+  since: string | null;
+  /** Epoch ms after which the tile is gone. */
+  until: number;
+};
 
 export enum ParticipantRole {
   SHARER = "sharer",
@@ -44,8 +63,13 @@ export type CallState = {
 
 type State = {
   authToken: string | null;
-  needsUpdate: boolean;
+  // Version of the update the feed offers, null when there is none
+  updateVersion: string | null;
+  // Downloading or installing an update; incoming calls and invites are rejected meanwhile
   updateInProgress: boolean;
+  whatsNewTile: WhatsNewTile | null;
+  // Versions after this one are marked new in the "What's new" tab; set when the tab is opened
+  whatsNewSince: string | null;
   tab: Tab;
   socketConnected: boolean;
   user: components["schemas"]["PrivateUser"] | null;
@@ -69,8 +93,10 @@ type State = {
 
 type Actions = {
   setAuthToken: (token: string | null) => void;
-  setNeedsUpdate: (needsUpdate: boolean) => void;
+  setUpdateVersion: (version: string | null) => void;
   setUpdateInProgress: (inProgress: boolean) => void;
+  setWhatsNewTile: (tile: WhatsNewTile | null) => void;
+  setWhatsNewSince: (version: string | null) => void;
   setTab: (tab: Tab) => void;
   setSocketConnected: (connected: boolean) => void;
   setUser: (user: components["schemas"]["PrivateUser"] | null) => void;
@@ -94,8 +120,10 @@ type Actions = {
 
 const initialState: State = {
   authToken: null,
-  needsUpdate: false,
+  updateVersion: null,
   updateInProgress: false,
+  whatsNewTile: null,
+  whatsNewSince: null,
   tab: "login",
   socketConnected: false,
   user: null,
@@ -135,13 +163,21 @@ const useStore = create<State & Actions>()(
       set((state) => {
         state.teammates = teammates;
       }),
-    setNeedsUpdate: (needsUpdate) =>
+    setUpdateVersion: (version) =>
       set((state) => {
-        state.needsUpdate = needsUpdate;
+        state.updateVersion = version;
       }),
     setUpdateInProgress: (inProgress) =>
       set((state) => {
         state.updateInProgress = inProgress;
+      }),
+    setWhatsNewTile: (tile) =>
+      set((state) => {
+        state.whatsNewTile = tile;
+      }),
+    setWhatsNewSince: (version) =>
+      set((state) => {
+        state.whatsNewSince = version;
       }),
     setCalling: (calling) =>
       set((state) => {
@@ -204,13 +240,16 @@ const useStore = create<State & Actions>()(
       set((state) => {
         // First clear the auth token to prevent re-fetching
         // Then reset all other state properties, but preserve the locally stored
-        // customServerUrl and favoriteTeammateIds
-        const preservedCustomServerUrl = state.customServerUrl;
-        const preservedFavoriteTeammateIds = state.favoriteTeammateIds;
+        // customServerUrl and favoriteTeammateIds, and the app's update state,
+        // which doesn't depend on who is signed in
+        const { customServerUrl, favoriteTeammateIds, updateVersion, updateInProgress, whatsNewTile } = state;
         Object.assign(state, {
           ...initialState,
-          customServerUrl: preservedCustomServerUrl,
-          favoriteTeammateIds: preservedFavoriteTeammateIds,
+          customServerUrl,
+          favoriteTeammateIds,
+          updateVersion,
+          updateInProgress,
+          whatsNewTile,
         });
       }),
   })),

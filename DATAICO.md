@@ -11,7 +11,8 @@ fork-only features (see below).
 | Server | Hopp cloud | `hopp.apps.dataico.world` (`VITE_API_BASE_URL`) | our self-hosted backend |
 | Sidebar "Profile" | opens the configured server's home page (`Constants.webAppUrl`); before upstream #393 it opened `pair.gethopp.app` (Hopp cloud) | opens `/settings` on that server | `/settings` is the profile page; the home page is the dashboard |
 | Bundle ID | `com.hopp.app` | `com.dataico.hopp` | separate identity, keychain, TCC grants, signing |
-| Auto-updater | checks `github.com/gethopp/hopp/releases/.../latest.json` | off | upstream updates would replace our build with the stock app |
+| Updates | checks `github.com/gethopp/hopp/releases/.../latest.json`; on macOS downloads in the background and installs and relaunches when the window is unfocused (Settings toggle "Automatic updates") | our own feed (`github.com/awkay/hopp/releases/latest/download/latest.json`, signed with our updater key) and click to update only: a blue "Update" tile in the sidebar shows download progress, is disabled during call activity ("Update after the call"), and on failure shows a toast and lets you retry. No Settings toggle. After an in-app update the main window opens once with "Hopp updated to X" (in the menu bar style once `setup_tray_icon` has placed the popup under the tray icon: `AppData::main_window_placed`, `show_main_window_when_placed`); after any upgrade a "New" tile (7 days or until opened) and the avatar menu's "What's new" open a tab with the bundled `CHANGELOG.md`. Incoming calls are rejected while an update downloads or installs (upstream's `incoming_call` listener read a stale `updateInProgress`, so only invites were), and the update state survives sign-out (upstream's `reset()` cleared it). Only notarized builds with the updater key check for updates (see "How in-app updates work") | upstream's feed would replace our build with the stock app; installing without asking interrupted people; manual zip installs left people on old builds |
+| Releases | `release.yml` in CI; notes written by hand on GitHub | `task -d packaging/dataico release VERSION=x.y.z` on the releaser's Mac (notes draft from commits, `CHANGELOG.md`, version bump, notarized build with update files, atomic tag + push, GitHub release) | the fork never ran `release.yml`; releases were fully manual, and the updater needs signed update files and a `latest.json` |
 | Window style (macOS) | menu bar app only: no Dock icon outside calls, borderless always-on-top window under the tray icon that hides on focus loss | Settings > Call settings > Window style, applied on the next launch (the settings window offers a restart): "Menu bar" (default, upstream behavior); "Floating window" (Dock icon and Cmd-Tab for the whole session, the same borderless fixed-size window, not always-on-top, dragged by its sidebar, remembers its position, Esc / Cmd-W hide it); "Regular window" (Dock icon and Cmd-Tab, normal titled resizable window). Both non-default styles: no tray positioning, no hide on focus loss, closing hides, Dock click reopens, optional menu bar icon | people who use Cmd-Tab or a window manager (e.g. AeroSpace, which floats the borderless window and tiles the regular one) could not treat Hopp as a normal app |
 | Telemetry | Sentry / PostHog keys from CI | all empty | no data to upstream's accounts |
 | Settings file | no way to find it from the app | "Show settings file in Finder" link at the bottom of Settings (`reveal_settings_file` command, path from `AppState::file_path`; reveals the folder if the file is missing) | the local state file (`app_state.json`, `app_state_<suffix>.json` in dev builds) is hard to find when debugging |
@@ -30,7 +31,7 @@ fork-only features (see below).
 | Favorite teammates | none | star a teammate (star on row hover, filled when starred) to pin them in a Favorites section above Online/Offline (online first); user IDs stored locally in `app_state.json` (`favorite_teammates`), no backend change; IDs that are no longer teammates are pruned after each successful teammates fetch | quick access to the people you pair with most, like Tuple |
 | CI and release builds | CI clippy and release builds for `core/` and `tauri/`, and `release.yml` app builds, on Windows, Intel and Apple Silicon macOS | Apple Silicon macOS only (`aarch64-apple-darwin`) | we only ship the Apple Silicon macOS app, so the other targets only cost CI time |
 | Rust toolchain in CI | clippy, tests and builds pinned to 1.96.1 | latest stable (`dtolnay/rust-toolchain@stable`), like `release.yml` already was | local rustup stable and CI run the same clippy, and there is no pin to bump |
-| Tests | CI runs only the Go integration tests; the `core/tests` harness speaks upstream's IPC and its scenarios need a person watching the screen | CI also runs the core, `socket_lib` and Tauri unit tests, all Go tests (`internal/` too), and builds the harness; the harness speaks our request-id / call-id IPC (`core/tests/src/ipc.rs`) and has self-checking smoke scenarios run locally with `core/tests/smoke.sh`, optionally over an emulated network (`core/tests/netem.sh`) | the Rust tests ran nowhere, and the harness stopped compiling with the IPC rewrite without anyone noticing |
+| Tests | CI runs only the Go integration tests; the `core/tests` harness speaks upstream's IPC and its scenarios need a person watching the screen | CI also runs the core, `socket_lib` and Tauri unit tests, all Go tests (`internal/` too), and builds the harness, and checks that each `@tauri-apps/*` npm package matches its crate's major.minor (`scripts/check-tauri-versions.mjs`, which `tauri build` would otherwise reject only at release time); the harness speaks our request-id / call-id IPC (`core/tests/src/ipc.rs`) and has self-checking smoke scenarios run locally with `core/tests/smoke.sh`, optionally over an emulated network (`core/tests/netem.sh`) | the Rust tests ran nowhere, and the harness stopped compiling with the IPC rewrite without anyone noticing |
 | `docs/` | Astro/Starlight source of the user docs site docs.gethopp.app, a Yarn workspace | deleted; `docs/` holds our own docs (`docs/ipc.md`), feature specs (`docs/specs/`) and work tracker (`docs/TRACKER.md`). README images moved to `banner.png` (an identical copy already at the root) and `.github/readme/`. In-app docs links still go to docs.gethopp.app | nobody here built or deployed the site, and installing it slowed every `yarn install`; we needed docs for ourselves and for agents |
 | Agent instructions | `AGENTS.md` at the root and in `core/`, which the `CLAUDE.md` files import or link to. Agents may run only `task build_dev`, never `cargo fmt` / `clippy`, and follow a generic plan-mode / `tasks/todo.md` workflow | `CLAUDE.md` at the root and in `core/`, no `AGENTS.md`. Agents run the checks CI runs (build, unit tests, clippy, fmt, typecheck, lint, Go tests, core smoke scenarios) and never start the app, dev servers or installs. Plans and status live in `docs/` | upstream's files listed backend tasks that don't exist, contradicted each other and CI, and left agents no way to check their own work |
 | `task backend:compose-up` | runs `backend/docker-files/docker-compose.yml`, which upstream #305 moved to `backend/dev-compose.yml`, so the task fails | runs `backend/dev-compose.yml` (Postgres 16 and Redis) | local setup needed a hand-typed `docker compose` command |
@@ -40,8 +41,16 @@ The packaging layer lives in new files; it modifies no upstream file:
 - `tauri/src-tauri/tauri.conf.dataico.json` - overlay merged via `tauri build --config`
   (identifier, release sidecar path, no updater artifacts, `plugins.updater.endpoints: []`).
 - `packaging/dataico/build-macos.sh` - the one build script.
-- `packaging/dataico/.env.example` - signing/notarization variables (copy to `.env`, git-ignored).
-- `packaging/dataico/Taskfile.yml` - `build` and `install` tasks, run as
+- `packaging/dataico/.env.example` - signing, notarization and updater-key variables, read by
+  `build-macos.sh` and `release.sh` (copy to `.env`, git-ignored).
+- `tauri/src-tauri/tauri.conf.dataico-updater.json` - the updater's `pubkey` and our feed, added
+  as a second `--config` only to notarized builds that have the updater key.
+- `packaging/dataico/release.sh` - the release task (spec 0004, B13–B18).
+- `packaging/dataico/lib.sh` - sourced by both scripts: the `.env` loader, logging, notarization
+  mode, the repo, tag, host and file names, and the `build-info.json` check.
+- `CHANGELOG.md` - user-facing notes per release, written by the release task and bundled into the
+  app for "What's new".
+- `packaging/dataico/Taskfile.yml` - `build`, `install` and `release` tasks, run as
   `task -d packaging/dataico <task>`. Deliberately not included from the root `Taskfile.yml`:
   Task would hand its root `dotenv` (`packaging/.env`, `tauri/.env`) to the build, and a dev
   `VITE_API_BASE_URL` there would override the release server.
@@ -54,7 +63,12 @@ The packaging layer lives in new files; it modifies no upstream file:
 `livekit` dependency in `core/Cargo.toml` / `core/Cargo.lock` to `awkay/rust-sdks`. Screen effects add
 `core/src/effects*`, `core/src/graphics/effect_renderer.rs`, `core/resources/effects/` and a
 `core/build.rs` step, and change `graphics_context.rs`, `screensharing_window.rs`,
-`room_service.rs`, `lib.rs` and `window_manager.rs` (core only).
+`room_service.rs`, `lib.rs` and `window_manager.rs` (core only). Click-to-update and "What's new"
+change `tauri/src/update.ts`, `lib/auto-update.ts`, `store/store.ts`, `components/sidebar/Sidebar.tsx`,
+`windows/main-window/app.tsx`, `windows/settings/main.tsx`, `core_payloads.ts`, `tauri/package.json`
+(`@tauri-apps/plugin-log`, `react-markdown`), `src-tauri/capabilities/desktop.json` (`log:default`)
+and `src-tauri/src/{lib,main}.rs` (`show_main_window_when_placed`), and add `lib/after-update.ts`,
+`lib/changelog.ts`, `lib/log.ts`, `lib/semver.ts` and `windows/main-window/tabs/WhatsNew.tsx`.
 
 **Low-bandwidth mode** (client-only; no backend or LiveKit server changes). The turtle button
 during a call asks for low bandwidth; the screen share then drops to 1080p / 15 fps / 900 kbps
@@ -72,11 +86,19 @@ export recipes, and what the build checks. A GPU error turns effects off in that
 of the call instead of crashing core. Everyone needs this build to see effects; older clients log
 and ignore them.
 
-**How the updater is disabled:** with an empty endpoint list, the updater plugin's `check()`
-fails immediately with `EmptyEndpoints` before any network request. The frontend's only caller
-(`tauri/src/lib/auto-update.ts`, `pollUpdates`) catches that, logs it to the console, and never
-sets the "update available" flag, so no update button or error appears. The "Auto-update" toggle
-in Settings is still shown but has no effect.
+**How in-app updates work** (spec `docs/specs/0004-auto-updater.md`): `tauri.conf.dataico.json`
+keeps `plugins.updater.endpoints: []`, so ad-hoc, signed-only and dev builds never check:
+`check()` fails at once with "Updater does not have any endpoints set." before any request, and
+`pollUpdates` stops polling. `build-macos.sh` adds `tauri.conf.dataico-updater.json` (our `pubkey`
+and feed) only when the build is notarized, `TAURI_SIGNING_PRIVATE_KEY` is set and the overlay's
+`pubkey` isn't empty; otherwise it warns and builds with the updater off. The updater plugin
+installs only an update whose signature matches the built-in `pubkey`. The signature covers only the
+tarball, not the `version` in `latest.json`, so whoever can edit our GitHub releases can serve any
+build we ever signed (an older one, or a test build) as "newer". Our key stops anyone else; after a
+relaunch into a version other than the one offered, `hopp.log` warns. Updates keep TCC grants
+because every release has the same Developer ID team and bundle ID. **If the updater private key is
+lost, no installed app can be updated again**: everyone would reinstall by hand a build with a new
+`pubkey`. The private key and its password live in the team's password manager.
 
 **Known upstream hardcodings of `com.hopp.app`** (not patched, so packaging stays in new files):
 - "Report issue" -> copy logs reads `~/Library/Logs/com.hopp.app/hopp.log`; our logs are in
@@ -123,6 +145,40 @@ Identity set but no notarization credentials -> signed only; Gatekeeper still bl
 
 Other overrides: `VITE_API_BASE_URL=<host>` for a different server.
 
+**Update files.** With the updater key also set (`TAURI_SIGNING_PRIVATE_KEY`, the key file's
+contents or its path, and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`), a notarized build also writes
+`hopp_aarch64.app.tar.gz`, its `.sig` and `latest.json` to `dist/dataico/`.
+`DATAICO_RELEASE_NOTES=<file>` fills `latest.json`'s notes. To test updates without the live feed,
+set `DATAICO_UPDATER_ENDPOINT` to a prerelease's `latest.json` (e.g.
+`.../releases/download/dataico-updater-test/latest.json`): the app checks that feed, and
+`latest.json` points to the tarball next to it, so upload both to that prerelease.
+
+The last file a build writes is `dist/dataico/build-info.json`: version, full commit, dirty flag,
+server, update feed, notes hash, Team ID and whether it was notarized. A build deletes it first,
+and a failed or interrupted build removes the files it had started writing in `dist/dataico/`.
+
+## Releasing
+
+```bash
+task -d packaging/dataico release VERSION=1.0.35            # DRY_RUN=1 stops after the build
+```
+
+Run it on `main`, clean and level with `origin/main`, with the Apple variables above, the updater
+key and a logged-in `gh` (`brew install gh`; `mise install` of `gh` can fail on older mise with
+"GitHub attestations verification failed"). It refuses to start, listing every problem, otherwise.
+It drafts the notes from the commits since the last `dataico-v*` release (by patch content, so it
+survives rebases; housekeeping commits dropped) and opens them in `$EDITOR`: rewrite them as one
+bullet per user-visible change, bold lead. It stops if they come back empty or unedited (the draft
+is kept for the rerun). Then it bumps `tauri.conf.json`, adds the notes to
+`CHANGELOG.md`, commits `chore(release): Dataico <VERSION>`, builds, tags, pushes `main` and the tag
+atomically, uploads a draft GitHub release and publishes it as latest, which is what the app's feed
+serves. If a step fails, fix it and rerun with the same `VERSION`: it continues where it stopped
+without asking for notes or committing again. A rerun reuses the build in `dist/dataico/` only if
+its `build-info.json` matches the release (this commit, a clean tree, the default server, our feed,
+updater on, the Developer ID team, notarized, these notes); otherwise it says why and rebuilds.
+`VERSION` is `x.y.z` without leading zeros. The task never exports the signing secrets: it only
+checks that they are set, and only `build-macos.sh` receives them.
+
 ## One-time Apple setup
 
 1. **Developer ID Application certificate.** Only the Account Holder, or an Admin who has been
@@ -135,6 +191,12 @@ Other overrides: `VITE_API_BASE_URL=<host>` for a different server.
 2. **Notarization key.** App Store Connect -> Users and Access -> Integrations -> App Store
    Connect API -> Team Keys -> generate a key (Developer role is enough). Note the Issuer ID and
    Key ID; download `AuthKey_<KEYID>.p8` (downloadable once), keep it outside the repo.
+3. **Updater key** (once for the team, not per releaser). From `tauri/`:
+   `yarn tauri signer generate -w ~/.tauri/hopp-dataico.key`, with a password. Put the private
+   key file's contents and the password in the team's password manager, and commit the printed
+   public key as `pubkey` in `tauri/src-tauri/tauri.conf.dataico-updater.json`. Releasers set
+   `TAURI_SIGNING_PRIVATE_KEY` (contents or path) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
+   Never regenerate it while installed apps carry the old `pubkey`: they could not update again.
 
 ## Installing
 
@@ -165,7 +227,10 @@ The packaging commit only adds files and rebases cleanly. The fork-only feature 
 upstream files, so the rebase can stop with conflicts. Likely spots are the IPC layer (`core/socket_lib/src/*`, `tauri/src-tauri/src/{lib,main,core_client}.rs`), screen effects (`core/src/window/screensharing_window.rs`, `core/src/graphics/graphics_context.rs`, `core/build.rs`), and for low-bandwidth mode
 `core/src/room_service.rs`, `core/src/lib.rs`, `core/socket_lib/src/lib.rs`,
 `tauri/src-tauri/src/main.rs`, `tauri/src/store/store.ts`,
-`tauri/src/components/ui/call-center.tsx` and `tauri/src/components/sidebar/Sidebar.tsx`.
+`tauri/src/components/ui/call-center.tsx` and `tauri/src/components/sidebar/Sidebar.tsx`. The
+updater client touches `tauri/src/update.ts`, `tauri/src/lib/auto-update.ts`, `store.ts`,
+`Sidebar.tsx` and `tauri/src/windows/main-window/app.tsx`. On a conflict on `tauri.conf.json`
+`version`, keep ours: every release must be higher than the last for the updater.
 
 **If upstream changed its LiveKit SDK** (a conflict on the `livekit` line in `core/Cargo.toml`, or
 in `core/Cargo.lock`), the SDK fork has to follow before main can build:

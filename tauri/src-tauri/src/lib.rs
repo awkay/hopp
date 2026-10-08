@@ -155,6 +155,11 @@ pub struct AppData {
     /// Whether the menu-bar item shows the draw / stop sharing buttons (written on the main
     /// thread together with the icon; read when placing the popup and handling clicks).
     pub tray_sharing_controls: AtomicBool,
+    /// Menu bar style: set once `setup_tray_icon`'s launch-time placement of the hidden popup
+    /// under the tray icon is over, which waits up to `TRAY_POSITION_MAX_WAIT` for the tray's
+    /// position. Also set when it gave up (no tray rect, or one outside all monitors): the
+    /// window then stays where it was created.
+    pub main_window_placed: AtomicBool,
 
     /// macOS app activation observer — keeps the NSNotificationCenter observer alive.
     #[cfg(target_os = "macos")]
@@ -201,6 +206,7 @@ impl AppData {
             tray_state: Mutex::new(None),
             window_style,
             tray_sharing_controls: AtomicBool::new(false),
+            main_window_placed: AtomicBool::new(false),
             #[cfg(target_os = "macos")]
             activation_observer: Mutex::new(None),
             #[cfg(target_os = "macos")]
@@ -796,6 +802,47 @@ pub fn show_main_window(window: &WebviewWindow) {
     let _ = window.set_focus();
 }
 
+/// How often `wait_for_flag` checks its flag.
+#[cfg(any(target_os = "macos", test))]
+const WAIT_FOR_FLAG_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Waits until `flag` is set, for at most `timeout`, and returns whether it is set. Polls the
+/// atomic, so no lock is held across the wait.
+#[cfg(any(target_os = "macos", test))]
+async fn wait_for_flag(flag: &AtomicBool, timeout: Duration) -> bool {
+    let _ = tokio::time::timeout(timeout, async {
+        while !flag.load(Ordering::Acquire) {
+            tokio::time::sleep(WAIT_FOR_FLAG_INTERVAL).await;
+        }
+    })
+    .await;
+    flag.load(Ordering::Acquire)
+}
+
+/// Shows the main window once it is in its launch position. In the menu bar style that is
+/// after `setup_tray_icon`'s launch placement attempt (`AppData::main_window_placed`): shown
+/// earlier, it would stay where it was created, and the placement (which only moves a hidden
+/// popup) would skip it. Gives up after `timeout` without showing it.
+#[cfg(target_os = "macos")]
+pub async fn show_main_window_when_placed(
+    app: &AppHandle,
+    timeout: Duration,
+) -> Result<(), String> {
+    let data = app.state::<AppData>();
+    if !data.window_style.has_dock_icon() && !wait_for_flag(&data.main_window_placed, timeout).await
+    {
+        return Err(format!(
+            "the main window was never placed under the tray icon (waited {timeout:?}), \
+             not showing it"
+        ));
+    }
+    let window = app
+        .get_webview_window("main")
+        .ok_or("main window not found")?;
+    show_main_window(&window);
+    Ok(())
+}
+
 /// Hides the Dock icon again (Accessory policy) once a temporary reason for it (a call, the
 /// permissions or tray notification window) is gone. No-op in the floating and regular
 /// window styles, where the Dock icon stays for the whole session.
@@ -809,6 +856,18 @@ pub fn restore_accessory_policy(app: &AppHandle) {
     data.activation_policy_regular
         .store(false, Ordering::Relaxed);
 }
+
+/// Menu bar style: at launch, `setup_tray_icon` polls this often, at most
+/// `TRAY_POSITION_POLL_ATTEMPTS` times, for the tray icon to reach the menu bar, then places
+/// the popup under it anyway.
+#[cfg(target_os = "macos")]
+const TRAY_POSITION_POLL_INTERVAL: Duration = Duration::from_millis(100);
+#[cfg(target_os = "macos")]
+const TRAY_POSITION_POLL_ATTEMPTS: u32 = 100;
+/// The longest the launch placement waits for the tray icon's position (~10 s).
+#[cfg(target_os = "macos")]
+pub const TRAY_POSITION_MAX_WAIT: Duration =
+    TRAY_POSITION_POLL_INTERVAL.saturating_mul(TRAY_POSITION_POLL_ATTEMPTS);
 
 /// Add a tray icon to the app on macos, on windows we don't use it. No tray icon is
 /// created when the window style turns it off; in the floating and regular styles the
@@ -919,8 +978,10 @@ pub fn setup_tray_icon(
          * This runs once during app initialization and continues indefinitely.
          *
          * Initially it waits for the OS to assign a valid tray icon position (y == 0 indicates
-         * the menu bar). Polls every 100ms for up to 100 attempts. Once valid,
-         * centers the window on the tray if it's not visible.
+         * the menu bar). Polls every TRAY_POSITION_POLL_INTERVAL for up to
+         * TRAY_POSITION_POLL_ATTEMPTS attempts. Once valid, centers the window on the tray if
+         * it's not visible. Either way it then sets `main_window_placed`, which B10 waits for
+         * (also when it gives up because the tray has no rect at all).
          *
          * After initial centering, it polls every 200ms to detect tray icon position changes
          * (e.g., when the user rearranges menu bar items). If the position changed and the window
@@ -930,16 +991,26 @@ pub fn setup_tray_icon(
         tauri::async_runtime::spawn(async move {
             let mut tray_rect = match tray.rect() {
                 Ok(Some(rect)) => rect,
-                _ => {
-                    log::warn!("setup_tray_icon: Initial tray rect not available");
+                other => {
+                    log::warn!(
+                        "setup_tray_icon: Initial tray rect not available ({other:?}), so the \
+                         main window is not placed under the tray icon at launch and stays where \
+                         it was created until a tray click"
+                    );
+                    // Done with the launch placement: B10 shows the window unplaced instead
+                    // of waiting for a placement that never comes.
+                    app_handle
+                        .state::<AppData>()
+                        .main_window_placed
+                        .store(true, Ordering::Release);
                     return;
                 }
             };
-            for _ in 0..100 {
+            for _ in 0..TRAY_POSITION_POLL_ATTEMPTS {
                 if tray_rect.position.to_physical::<i32>(1.0).y == 0 {
                     break;
                 }
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                tokio::time::sleep(TRAY_POSITION_POLL_INTERVAL).await;
                 if let Ok(Some(rect)) = tray.rect() {
                     tray_rect = rect;
                 }
@@ -963,6 +1034,10 @@ pub fn setup_tray_icon(
                     ),
                 }
             }
+            app_handle
+                .state::<AppData>()
+                .main_window_placed
+                .store(true, Ordering::Release);
 
             loop {
                 tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1180,8 +1255,53 @@ pub fn create_media_window(app: &AppHandle, config: MediaWindowConfig<'_>) -> Re
 
 #[cfg(test)]
 mod tests {
-    use super::RestartBackoff;
+    use super::{wait_for_flag, RestartBackoff, WAIT_FOR_FLAG_INTERVAL};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
+
+    const TIMEOUT: Duration = Duration::from_secs(15);
+
+    // The `wait_for_flag` tests run on paused virtual time, so they (and `wait_for_flag`) use
+    // tokio's clock: `std` time doesn't advance while paused.
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_flag_returns_at_once_when_already_set() {
+        let flag = AtomicBool::new(true);
+        let start = tokio::time::Instant::now();
+        assert!(wait_for_flag(&flag, TIMEOUT).await);
+        assert_eq!(start.elapsed(), Duration::ZERO);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_flag_returns_soon_after_it_is_set_before_the_deadline() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let set_after = Duration::from_secs(3);
+        let setter = flag.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(set_after).await;
+            setter.store(true, Ordering::Release);
+        });
+        let start = tokio::time::Instant::now();
+        assert!(wait_for_flag(&flag, TIMEOUT).await);
+        let waited = start.elapsed();
+        assert!(
+            waited >= set_after && waited <= set_after + WAIT_FOR_FLAG_INTERVAL,
+            "waited {waited:?}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_flag_gives_up_at_the_timeout_when_never_set() {
+        let flag = AtomicBool::new(false);
+        let start = tokio::time::Instant::now();
+        assert!(!wait_for_flag(&flag, TIMEOUT).await);
+        let waited = start.elapsed();
+        assert!(
+            waited >= TIMEOUT && waited < TIMEOUT + WAIT_FOR_FLAG_INTERVAL,
+            "waited {waited:?}"
+        );
+    }
 
     #[test]
     fn restart_backoff_doubles_then_gives_up_within_the_window() {

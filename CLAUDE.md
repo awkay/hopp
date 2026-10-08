@@ -124,7 +124,8 @@ app, a dev server or an install (`task dev`, `yarn dev`, `task go`,
 - **core:** see `core/CLAUDE.md`.
 - **Tauri backend** (`tauri/src-tauri/`): `cargo clippy --all-targets --all-features -- -D warnings`
   and `cargo test`. Both need `tauri/dist/` and the sidecar `core/target/debug/hopp_core-<host triple>`
-  to exist; CI creates empty ones (`.github/workflows/tauri_rust_reusable.yml`).
+  to exist, and `SENTRY_DSN_RUST` set at compile time; CI creates empty ones and sets it to `""`
+  (`.github/workflows/tauri_rust_reusable.yml`).
 - **Tauri UI** (`tauri/`): `yarn tsc --noEmit --skipLibCheck`.
 - **Web app** (`web-app/`): `yarn tsc -b` and `yarn lint`.
 - **Backend** (`backend/`): `go vet ./...`, `go test -tags=integration ./...` (in-memory SQLite and
@@ -146,6 +147,11 @@ app, a dev server or an install (`task dev`, `yarn dev`, `task go`,
   run `yarn generate-openapi-types` from the repo root, which rewrites `web-app/src/openapi.d.ts` and
   `tauri/src/openapi.d.ts`. Don't edit those two by hand.
 - **Node 20** (`.nvmrc`). Yarn is pinned to 4.9.2 in `.yarn/releases/`, and newer Node breaks it.
+- **Tauri plugin versions pair up.** Each `@tauri-apps/plugin-*` npm package must resolve to the
+  same minor version as its `tauri-plugin-*` crate in `tauri/src-tauri/Cargo.lock` (pin it, e.g.
+  `~2.8`). `tauri build` refuses a mismatch; `tsc` and clippy don't notice it. CI's pre-commit job
+  checks every pair (and `@tauri-apps/api` against `tauri`) from the lockfiles; run it locally with
+  `node scripts/check-tauri-versions.mjs`.
 - **Core's windows aren't webviews.** The camera and screen-share windows are native winit + iced +
   wgpu windows in the core process, not Tauri windows.
 - Local dev uses mkcert HTTPS certs (a WebKit requirement).

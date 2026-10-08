@@ -42,6 +42,13 @@ use tauri::PhysicalPosition;
 #[cfg(target_os = "macos")]
 const MAIN_WINDOW_POSITION_SAVE_DELAY: Duration = Duration::from_millis(500);
 
+/// How long `show_main_window_when_placed` waits for the menu-bar popup's launch placement:
+/// the placement's own wait for the tray icon's position (~10 s), plus a margin (15 s).
+/// The placement sets its flag on every path, so this is only a safety net.
+#[cfg(target_os = "macos")]
+const MAIN_WINDOW_PLACED_TIMEOUT: Duration =
+    hopp::TRAY_POSITION_MAX_WAIT.saturating_add(Duration::from_secs(5));
+
 /// CallStart only dispatches the room connect in core, so its answer is quick.
 const CALL_START_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -465,6 +472,27 @@ fn minimize_main_window(app: tauri::AppHandle) {
     } else {
         log::error!("Main window not found");
     }
+}
+
+/// Shows the main window once at startup, after an in-app update relaunched the app.
+#[tauri::command(async)]
+async fn show_main_window_when_placed(app: tauri::AppHandle) -> Result<(), String> {
+    log::info!("show_main_window_when_placed");
+    #[cfg(target_os = "macos")]
+    let result = hopp::show_main_window_when_placed(&app, MAIN_WINDOW_PLACED_TIMEOUT).await;
+    #[cfg(not(target_os = "macos"))]
+    let result = match app.get_webview_window("main") {
+        Some(window) => {
+            let _ = window.show();
+            let _ = window.set_focus();
+            Ok(())
+        }
+        None => Err("main window not found".to_string()),
+    };
+    if let Err(e) = &result {
+        log::warn!("show_main_window_when_placed: {e}");
+    }
+    result
 }
 
 #[tauri::command(async)]
@@ -1527,6 +1555,7 @@ fn main() {
             get_drawing_enabled,
             set_drawing_enabled,
             minimize_main_window,
+            show_main_window_when_placed,
             set_livekit_url,
             get_livekit_url,
             get_camera_permission,

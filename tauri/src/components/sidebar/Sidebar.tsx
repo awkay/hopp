@@ -1,8 +1,8 @@
-import React, { useEffect, useMemo } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import throttle from "lodash/throttle";
 import toast from "react-hot-toast";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { HiArrowDownTray, HiOutlineUsers, HiOutlineLockOpen, HiOutlineUserPlus, HiOutlineMinus } from "react-icons/hi2";
+import { HiOutlineUsers, HiOutlineLockOpen, HiOutlineUserPlus, HiOutlineMinus } from "react-icons/hi2";
 import { CgSpinner } from "react-icons/cg";
 import { differenceInDays, parseISO } from "date-fns";
 import { Separator } from "../ui/separator";
@@ -22,8 +22,9 @@ import {
 import { appVersion, isFloatingMainWindow, tauriUtils } from "@/windows/window-utils.ts";
 import { Constants, OS } from "@/constants";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { downloadAndRelaunch, hasPendingUpdate, installAndRelaunch } from "@/update";
-import { LuCircleFadingArrowUp, LuTurtle } from "react-icons/lu";
+import { installUpdate } from "@/lib/auto-update";
+import { openWhatsNew } from "@/lib/after-update";
+import { LuCircleFadingArrowUp, LuSparkles, LuTurtle } from "react-icons/lu";
 import { typedInvoke } from "@/core_payloads";
 import { FiPhoneCall } from "react-icons/fi";
 import hotkeys from "hotkeys-js";
@@ -107,37 +108,167 @@ const getAvailableTabs = (
   ];
 };
 
-const DownloadNewVersionButton = () => {
-  const { needsUpdate, updateInProgress, setUpdateInProgress } = useStore();
+/**
+ * A ~40 px sidebar tile: an icon over a short label, with a tooltip. Disabled with
+ * aria-disabled, not `disabled`: a disabled button gets no pointer events, so its tooltip
+ * would never open.
+ */
+const SidebarTile = ({
+  icon,
+  label,
+  tooltip,
+  disabled,
+  className,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  tooltip: string;
+  disabled?: boolean;
+  className: string;
+  onClick?: () => void;
+}) => (
+  <Tooltip>
+    <TooltipTrigger asChild>
+      <button
+        type="button"
+        aria-disabled={disabled}
+        onClick={() => {
+          if (!disabled) onClick?.();
+        }}
+        className={clsx(
+          "flex flex-col items-center justify-center gap-1 size-10 rounded-lg border transition-colors",
+          disabled && "cursor-default",
+          className,
+        )}
+      >
+        {icon}
+        <span className="text-[10px] font-medium leading-none">{label}</span>
+      </button>
+    </TooltipTrigger>
+    <TooltipContent side="right">{tooltip}</TooltipContent>
+  </Tooltip>
+);
 
-  if (!needsUpdate) {
-    return null;
+/** A ring that fills clockwise from the top as `percent` goes from 0 to 100. */
+const ProgressRing = ({ percent }: { percent: number }) => {
+  const radius = 6;
+  const circumference = 2 * Math.PI * radius;
+  return (
+    <svg viewBox="0 0 16 16" className="size-4 -rotate-90" aria-hidden>
+      <circle cx="8" cy="8" r={radius} fill="none" stroke="currentColor" strokeWidth="2" className="opacity-25" />
+      <circle
+        cx="8"
+        cy="8"
+        r={radius}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeDasharray={circumference}
+        strokeDashoffset={circumference * (1 - percent / 100)}
+        className="transition-[stroke-dashoffset] duration-200"
+      />
+    </svg>
+  );
+};
+
+const UPDATE_FAILED_MESSAGE = "Couldn't update Hopp. Check your connection and try again.";
+
+/** Offers the update `version`; clicking downloads and installs it, then Hopp relaunches. */
+const UpdateTile = ({ version }: { version: string }) => {
+  const { updateInProgress, callTokens, calling, incomingCallCallerId, inviting, incomingInviteInviterId } = useStore();
+  const [phase, setPhase] = useState<"downloading" | "installing" | null>(null);
+  // Null while the download size is unknown.
+  const [percent, setPercent] = useState<number | null>(null);
+  const callActivity = !!(callTokens || calling || incomingCallCallerId || inviting || incomingInviteInviterId);
+  const blue = "border-blue-200 bg-blue-50 text-blue-700";
+
+  const update = async () => {
+    if (useStore.getState().updateInProgress) return;
+    setPhase("downloading");
+    setPercent(null);
+    try {
+      const result = await installUpdate((progress) => {
+        setPhase(progress.phase);
+        if (progress.phase === "downloading") setPercent(progress.percent);
+      });
+      // Nothing to report: the update is gone, and so is this tile.
+      if (result === "no-update") setPhase(null);
+    } catch {
+      setPhase(null);
+      toast.error(UPDATE_FAILED_MESSAGE, { duration: 6_000 });
+    }
+  };
+
+  if (phase === "installing") {
+    return (
+      <SidebarTile
+        icon={<CgSpinner className="size-4 animate-spin" />}
+        label="Restarting"
+        tooltip="Installing, Hopp will restart"
+        disabled
+        className={blue}
+      />
+    );
+  }
+
+  if (phase === "downloading" || updateInProgress) {
+    return (
+      <SidebarTile
+        icon={percent === null ? <CgSpinner className="size-4 animate-spin" /> : <ProgressRing percent={percent} />}
+        label="Updating"
+        tooltip={`Downloading ${version}…${percent === null ? "" : ` ${percent}%`}`}
+        disabled
+        className={blue}
+      />
+    );
+  }
+
+  if (callActivity) {
+    return (
+      <SidebarTile
+        icon={<LuCircleFadingArrowUp className="size-4" />}
+        label="Update"
+        tooltip="Update after the call"
+        disabled
+        className="border-slate-200 bg-slate-100 text-slate-400"
+      />
+    );
   }
 
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button
-          type="button"
-          className="flex items-center justify-center rounded-lg bg-white bg-linear-to-b from-gray-100 p-1.5 border border-slate-300 mx-1 size-8 w-full hover:scale-[1.025] hover:shadow-xs transition-all duration-300"
-          onClick={() => {
-            setUpdateInProgress(true);
-            if (OS === "macos" && hasPendingUpdate()) {
-              installAndRelaunch();
-              return;
-            }
-            downloadAndRelaunch();
-          }}
-          disabled={updateInProgress}
-        >
-          {updateInProgress ?
-            <CgSpinner className="animate-spin size-3.5 text-gray-800" />
-          : <LuCircleFadingArrowUp className="size-3.5 text-gray-800" />}
-        </button>
-      </TooltipTrigger>
-      <TooltipContent side="right">Download and install update</TooltipContent>
-    </Tooltip>
+    <SidebarTile
+      icon={<LuCircleFadingArrowUp className="size-4" />}
+      label="Update"
+      tooltip={`Update to ${version}. Hopp restarts.`}
+      className={clsx(blue, "hover:bg-blue-100")}
+      onClick={update}
+    />
   );
+};
+
+/** The update tile while an update is offered; otherwise, after an upgrade, the "What's new" tile. */
+const UpdateSlot = () => {
+  const { updateVersion, whatsNewTile } = useStore();
+
+  if (updateVersion) {
+    return <UpdateTile version={updateVersion} />;
+  }
+
+  if (whatsNewTile) {
+    return (
+      <SidebarTile
+        icon={<LuSparkles className="size-4" />}
+        label="New"
+        tooltip={`What's new in ${whatsNewTile.version}`}
+        className="border-gray-300 bg-gray-50 text-gray-700 hover:bg-gray-200"
+        onClick={openWhatsNew}
+      />
+    );
+  }
+
+  return null;
 };
 
 const TrialCountdownAvatarFill = ({ user }: { user: components["schemas"]["PrivateUser"] }) => {
@@ -340,7 +471,7 @@ export const Sidebar = () => {
             </div>
           )}
           <div className="flex justify-center w-full" data-tauri-drag-region={dragRegion}>
-            <DownloadNewVersionButton />
+            <UpdateSlot />
           </div>
           {user && <TrialCountdownAvatarFill user={user} />}
           <div className="mt-[-5px] h-12 w-full flex items-center justify-center" data-tauri-drag-region={dragRegion}>
@@ -381,6 +512,7 @@ export const Sidebar = () => {
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => invoke("quit_app")}>Quit</DropdownMenuItem>
                 <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={openWhatsNew}>What's new</DropdownMenuItem>
                 <div className="muted text-slate-500 px-2 py-0.5">App version: {appVersion}</div>
               </DropdownMenuContent>
             </DropdownMenu>
