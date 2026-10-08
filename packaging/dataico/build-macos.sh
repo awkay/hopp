@@ -98,13 +98,19 @@ if [[ -z "$NODE_BIN" && -d "$HOME/.nvm/versions/node" ]]; then
   candidate="$(ls -d "$HOME/.nvm/versions/node/v${REQUIRED_NODE_MAJOR}."* 2>/dev/null | sort -V | tail -1 || true)"
   [[ -n "$candidate" && -x "$candidate/bin/node" ]] && NODE_BIN="$candidate/bin/node"
 fi
+MISE_NODE_DIR="${MISE_DATA_DIR:-$HOME/.local/share/mise}/installs/node"
+if [[ -z "$NODE_BIN" && -d "$MISE_NODE_DIR" ]]; then
+  candidate="$(ls -d "$MISE_NODE_DIR/${REQUIRED_NODE_MAJOR}."* 2>/dev/null | sort -V | tail -1 || true)"
+  [[ -n "$candidate" && -x "$candidate/bin/node" ]] && NODE_BIN="$candidate/bin/node"
+fi
 if [[ -z "$NODE_BIN" ]]; then
   for dir in "/opt/homebrew/opt/node@${REQUIRED_NODE_MAJOR}/bin" "/usr/local/opt/node@${REQUIRED_NODE_MAJOR}/bin"; do
     [[ -x "$dir/node" ]] && { NODE_BIN="$dir/node"; break; }
   done
 fi
 [[ -n "$NODE_BIN" ]] || die "Node.js ${REQUIRED_NODE_MAJOR}.x not found (current: $(node -v 2>/dev/null || echo none)).
-  Install it with nvm ('nvm install ${REQUIRED_NODE_MAJOR}') or Homebrew ('brew install node@${REQUIRED_NODE_MAJOR}').
+  Install it with nvm ('nvm install ${REQUIRED_NODE_MAJOR}'), mise ('mise install node@${REQUIRED_NODE_MAJOR}')
+  or Homebrew ('brew install node@${REQUIRED_NODE_MAJOR}').
   Newer Node versions break the repo's pinned yarn 4.9.2."
 export PATH="$(dirname "$NODE_BIN"):$PATH"
 

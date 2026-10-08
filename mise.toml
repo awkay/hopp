@@ -1,0 +1,7 @@
+# Dev tools for this repo: `mise install` from the repo root (https://mise.jdx.dev).
+# Rust stays on rustup (latest stable, like CI). LiveKit for local calls: `brew install livekit`.
+[tools]
+node = "20"              # .nvmrc; the pinned Yarn 4.9.2 breaks on newer Node
+go = "1.25"              # backend/go.mod, CI
+task = "3"               # Taskfile.yml
+golangci-lint = "2.8.0"  # .pre-commit-config.yaml
