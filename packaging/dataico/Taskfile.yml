@@ -1,0 +1,25 @@
+# Dataico macOS app (see DATAICO.md). From the repo root:
+#
+#   task -d packaging/dataico build     # or `task build` in this directory
+#   task -d packaging/dataico install
+#
+# Not included from the root Taskfile.yml on purpose: Task merges the root `dotenv`
+# (packaging/.env, tauri/.env) and every included Taskfile's `env` into one environment that
+# all tasks get, included ones too. build-macos.sh lets the environment win over its defaults,
+# so a dev VITE_API_BASE_URL in tauri/.env would be baked into the release build. As its own
+# entrypoint with no `env` / `dotenv` here, the scripts see exactly your shell's environment;
+# override by exporting a variable or in packaging/dataico/.env (read by build-macos.sh).
+
+version: "3"
+
+tasks:
+  build:
+    desc: Build the Dataico app from the current checkout (dist/dataico/*.zip)
+    cmds:
+      - ./build-macos.sh
+
+  install:
+    desc: Build, then replace /Applications/hopp.app with the build and open it
+    cmds:
+      - task: build
+      - ../../scripts/install-macos.sh
