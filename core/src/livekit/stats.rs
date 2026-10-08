@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use livekit::id::ParticipantIdentity;
+use livekit::participant::{LocalParticipant, RemoteParticipant};
 use livekit::track::{LocalTrack, TrackSource};
 use livekit::webrtc::stats::RtcStats;
 
@@ -500,15 +502,26 @@ pub(crate) async fn stats_loop(inner: Arc<RoomServiceInner>) {
 
     loop {
         interval.tick().await;
-        let room_guard = inner.room.lock().await;
-        let Some(room) = room_guard.as_ref() else {
+        // Clone the participants and release the room locks before awaiting stats: each
+        // `get_stats` is a round trip to libwebrtc's signaling thread, and every publish on the
+        // command task (cursor, clicks, keys, drawing) needs the `room` lock.
+        let Some((local, remotes)) = inner
+            .room
+            .lock()
+            .await
+            .as_ref()
+            .map(|room| (room.local_participant(), room.remote_participants()))
+        else {
             continue;
         };
-        let video_room_guard = inner.video_room.lock().await;
+        let video_local = inner
+            .video_room
+            .lock()
+            .await
+            .as_ref()
+            .map(livekit::Room::local_participant);
         let (counters, mut snapshot, inbound, outbound) =
-            collect_stats(room, video_room_guard.as_ref()).await;
-        drop(room_guard);
-        drop(video_room_guard);
+            collect_stats(&local, video_local.as_ref(), &remotes).await;
 
         if previous.screenshare_inbound_bytes > 0 {
             snapshot.screenshare_input_bps = (counters
@@ -563,8 +576,9 @@ pub(crate) async fn stats_loop(inner: Arc<RoomServiceInner>) {
 }
 
 async fn collect_stats(
-    room: &livekit::Room,
-    video_room: Option<&livekit::Room>,
+    local: &LocalParticipant,
+    video_local: Option<&LocalParticipant>,
+    remotes: &HashMap<ParticipantIdentity, RemoteParticipant>,
 ) -> (
     CumulativeCounters,
     RoomStats,
@@ -575,15 +589,10 @@ async fn collect_stats(
     let mut snapshot = RoomStats::default();
     let mut inbound_sample = None;
     let mut outbound_sample = None;
-    let video_participant_identity = video_room.map(|video_room| {
-        video_room
-            .local_participant()
-            .identity()
-            .as_str()
-            .to_string()
-    });
+    let video_participant_identity =
+        video_local.map(|video_local| video_local.identity().as_str().to_string());
 
-    for (_, publication) in room.local_participant().track_publications() {
+    for (_, publication) in local.track_publications() {
         let Some(LocalTrack::Video(track)) = publication.track() else {
             continue;
         };
@@ -596,8 +605,8 @@ async fn collect_stats(
         }
     }
 
-    if let Some(video_room) = video_room {
-        for (_, publication) in video_room.local_participant().track_publications() {
+    if let Some(video_local) = video_local {
+        for (_, publication) in video_local.track_publications() {
             let monitor_publication =
                 publication.source() == TrackSource::Screenshare && !publication.is_muted();
             let Some(LocalTrack::Video(track)) = publication.track() else {
@@ -651,7 +660,7 @@ async fn collect_stats(
         }
     }
 
-    for (_, participant) in room.remote_participants() {
+    for participant in remotes.values() {
         if video_participant_identity.as_deref() == Some(participant.identity().as_str()) {
             continue;
         }

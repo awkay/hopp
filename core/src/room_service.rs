@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use livekit::options::{
     DegradationPreference, TrackPublishOptions, VideoCodec, VideoEncoding, VideoEncodingUpdate,
 };
-use livekit::participant::ConnectionQuality;
+use livekit::participant::{ConnectionQuality, LocalParticipant};
 use livekit::track::{LocalTrack, LocalVideoTrack, TrackSource, VideoQuality};
 use livekit::webrtc::prelude::{RtcVideoSource, VideoResolution};
 use livekit::webrtc::video_source::native::NativeVideoSource;
@@ -1559,13 +1559,10 @@ async fn room_service_commands(
                     continue;
                 }
                 last_cursor_publish = now;
-                let inner_room = inner.room.lock().await;
-                if inner_room.is_none() {
+                let Some(local_participant) = room_local_participant(&inner).await else {
                     log::warn!("room_service_commands: Room doesn't exist");
                     continue;
-                }
-                let room = inner_room.as_ref().unwrap();
-                let local_participant = room.local_participant();
+                };
                 let res = local_participant
                     .publish_data(DataPacket {
                         payload: serde_json::to_vec(&ClientEvent::MouseMove(ClientPoint { x, y }))
@@ -1583,13 +1580,10 @@ async fn room_service_commands(
                 );
             }
             RoomServiceCommand::PublishControllerCursorEnabled(enabled) => {
-                let inner_room = inner.room.lock().await;
-                if inner_room.is_none() {
+                let Some(local_participant) = room_local_participant(&inner).await else {
                     log::warn!("room_service_commands: Room doesn't exist");
                     continue;
-                }
-                let room = inner_room.as_ref().unwrap();
-                let local_participant = room.local_participant();
+                };
                 let res = local_participant
                     .publish_data(DataPacket {
                         payload: serde_json::to_vec(&ClientEvent::RemoteControlEnabled(
@@ -1608,13 +1602,10 @@ async fn room_service_commands(
                 }
             }
             RoomServiceCommand::TickResponse(time) => {
-                let inner_room = inner.room.lock().await;
-                if inner_room.is_none() {
+                let Some(local_participant) = room_local_participant(&inner).await else {
                     log::warn!("room_service_commands: Room doesn't exist");
                     continue;
-                }
-                let room = inner_room.as_ref().unwrap();
-                let local_participant = room.local_participant();
+                };
                 let res = local_participant
                     .publish_data(DataPacket {
                         payload: serde_json::to_vec(&ClientEvent::TickResponse(TickData { time }))
@@ -1629,13 +1620,10 @@ async fn room_service_commands(
                 }
             }
             RoomServiceCommand::PublishParticipantInControl(participant) => {
-                let room = inner.room.lock().await;
-                if room.is_none() {
+                let Some(local_participant) = room_local_participant(&inner).await else {
                     log::warn!("room_service_commands: Room doesn't exist");
                     continue;
-                }
-                let room = room.as_ref().unwrap();
-                let local_participant = room.local_participant();
+                };
                 let res = local_participant
                     .publish_data(DataPacket {
                         payload: participant.to_string().as_bytes().to_vec(),
@@ -1651,13 +1639,10 @@ async fn room_service_commands(
                 }
             }
             RoomServiceCommand::PublishDrawStart(point) => {
-                let room = inner.room.lock().await;
-                if room.is_none() {
+                let Some(local_participant) = room_local_participant(&inner).await else {
                     log::warn!("room_service_commands: Room doesn't exist");
                     continue;
-                }
-                let room = room.as_ref().unwrap();
-                let local_participant = room.local_participant();
+                };
                 let event = ClientEvent::DrawStart(point);
                 let payload = serde_json::to_vec(&event).unwrap();
                 let res = local_participant
@@ -1674,13 +1659,10 @@ async fn room_service_commands(
                 }
             }
             RoomServiceCommand::PublishDrawAddPoint(point) => {
-                let room = inner.room.lock().await;
-                if room.is_none() {
+                let Some(local_participant) = room_local_participant(&inner).await else {
                     log::warn!("room_service_commands: Room doesn't exist");
                     continue;
-                }
-                let room = room.as_ref().unwrap();
-                let local_participant = room.local_participant();
+                };
                 let event = ClientEvent::DrawAddPoint(point);
                 let payload = serde_json::to_vec(&event).unwrap();
                 let res = local_participant
@@ -1697,13 +1679,10 @@ async fn room_service_commands(
                 }
             }
             RoomServiceCommand::PublishDrawEnd(point) => {
-                let room = inner.room.lock().await;
-                if room.is_none() {
+                let Some(local_participant) = room_local_participant(&inner).await else {
                     log::warn!("room_service_commands: Room doesn't exist");
                     continue;
-                }
-                let room = room.as_ref().unwrap();
-                let local_participant = room.local_participant();
+                };
                 let event = ClientEvent::DrawEnd(point);
                 let payload = serde_json::to_vec(&event).unwrap();
                 let res = local_participant
@@ -1720,13 +1699,10 @@ async fn room_service_commands(
                 }
             }
             RoomServiceCommand::PublishDrawClearPaths(path_ids) => {
-                let room = inner.room.lock().await;
-                if room.is_none() {
+                let Some(local_participant) = room_local_participant(&inner).await else {
                     log::warn!("room_service_commands: Room doesn't exist");
                     continue;
-                }
-                let room = room.as_ref().unwrap();
-                let local_participant = room.local_participant();
+                };
 
                 // Send individual DrawClearPath events for each path ID
                 for path_id in path_ids {
@@ -1750,13 +1726,10 @@ async fn room_service_commands(
                 }
             }
             RoomServiceCommand::PublishDrawClearAllPaths => {
-                let room = inner.room.lock().await;
-                if room.is_none() {
+                let Some(local_participant) = room_local_participant(&inner).await else {
                     log::warn!("room_service_commands: Room doesn't exist");
                     continue;
-                }
-                let room = room.as_ref().unwrap();
-                let local_participant = room.local_participant();
+                };
                 let event = ClientEvent::DrawClearAllPaths;
                 let payload = serde_json::to_vec(&event).unwrap();
                 let res = local_participant
@@ -1775,13 +1748,10 @@ async fn room_service_commands(
                 }
             }
             RoomServiceCommand::PublishDrawText(data) => {
-                let room = inner.room.lock().await;
-                if room.is_none() {
+                let Some(local_participant) = room_local_participant(&inner).await else {
                     log::warn!("room_service_commands: Room doesn't exist");
                     continue;
-                }
-                let room = room.as_ref().unwrap();
-                let local_participant = room.local_participant();
+                };
                 let event = ClientEvent::DrawText(data);
                 let payload = serde_json::to_vec(&event).unwrap();
                 // Reliable (ordered) so a late position update can never
@@ -1800,13 +1770,10 @@ async fn room_service_commands(
                 }
             }
             RoomServiceCommand::PublishDrawingMode(mode) => {
-                let room = inner.room.lock().await;
-                if room.is_none() {
+                let Some(local_participant) = room_local_participant(&inner).await else {
                     log::warn!("room_service_commands: Room doesn't exist");
                     continue;
-                }
-                let room = room.as_ref().unwrap();
-                let local_participant = room.local_participant();
+                };
                 let event = ClientEvent::DrawingMode(mode);
                 let payload = serde_json::to_vec(&event).unwrap();
                 let res = local_participant
@@ -1933,13 +1900,10 @@ async fn room_service_commands(
                 log::info!("room_service_commands: Screen share track unmuted");
             }
             RoomServiceCommand::PublishMouseClick(data) => {
-                let inner_room = inner.room.lock().await;
-                if inner_room.is_none() {
+                let Some(local_participant) = room_local_participant(&inner).await else {
                     log::warn!("room_service_commands: Room doesn't exist for PublishMouseClick");
                     continue;
-                }
-                let room = inner_room.as_ref().unwrap();
-                let local_participant = room.local_participant();
+                };
 
                 let event = ClientEvent::MouseClick(data);
                 let payload = serde_json::to_vec(&event).unwrap();
@@ -1957,13 +1921,10 @@ async fn room_service_commands(
                 }
             }
             RoomServiceCommand::PublishKeystroke(data) => {
-                let inner_room = inner.room.lock().await;
-                if inner_room.is_none() {
+                let Some(local_participant) = room_local_participant(&inner).await else {
                     log::warn!("room_service_commands: Room doesn't exist for PublishKeystroke");
                     continue;
-                }
-                let room = inner_room.as_ref().unwrap();
-                let local_participant = room.local_participant();
+                };
 
                 let event = ClientEvent::Keystroke(data);
                 let payload = serde_json::to_vec(&event).unwrap();
@@ -1981,13 +1942,10 @@ async fn room_service_commands(
                 }
             }
             RoomServiceCommand::PublishWheelEvent(data) => {
-                let inner_room = inner.room.lock().await;
-                if inner_room.is_none() {
+                let Some(local_participant) = room_local_participant(&inner).await else {
                     log::warn!("room_service_commands: Room doesn't exist for PublishWheelEvent");
                     continue;
-                }
-                let room = inner_room.as_ref().unwrap();
-                let local_participant = room.local_participant();
+                };
 
                 let event = ClientEvent::WheelEvent(data);
                 let payload = serde_json::to_vec(&event).unwrap();
@@ -2005,15 +1963,12 @@ async fn room_service_commands(
                 }
             }
             RoomServiceCommand::PublishAddToClipboard(data) => {
-                let inner_room = inner.room.lock().await;
-                if inner_room.is_none() {
+                let Some(local_participant) = room_local_participant(&inner).await else {
                     log::warn!(
                         "room_service_commands: Room doesn't exist for PublishAddToClipboard"
                     );
                     continue;
-                }
-                let room = inner_room.as_ref().unwrap();
-                let local_participant = room.local_participant();
+                };
 
                 let event = ClientEvent::AddToClipboard(data);
                 let payload = serde_json::to_vec(&event).unwrap();
@@ -2031,15 +1986,12 @@ async fn room_service_commands(
                 }
             }
             RoomServiceCommand::PublishPasteFromClipboard(data) => {
-                let inner_room = inner.room.lock().await;
-                if inner_room.is_none() {
+                let Some(local_participant) = room_local_participant(&inner).await else {
                     log::warn!(
                         "room_service_commands: Room doesn't exist for PublishPasteFromClipboard"
                     );
                     continue;
-                }
-                let room = inner_room.as_ref().unwrap();
-                let local_participant = room.local_participant();
+                };
 
                 let event = ClientEvent::PasteFromClipboard(data);
                 let payload = serde_json::to_vec(&event).unwrap();
@@ -2059,15 +2011,12 @@ async fn room_service_commands(
                 }
             }
             RoomServiceCommand::PublishClipboardData(data) => {
-                let inner_room = inner.room.lock().await;
-                if inner_room.is_none() {
+                let Some(local_participant) = room_local_participant(&inner).await else {
                     log::warn!(
                         "room_service_commands: Room doesn't exist for PublishClipboardData"
                     );
                     continue;
-                }
-                let room = inner_room.as_ref().unwrap();
-                let local_participant = room.local_participant();
+                };
 
                 let event = ClientEvent::ClipboardData(data);
                 let payload = serde_json::to_vec(&event).unwrap();
@@ -2085,15 +2034,12 @@ async fn room_service_commands(
                 }
             }
             RoomServiceCommand::PublishClickAnimation(point) => {
-                let inner_room = inner.room.lock().await;
-                if inner_room.is_none() {
+                let Some(local_participant) = room_local_participant(&inner).await else {
                     log::warn!(
                         "room_service_commands: Room doesn't exist for PublishClickAnimation"
                     );
                     continue;
-                }
-                let room = inner_room.as_ref().unwrap();
-                let local_participant = room.local_participant();
+                };
 
                 let event = ClientEvent::ClickAnimation(point);
                 let payload = serde_json::to_vec(&event).unwrap();
@@ -2111,15 +2057,13 @@ async fn room_service_commands(
                 }
             }
             RoomServiceCommand::PublishEffect(id) => {
-                let inner_room = inner.room.lock().await;
-                let Some(room) = inner_room.as_ref() else {
+                let Some(local_participant) = room_local_participant(&inner).await else {
                     log::warn!("room_service_commands: Room doesn't exist for PublishEffect");
                     continue;
                 };
                 // Lossy: a lost effect is harmless, and it must not queue in front of
                 // keystrokes on the reliable channel.
-                let res = room
-                    .local_participant()
+                let res = local_participant
                     .publish_data(DataPacket {
                         payload: encode_effect_packet(id),
                         reliable: false,
@@ -2151,13 +2095,11 @@ async fn room_service_commands(
                         continue;
                     }
                 };
-                let room = inner.room.lock().await;
-                let Some(room) = room.as_ref() else {
+                let Some(local_participant) = room_local_participant(&inner).await else {
                     log::warn!("room_service_commands: Room doesn't exist for App Veil snapshot");
                     continue;
                 };
-                match room
-                    .local_participant()
+                match local_participant
                     .publish_data(DataPacket {
                         payload,
                         reliable: true,
@@ -2526,15 +2468,28 @@ struct RoomEventContext {
     service_command_tx: mpsc::UnboundedSender<RoomServiceCommand>,
 }
 
+/// The call room's local participant, or `None` outside a call.
+///
+/// Returns an owned handle so the `room` lock is released before the caller awaits
+/// `publish_data`. That call can wait seconds (a reconnect, the publisher connection, data
+/// channel backpressure on a congested call), and meanwhile the room-event loop and the stats
+/// loop need the lock. Publishes stay ordered without it: they all run on the command task.
+async fn room_local_participant(inner: &RoomServiceInner) -> Option<LocalParticipant> {
+    inner
+        .room
+        .lock()
+        .await
+        .as_ref()
+        .map(Room::local_participant)
+}
+
 async fn publish_bandwidth_mode_request(inner: &RoomServiceInner, low_bandwidth: bool) {
-    let inner_room = inner.room.lock().await;
-    let Some(room) = inner_room.as_ref() else {
+    let Some(local_participant) = room_local_participant(inner).await else {
         log::warn!("publish_bandwidth_mode_request: Room doesn't exist");
         return;
     };
     let payload = serde_json::to_vec(&BandwidthModeRequest { low_bandwidth }).unwrap();
-    let res = room
-        .local_participant()
+    let res = local_participant
         .publish_data(DataPacket {
             payload,
             reliable: true,
