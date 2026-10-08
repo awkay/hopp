@@ -31,6 +31,7 @@ fork-only features (see below).
 | CI and release builds | CI clippy and release builds for `core/` and `tauri/`, and `release.yml` app builds, on Windows, Intel and Apple Silicon macOS | Apple Silicon macOS only (`aarch64-apple-darwin`) | we only ship the Apple Silicon macOS app, so the other targets only cost CI time |
 | Rust toolchain in CI | clippy, tests and builds pinned to 1.96.1 | latest stable (`dtolnay/rust-toolchain@stable`), like `release.yml` already was | local rustup stable and CI run the same clippy, and there is no pin to bump |
 | Tests | CI runs only the Go integration tests; the `core/tests` harness speaks upstream's IPC and its scenarios need a person watching the screen | CI also runs the core, `socket_lib` and Tauri unit tests, all Go tests (`internal/` too), and builds the harness; the harness speaks our request-id / call-id IPC (`core/tests/src/ipc.rs`) and has self-checking smoke scenarios run locally with `core/tests/smoke.sh`, optionally over an emulated network (`core/tests/netem.sh`) | the Rust tests ran nowhere, and the harness stopped compiling with the IPC rewrite without anyone noticing |
+| `docs/` | Astro/Starlight source of the user docs site docs.gethopp.app, a Yarn workspace | deleted; `docs/` holds our own docs (`docs/ipc.md`), feature specs (`docs/specs/`) and work tracker (`docs/TRACKER.md`). README images moved to `banner.png` (an identical copy already at the root) and `.github/readme/`. In-app docs links still go to docs.gethopp.app | nobody here built or deployed the site, and installing it slowed every `yarn install`; we needed docs for ourselves and for agents |
 | Agent instructions | `AGENTS.md` at the root and in `core/`, which the `CLAUDE.md` files import or link to. Agents may run only `task build_dev`, never `cargo fmt` / `clippy`, and follow a generic plan-mode / `tasks/todo.md` workflow | `CLAUDE.md` at the root and in `core/`, no `AGENTS.md`. Agents run the checks CI runs (build, unit tests, clippy, fmt, typecheck, lint, Go tests, core smoke scenarios) and never start the app, dev servers or installs. Plans and status live in `docs/` | upstream's files listed backend tasks that don't exist, contradicted each other and CI, and left agents no way to check their own work |
 
 The packaging layer lives in new files; it modifies no upstream file:
@@ -178,6 +179,21 @@ in `core/Cargo.lock`), the SDK fork has to follow before main can build:
    ```
 3. Re-pin and continue: `cd core && cargo update -p livekit`, then build, `git add` the
    lockfile, and `git rebase --continue`.
+
+**Upstream's docs site is deleted here**, and upstream still edits it. When the rebase replays
+that deletion and upstream changed a docs file, it stops with a modify/delete conflict. Files
+upstream added under `docs/` survive the rebase without a conflict. In both cases, run the
+command below: during the conflict, then `git rebase --continue`; after the rebase, if it deletes
+anything, commit the deletion. Our own docs (`docs/*.md`, `docs/specs/`) aren't touched.
+
+```bash
+git rm -rq --ignore-unmatch docs/src docs/public docs/package.json docs/astro.config.mjs \
+  docs/tsconfig.json docs/.gitignore
+```
+
+A conflict in `yarn.lock` (upstream bumped a package we dropped with the docs workspace): take
+the rebased side (`git checkout --ours yarn.lock`; in a rebase, "ours" is upstream plus the
+commits already replayed), run `yarn install --mode=update-lockfile` (Node 20), then `git add yarn.lock`.
 
 Others then update with `git fetch && git reset --hard origin/main` (main is rebased, not merged).
 

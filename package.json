@@ -19,8 +19,7 @@
   },
   "workspaces": [
     "tauri",
-    "web-app",
-    "docs"
+    "web-app"
   ],
   "packageManager": "yarn@4.9.2",
   "installConfig": {
