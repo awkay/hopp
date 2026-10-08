@@ -4,15 +4,12 @@ repos:
       - id: cargo_fmt
         name: cargo fmt
         language: system
+        # Every crate, whichever .rs files are staged: `cargo fmt` in core/ doesn't reach
+        # core/dev (outside its workspace), and all of them together take under a second.
         entry: |
           bash -c '
-          STAGED_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep "\.rs$")
-          for FILE in $STAGED_FILES; do
-            if [[ $FILE == core/* ]]; then
-              cd core && cargo fmt && cd - > /dev/null;
-            elif [[ $FILE == tauri/src-tauri/* ]]; then
-              cd tauri/src-tauri && cargo fmt && cd - > /dev/null;
-            fi;
+          git ls-files "*Cargo.toml" | while read -r MANIFEST; do
+            (cd "$(dirname "$MANIFEST")" && cargo fmt) || exit 1;
           done
           '
         pass_filenames: false
