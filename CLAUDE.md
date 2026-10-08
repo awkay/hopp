@@ -31,6 +31,34 @@ lasting guidance is also promoted to other docs. If nothing was discovered, expl
 non-empty file. Do not mark the spec complete, merge it or remove its worktree until the notes are
 included in the committed deliverable.
 
+§GPU-RESIDENT-VIDEO: On the normal macOS screen-sharing path, captured and decoded pixels remain
+GPU-backed through hardware encoding, decoding and presentation. No full-frame CPU readback,
+copying or format conversion in the normal path. Any necessary compatibility fallback must be
+explicit, documented and observable, never silently become the default. CPU-based NV12 texture
+uploads are a transitional optimization, not completion of this invariant.
+
+§SCREEN-SHARE-FRAME-PACING: Coordinate capture, encoding and presentation around one frame-rate
+target, with display-aware pacing and bounded queues that prefer the newest ready video frame over
+a stale backlog. Normal mode targets sustained 60 delivered and presented frames per second during
+motion, at the selected resolution, on healthy connections and capable displays. Lower rates must
+reflect explicit low-bandwidth mode or actual source, network or hardware constraints, not an
+arbitrary normal-mode cap. Verify actual delivered resolution, capture/encode/present cadence and
+frame age; a configured encoder rate alone is not evidence of fluidity. Vsync is a measured
+latency-versus-pacing choice, not a universally correct on/off setting.
+
+§SCREEN-SHARE-TEXT-CLARITY: Normal mode on healthy connections and capable hardware must keep
+text and fine UI edges crisp and readable at a reasonable viewing scale, including while typing,
+editing or moving the cursor. Localized updates must not blur the whole view or require activity to
+stop before text becomes sharp. Scrolling must be fluid, but reading text while it is actively
+scrolling is not a requirement; after scrolling stops, text must promptly be crisp.
+
+§CHANGE-DRIVEN-VIDEO: Encode, upload and redraw only for changed content, UI updates or active
+animation deadlines. Static content must not cause recurring video work or idle redraws; block when
+idle and schedule the next known deadline when animation is active. An update arriving while work
+is in progress must remain pending until handled: never lose the final dirty state or its wakeup.
+Protocol-required transport keepalives and codec recovery are separate from content updates and do
+not justify ongoing black-frame encoding or timer-driven idle presentation.
+
 ## Fork policy
 
 This is the `awkay/hopp` fork, maintained for our own users (Dataico build, see `DATAICO.md`). It is
