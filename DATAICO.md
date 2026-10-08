@@ -82,7 +82,7 @@ in Settings is still shown but has no effect.
 - Xcode Command Line Tools: `xcode-select --install`
 - Rust via rustup (`https://rustup.rs`, or `brew install rustup && rustup-init`).
 - Node.js **20** (`.nvmrc`). Newer Node (e.g. 26) breaks the pinned yarn 4.9.2
-  (`onCancel` error). `nvm install 20` or `brew install node@20`; the script finds either.
+  (`onCancel` error). `nvm install 20`, `mise install node@20` or `brew install node@20`; the script finds any of them.
 - Optional: `LK_CUSTOM_WEBRTC=/path/to/prebuilt/libwebrtc`. Without it, the first core build
   downloads libwebrtc (several hundred MB) from `gethopp/rust-sdks` releases; the SDK fork does
   not host its own copy. `cargo --offline` does not prevent this download (the `webrtc-sys` build
