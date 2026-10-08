@@ -56,8 +56,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
           - os: macos-26
             target: aarch64-apple-darwin
 
@@ -88,8 +86,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
           - os: macos-26
             target: x86_64-apple-darwin
           - os: macos-26
