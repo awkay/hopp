@@ -1,0 +1,2 @@
+# Audits keep their run logs as evidence (the root .gitignore drops *.log).
+!*.log

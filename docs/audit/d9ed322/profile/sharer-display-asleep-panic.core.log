@@ -1,0 +1,65 @@
+[2026-10-08T17:17:18Z INFO  hopp_core] Starting RenderEventLoop
+[2026-10-08T17:17:18Z INFO  hopp_core] Creating socket at path: /var/folders/zs/36s8rrj550l3slxn22j3xy9w0000gn/T/hopp-profile-60386.sock
+[2026-10-08T17:17:19Z INFO  hopp_core::audio::device_monitor::macos] Device monitor started (input)
+[2026-10-08T17:17:20Z INFO  hopp_core] Application::resumed: initializing WindowManager
+[2026-10-08T17:17:20Z INFO  hopp_core::window_manager] WindowManager::new: creating windows for available monitors
+[2026-10-08T17:17:20Z INFO  hopp_core] user_event: CallStart call_id=1791479839376
+[2026-10-08T17:17:20Z INFO  hopp_core::audio::player] Player::start
+[2026-10-08T17:17:20Z INFO  hopp_core::audio::mixer] cpal output: 44100Hz 2ch
+[2026-10-08T17:17:20Z INFO  hopp_core::audio::device_monitor::macos] Device monitor started (output)
+[2026-10-08T17:17:20Z INFO  hopp_core::audio::capturer] Hardware doesn't support 16kHz mono, will resample
+[2026-10-08T17:17:20Z INFO  hopp_core::audio::capturer] Audio conversion: 44100Hz 1ch → 16000Hz 1ch
+[2026-10-08T17:17:20Z INFO  hopp_core::audio::capturer] Microphone capture thread priority set to maximum
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] create_room
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] create_room: command dispatched (non-blocking)
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] room_service_commands: CreateRoom call_id=1791479839376
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] room_service_commands: Cleared previous room state
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] room_service_commands: Connecting to room and video room in parallel (url=ws://localhost:7880, signal_timeout=20s, setup_timeout=90s)
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] room_service_commands: Room::connect (signal + ICE) took 30ms
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] DTLN denoiser initialized (tract) in 26ms
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] room_service_commands: video Room::connect (signal + ICE) took 48ms
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] room_service_commands: Screen share track published in 1ms
+[2026-10-08T17:17:20Z INFO  hopp_core::livekit::audio] audio_publish: took 1
+[2026-10-08T17:17:20Z INFO  hopp_core::livekit::audio] AudioPublisher: audio track published (16000Hz)
+[2026-10-08T17:17:20Z INFO  hopp_core::livekit::audio] Starting audio processing (16000Hz, 160 samples per 10ms, max buffer 200ms)
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] room_service_commands: Camera track published in 9ms
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] room_service_commands: Regular room connected in 72ms
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] room_service_commands: Connected to room
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] room_service_commands: Spawned stats task
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] room_service_commands: Got user identity and name
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] room_service_commands: Inserted local participant into participants map
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] populate_participants_from_room: participant added: room:dev_room:profile-viewer:audio
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] room_service_commands: Video room connected in 72ms (total 72ms)
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] room_service_commands: Finished room setup in 72ms
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] camera quality: active=0, low_bandwidth=false, quality=High, updated_publications=0
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] room_service_commands: Spawned handle_room_events
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] room_service_commands: Spawned video_room event drainer
+[2026-10-08T17:17:20Z INFO  hopp_core] user_event: CreateRoomResult: Ok([{ identity: "room:dev_room:profile-viewer:audio", connected: true, muted: false, has_camera: false, is_screensharing: false }, { identity: "local", connected: true, muted: false, has_camera: false, is_screensharing: false }])
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] set_local_low_bandwidth: false
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] send_bandwidth_mode_state: BandwidthModeState { active: false, local_requested: false, requested_by: [] }
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] handle_room_events: Participant connected: room:dev_room:profile-core:video
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] handle_room_events: Track published: microphone (Microphone) from room:dev_room:profile-viewer:audio
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] handle_room_events: Track subscribed from room:dev_room:profile-core:video: screen_share (Video) Video(RemoteVideoTrack { sid: TrackSid("TR_VSCa5w6SWXBpxo"), name: "screen_share", source: Screenshare }) RemoteTrackPublication { is_subscribed: true, is_allowed: true }
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] handle_room_events: Track unsubscribed from room:dev_room:profile-core:video: screen_share (Video)
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] handle_room_events: Track subscribed from room:dev_room:profile-viewer:audio: microphone (Audio) Audio(RemoteAudioTrack { sid: TrackSid("TR_AMJQJp2VR2Ypb7"), name: "microphone", source: Microphone }) RemoteTrackPublication { is_subscribed: true, is_allowed: true }
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] handle_room_events: Setting up audio stream for participant: room:dev_room:profile-viewer:audio
+[2026-10-08T17:17:20Z INFO  hopp_core::livekit::audio] Starting audio receive loop for room:dev_room:profile-viewer:audio
+[2026-10-08T17:17:20Z INFO  hopp_core] screenshare: resolution: Extent { width: 4096.0, height: 2160.0 } content: Display 2
+[2026-10-08T17:17:20Z INFO  hopp_core] stop_screenshare
+[2026-10-08T17:17:20Z INFO  hopp_core::capture::capturer] stop_capture
+[2026-10-08T17:17:20Z WARN  hopp_core::capture::capturer] stop_capture: no active stream
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] mute_screen_share_track
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] set_screen_capture_size: None
+[2026-10-08T17:17:20Z INFO  hopp_core] destroy_overlay_window
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] room_service_commands: Screen share track muted
+[2026-10-08T17:17:20Z INFO  hopp_core::camera::capturer] CameraCapturer::set_screensharing_active: active=false, target=1280x720@30fps
+[2026-10-08T17:17:20Z INFO  hopp_core] set_screensharing_active: false
+[2026-10-08T17:17:20Z INFO  hopp_core] close_drawing_window
+[2026-10-08T17:17:20Z INFO  hopp_core] close_screensharing_window
+[2026-10-08T17:17:20Z INFO  hopp_core::room_service] get_buffer_source
+
+thread 'main' (1944960) panicked at src/capture/macos.rs:28:36:
+index out of bounds: the len is 0 but the index is 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[2026-10-08T17:17:20Z ERROR hopp_core] Error locking screen capturer: PoisonError { .. }
+[2026-10-08T17:17:20Z INFO  hopp_core::livekit::audio] AudioTrackHandle dropped

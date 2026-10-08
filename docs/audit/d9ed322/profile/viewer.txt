@@ -1,0 +1,69 @@
+hopp_core, viewer run 'first': 28% of one core (load generator 36%)
+8.4 CPU-seconds sampled over 30 s = 28% of one core
+
+CPU by thread
+   29.0%  hopp_core-aarch64-apple-darwin
+   18.8%  hopp-audio
+   17.2%  network_thread
+   12.5%  Main Thread
+   11.6%  worker_thread
+    5.6%  tokio-rt-worker
+    2.7%  com.apple.coremedia.sharedRootQueue.47
+    2.4%  com.apple.audio.IOThread.client
+    0.3%  signaling_thread
+
+Most self time (the function itself, not what it calls)
+    6.9%  poll  [libsystem_kernel.dylib]
+    6.2%  mach_msg2_trap  [libsystem_kernel.dylib]
+    4.8%  start_wqthread  [libsystem_pthread.dylib]
+    4.8%  .store_generic  [hopp_core-aarch64-apple-darwin]
+    3.8%  _platform_memmove  [libsystem_platform.dylib]
+    3.3%  __psynch_cvwait  [libsystem_kernel.dylib]
+    2.7%  __sendto  [libsystem_kernel.dylib]
+    2.5%  .packed_packed_loop_16  [hopp_core-aarch64-apple-darwin]
+    2.2%  CopyRow_NEON  [hopp_core-aarch64-apple-darwin]
+    1.8%  kevent_id  [libsystem_kernel.dylib]
+    1.6%  silk_noise_shape_quantizer_del_dec  [hopp_core-aarch64-apple-darwin]
+    1.6%  __psynch_cvbroad  [libsystem_kernel.dylib]
+    1.5%  _platform_memset  [libsystem_platform.dylib]
+    1.4%  mach_absolute_time  [libsystem_kernel.dylib]
+    1.4%  __recvmsg  [libsystem_kernel.dylib]
+    1.1%  .return  [hopp_core-aarch64-apple-darwin]
+    0.8%  SplitUVRow_NEON  [hopp_core-aarch64-apple-darwin]
+    0.8%  webrtc::SincResampler::Convolve_NEON(float const*, float const*, float const*, double)  [hopp_core-aarch64-apple-darwin]
+    0.7%  webrtc::aec3::MatchedFilterCore_NEON(unsigned long, float, float, webrtc::ArrayView<float const, -4711l>, webrtc::ArrayView<float const, -4711l>, webrtc::ArrayView<float, -4711l>, bool*, float*, bool, webrtc::ArrayView<float, -4711l>, webrtc::ArrayView<float, -4711l>)  [hopp_core-aarch64-apple-darwin]
+    0.6%  nanov2_malloc_type  [libsystem_malloc.dylib]
+    0.6%  objc_msgSend  [libobjc.A.dylib]
+    0.6%  _nanov2_free  [libsystem_malloc.dylib]
+    0.6%  kevent  [libsystem_kernel.dylib]
+    0.5%  <tract_core::plan::SimplePlan<tract_core::model::fact::TypedFact, alloc::boxed::Box<dyn tract_core::ops::TypedOp>, tract_core::model::graph::Graph<tract_core::model::fact::TypedFact, alloc::boxed::Box<dyn tract_core::ops::TypedOp>>>>::run  [hopp_core-aarch64-apple-darwin]
+    0.5%  MergeUVRow_NEON  [hopp_core-aarch64-apple-darwin]
+    0.5%  iokit_user_client_trap  [IOKit]
+    0.5%  __gettimeofday  [libsystem_kernel.dylib]
+    0.4%  sha1_block_data_order_hw  [hopp_core-aarch64-apple-darwin]
+    0.4%  webrtc::H264::FindNaluIndices(webrtc::ArrayView<unsigned char const, -4711l>)  [hopp_core-aarch64-apple-darwin]
+    0.4%  __psynch_mutexwait  [libsystem_kernel.dylib]
+
+Most total time in hopp_core's own functions (including what they call)
+   17.8%  hopp_core::livekit::audio::process_audio_samples::{closure#0}
+   12.5%  hopp_core::main
+   12.5%  <hopp_core::RenderEventLoop>::run
+   10.6%  <hopp_core::Application as winit::application::ApplicationHandler<hopp_core::UserEvent>>::window_event
+    7.8%  <hopp_core::window::screensharing_window::ScreensharingWindow>::handle_window_event
+    5.0%  hopp_core::livekit::video::process_video_stream::{closure#0}
+    1.5%  <hopp_core::livekit::video::VideoBuffer>::copy_from_i420
+    0.3%  <hopp_core::window::screensharing_window::ScreensharingWindow>::view
+    0.1%  <hopp_core::components::call_controls::CallControlsState>::view
+    0.1%  hopp_core::components::split_button::split_button_sized::<hopp_core::components::call_controls::CallControlsMessage>
+    0.1%  <hopp_core::window::camera_window::CameraWindow>::view
+    0.1%  <hopp_core::window::screensharing_window::ScreensharingWindow>::view::{closure#0}
+    0.0%  hopp_core::livekit::audio::play_remote_audio_track::{closure#0}
+    0.0%  hopp_core::window::camera_window::participant_card
+    0.0%  <hopp_core::windows::colors::ColorToken>::to_color
+    0.0%  <hopp_core::graphics::graphics_context::click_animation::ClickAnimationRenderer>::update
+    0.0%  <hopp_core::graphics::graphics_context::participant::ParticipantsManager>::draw
+    0.0%  hopp_core::livekit::stats::stats_loop::{closure#0}
+    0.0%  hopp_core::livekit::stats::collect_stats::{closure#0}
+    0.0%  hopp_core::window::screensharing_window::effects_trigger_button::{closure#1}
+    0.0%  hopp_core::components::dropdown::dropdown_trigger_button::<hopp_core::window::screensharing_window::ScreensharingMessage>::{closure#1}
+    0.0%  <hopp_core::utils::clock::RealClock as hopp_core::utils::clock::Clock>::now
