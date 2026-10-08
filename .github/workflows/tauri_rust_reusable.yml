@@ -76,6 +76,8 @@ jobs:
 
       - name: Cache Cargo builds
         uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tauri/src-tauri -> target
 
       - name: Create dist
         working-directory: tauri
@@ -121,6 +123,8 @@ jobs:
 
       - name: Cache Cargo builds
         uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: tauri/src-tauri -> target
 
       - name: Create hopp_core debug
         working-directory: core
