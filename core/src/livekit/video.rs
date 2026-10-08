@@ -23,6 +23,8 @@ pub struct VideoBuffer {
     pub y: Vec<u8>,
     pub u: Vec<u8>,
     pub v: Vec<u8>,
+    /// When the frame reached core from the decoder, for `FramePacing`'s frame age.
+    pub received_at: Option<std::time::Instant>,
 }
 
 impl VideoBuffer {
@@ -94,6 +96,8 @@ pub struct VideoBufferManager {
     write_index: AtomicUsize,
     inactive: std::sync::atomic::AtomicBool,
     frame_id: AtomicU64,
+    /// Decoded frames dropped because a newer one was already queued.
+    stale_skipped: AtomicU64,
 }
 
 impl Default for VideoBufferManager {
@@ -106,6 +110,7 @@ impl Default for VideoBufferManager {
             write_index: AtomicUsize::new(0),
             inactive: std::sync::atomic::AtomicBool::new(true),
             frame_id: AtomicU64::new(0),
+            stale_skipped: AtomicU64::new(0),
         }
     }
 }
@@ -148,6 +153,11 @@ impl VideoBufferManager {
     /// Sets the frame counter (lock-free).
     pub fn set_frame_id(&self, id: u64) {
         self.frame_id.store(id, Ordering::Relaxed);
+    }
+
+    /// Running total of decoded frames dropped because a newer one was already queued.
+    pub fn stale_skipped(&self) -> u64 {
+        self.stale_skipped.load(Ordering::Relaxed)
     }
 }
 
@@ -195,7 +205,9 @@ pub async fn process_video_stream(
                         }
 
 
+                        let received_at = std::time::Instant::now();
                         if skipped > 0 {
+                            manager.stale_skipped.fetch_add(skipped, Ordering::Relaxed);
                             log::warn!(
                                 "process_video_stream: skipped {skipped} stale frames for {stream_key} [{stream_type}]"
                             );
@@ -209,6 +221,7 @@ pub async fn process_video_stream(
                         {
                             let mut guard = buf.lock().unwrap();
                             guard.copy_from_i420(&i420, width, height);
+                            guard.received_at = Some(received_at);
                         }
                         manager.set_frame_id(frame_counter);
                         frame_counter += 1;
@@ -253,8 +266,10 @@ pub async fn process_video_stream(
 
     manager.set_inactive(true);
     log::info!(
-        "process_video_stream: {} stream ended for participant: {}",
+        "process_video_stream: {} stream ended for participant: {}, frames={} stale_skipped={}",
         stream_type,
-        stream_key
+        stream_key,
+        frame_counter,
+        manager.stale_skipped()
     );
 }

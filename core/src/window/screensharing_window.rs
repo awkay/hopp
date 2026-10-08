@@ -45,6 +45,7 @@ use super::aspect_ratio::{
     WindowConstant,
 };
 use super::drawing_helpers::{self, DrawTextInput, DrawTextUpdate};
+use super::frame_pacing::{FramePacing, PresentedFrame};
 use crate::components::bandwidth_toggle::{
     bandwidth_toggle, bandwidth_toggle_width, next_local_request,
 };
@@ -653,6 +654,7 @@ pub struct ScreensharingWindow {
     effects: EffectLayer,
     effect_deadline: EffectAnimationDeadline,
     last_rendered_frame_id: u64,
+    frame_pacing: FramePacing,
     redraw_in_progress: Arc<AtomicBool>,
     redraw_tx: std::sync::mpsc::Sender<RedrawCommand>,
     redraw_thread: Option<std::thread::JoinHandle<()>>,
@@ -978,6 +980,7 @@ impl ScreensharingWindow {
             effects,
             effect_deadline,
             last_rendered_frame_id: 0,
+            frame_pacing: FramePacing::new("screen share"),
             redraw_in_progress,
             redraw_tx,
             redraw_thread: Some(redraw_thread),
@@ -1186,6 +1189,8 @@ impl ScreensharingWindow {
             std::sync::mpsc::Sender<RedrawCommand>,
         ),
     ) {
+        self.frame_pacing
+            .finish(self.screen_share_buffer.stale_skipped());
         // A fresh buffer Arc is created per room/stream — point the window at it.
         self.screen_share_buffer = screen_share_buffer;
         let ScreensharingParticipants { remote, state } =
@@ -2421,6 +2426,7 @@ impl ScreensharingWindow {
     }
 
     fn redraw_inner(&mut self) -> Vec<u64> {
+        let render_started = StdInstant::now();
         let current_frame_id = self.screen_share_buffer.current_frame_id();
         let mut skip_buffer = false;
 
@@ -2452,12 +2458,13 @@ impl ScreensharingWindow {
             skip_buffer = true;
         }
 
-        let (stream_w, stream_h);
+        let (stream_w, stream_h, received_at);
         {
             let frame_lock = self.screen_share_buffer.latest_frame();
             let buf = frame_lock.lock().unwrap();
             stream_w = buf.width;
             stream_h = buf.height;
+            received_at = buf.received_at;
 
             if stream_w > 0
                 && stream_h > 0
@@ -2640,6 +2647,16 @@ impl ScreensharingWindow {
 
         self.window.pre_present_notify();
         output.present();
+        self.frame_pacing.record_present(
+            render_started,
+            (!skip_buffer).then_some(PresentedFrame {
+                id: current_frame_id,
+                received_at,
+                width: stream_w,
+                height: stream_h,
+            }),
+            self.screen_share_buffer.stale_skipped(),
+        );
 
         // Keep the redraw loop alive while the segmented-control indicator
         // is animating, so the slide plays smoothly even when no user input
@@ -2822,6 +2839,8 @@ impl ScreensharingWindow {
 
 impl Drop for ScreensharingWindow {
     fn drop(&mut self) {
+        self.frame_pacing
+            .finish(self.screen_share_buffer.stale_skipped());
         let _ = self.redraw_tx.send(RedrawCommand::Stop);
         self.redraw_thread.take();
     }

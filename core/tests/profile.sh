@@ -4,11 +4,14 @@
 #   core/tests/profile.sh viewer                  # core watches a fake 3K share and two cameras
 #   core/tests/profile.sh sharer                  # core shares this screen; a fake viewer draws
 #   core/tests/profile.sh viewer --seconds 30 --net bad --label before-fix
+#   core/tests/profile.sh viewer --energy-seconds 0   # skip the energy phase
 #
 # Builds the release core (as shipped, symbols kept) and the harness, starts
 # `livekit-server --dev` when nothing answers at LIVEKIT_URL, runs the load (src/profile.rs),
-# records core with Instruments' Time Profiler and writes
-# out/profile/<label>-<role>.{trace,folded,svg,txt}. Compare two labels' .txt for before/after.
+# measures core's CPU, wake-ups and energy with no profiler attached (energy.py), then records
+# it with Instruments' Time Profiler and writes out/profile/<label>-<role>.{trace,folded,svg,txt}.
+# The .txt ends with the energy line and core's FramePacing lines (what the screen-share window
+# presented). Compare two labels' .txt for before/after.
 #
 # The sharer run measures whatever changes on screen: ScreenCaptureKit sends no frames for a
 # static screen, so play a video or scroll something during it. Its fake viewer only moves a
@@ -26,16 +29,18 @@ export LIVEKIT_API_KEY="${LIVEKIT_API_KEY:-devkey}"
 export LIVEKIT_API_SECRET="${LIVEKIT_API_SECRET:-secret}"
 export RUST_LOG="${RUST_LOG:-hopp_core=info}"
 
-usage() { sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; }
 
 role=""
 seconds=60
+energy_seconds=20
 network_profile=""
 label="$(date +%Y%m%d-%H%M%S)"
 while [ $# -gt 0 ]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
     --seconds) seconds="$2"; shift 2 ;;
+    --energy-seconds) energy_seconds="$2"; shift 2 ;;
     --net) network_profile="$2"; shift 2 ;;
     --label) label="$2"; shift 2 ;;
     viewer|sharer) role="$1"; shift ;;
@@ -141,6 +146,14 @@ if [ ! -e "$ready_file" ]; then
 fi
 sleep "$WARMUP"
 
+# ── Energy ───────────────────────────────────────────────────────────────────
+# Before the trace, so the profiler's sampling doesn't count against core.
+energy="energy: not measured"
+if [ "$energy_seconds" != 0 ]; then
+  echo "Measuring core's CPU, wake-ups and energy for $energy_seconds s..."
+  energy=$(python3 "$TESTS_DIR/energy.py" "$core_pid" "$energy_seconds") || energy="energy: failed"
+fi
+
 # ── Record ───────────────────────────────────────────────────────────────────
 trace="$OUT_DIR/$name.trace"
 rm -rf "$trace"
@@ -172,5 +185,12 @@ python3 "$TESTS_DIR/flamegraph.py" "$OUT_DIR/$name.xml" "$OUT_DIR/$name" --secon
   --title "hopp_core, $role run '$label': ${core_cpu}% of one core (load generator ${load_cpu}%)" \
   || exit 1
 rm -f "$OUT_DIR/$name.xml"
+{
+  echo
+  echo "$energy"
+  echo
+  echo "FramePacing (core's screen-share window, one line per 10 s):"
+  grep -o 'FramePacing .*' "$OUT_DIR/$name.core.log" || echo "  none (no remote share shown)"
+} | tee -a "$OUT_DIR/$name.txt"
 echo
 echo "Flamegraph: $OUT_DIR/$name.svg (open in a browser)"

@@ -27,8 +27,7 @@ use socket_lib::Message;
 use std::borrow::Cow;
 use std::io;
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
@@ -143,17 +142,13 @@ async fn sharer(conn: &CoreConn, ready_file: &Path, stop_file: &Path) -> io::Res
             _ => None,
         })
         .await?;
-    let frames = Arc::new(AtomicU32::new(0));
-    tasks.push(tokio::spawn(count_frames(track, frames.clone())));
+    let frames = Arc::new(Mutex::new(FrameLog::default()));
+    tasks.push(tokio::spawn(log_frames(track, frames.clone())));
     tasks.push(tokio::spawn(drive_overlay(viewer.room.local_participant())));
 
     let started = Instant::now();
     run_until_stopped(ready_file, stop_file).await?;
-    let received = frames.load(Ordering::Relaxed);
-    step(&format!(
-        "fake viewer received {received} frames, {:.1} fps",
-        f64::from(received) / started.elapsed().as_secs_f64()
-    ));
+    step(&frames.lock().unwrap().report(started.elapsed()));
 
     for task in tasks {
         task.abort();
@@ -303,10 +298,50 @@ async fn push_video(
 }
 
 /// Decodes the share, as a real viewer would, and counts the frames.
-async fn count_frames(track: RemoteVideoTrack, frames: Arc<AtomicU32>) {
+/// What the fake viewer received: the decoded size and the time between frames.
+#[derive(Default)]
+struct FrameLog {
+    frames: u32,
+    size: (u32, u32),
+    last_at: Option<Instant>,
+    intervals_ms: Vec<f64>,
+}
+
+impl FrameLog {
+    fn report(&mut self, elapsed: Duration) -> String {
+        let fps = f64::from(self.frames) / elapsed.as_secs_f64();
+        let intervals = &mut self.intervals_ms;
+        if intervals.is_empty() {
+            return format!("fake viewer received {} frames", self.frames);
+        }
+        intervals.sort_by(f64::total_cmp);
+        let percentile = |p: f64| {
+            let rank = (p * intervals.len() as f64).ceil() as usize;
+            intervals[rank.clamp(1, intervals.len()) - 1]
+        };
+        format!(
+            "fake viewer received {} frames at {}x{}, {fps:.1} fps; interval_ms p50={:.1} p95={:.1} p99={:.1} max={:.1}",
+            self.frames,
+            self.size.0,
+            self.size.1,
+            percentile(0.50),
+            percentile(0.95),
+            percentile(0.99),
+            intervals[intervals.len() - 1],
+        )
+    }
+}
+
+async fn log_frames(track: RemoteVideoTrack, frames: Arc<Mutex<FrameLog>>) {
     let mut stream = NativeVideoStream::new(track.rtc_track());
-    while stream.next().await.is_some() {
-        frames.fetch_add(1, Ordering::Relaxed);
+    while let Some(frame) = stream.next().await {
+        let now = Instant::now();
+        let mut log = frames.lock().unwrap();
+        log.frames += 1;
+        log.size = (frame.buffer.width(), frame.buffer.height());
+        if let Some(last) = log.last_at.replace(now) {
+            log.intervals_ms.push((now - last).as_secs_f64() * 1000.0);
+        }
     }
 }
 
