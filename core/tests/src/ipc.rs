@@ -218,11 +218,10 @@ impl CoreConn {
     pub fn wait_room_ready(&self, call_id: CallId) -> io::Result<Vec<CoreParticipantState>> {
         self.wait_for(ROOM_READY_TIMEOUT, "room ready", |message| match message {
             Message::ParticipantsSnapshot(participants) => Step::Done(participants),
-            Message::RoomConnectionFailed(RoomConnectionFailedMessage { call_id: id, reason })
-                if id == call_id =>
-            {
-                Step::Fail(format!("room connection failed: {reason}"))
-            }
+            Message::RoomConnectionFailed(RoomConnectionFailedMessage {
+                call_id: id,
+                reason,
+            }) if id == call_id => Step::Fail(format!("room connection failed: {reason}")),
             Message::CallEnded(id) if id == call_id => Step::Fail("core ended the call".into()),
             _ => Step::Skip,
         })

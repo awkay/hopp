@@ -483,10 +483,7 @@ async fn main() -> io::Result<()> {
             hang_repro::test_screenshare_reconnect_hang().await?;
             println!("Hang reproduction test finished.");
         }
-        Commands::Smoke {
-            scenario,
-            core_pid,
-        } => {
+        Commands::Smoke { scenario, core_pid } => {
             smoke::run(scenario, core_pid).await?;
         }
         Commands::LocalDrawing { test_type } => {

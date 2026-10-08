@@ -6,7 +6,9 @@
 //! `core/tests/smoke.sh` starts one per scenario.
 
 use crate::ipc::{CoreConn, Step, REQUEST_TIMEOUT};
-use crate::livekit_utils::{generate_participant_token, participant_base_identity, participant_identity};
+use crate::livekit_utils::{
+    generate_participant_token, participant_base_identity, participant_identity,
+};
 use crate::screenshare_client;
 use clap::ValueEnum;
 use futures::StreamExt;
@@ -17,7 +19,9 @@ use livekit::webrtc::video_frame::{I420Buffer, VideoFrame, VideoRotation};
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::RtcVideoSource;
 use livekit::webrtc::video_stream::native::NativeVideoStream;
-use socket_lib::{BandwidthModeState, CallId, CoreParticipantState, Message, RoomConnectionFailedMessage};
+use socket_lib::{
+    BandwidthModeState, CallId, CoreParticipantState, Message, RoomConnectionFailedMessage,
+};
 use std::io;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -101,8 +105,9 @@ async fn call_lifecycle(conn: &CoreConn, core_pid: Option<u32>) -> io::Result<()
     )?;
     // Both follow the room-ready snapshot, in no guaranteed order.
     let observer_identity = participant_identity(OBSERVER, "audio");
-    let lists_observer =
-        |participants: &[CoreParticipantState]| participants.iter().any(|p| p.identity == observer_identity);
+    let lists_observer = |participants: &[CoreParticipantState]| {
+        participants.iter().any(|p| p.identity == observer_identity)
+    };
     let mut observer_listed = lists_observer(&snapshot);
     let mut initial_bandwidth = None;
     conn.wait_for(
@@ -126,7 +131,10 @@ async fn call_lifecycle(conn: &CoreConn, core_pid: Option<u32>) -> io::Result<()
         },
     )?;
     let state = initial_bandwidth.unwrap_or_default();
-    check(!state.active, format!("low bandwidth active at call start: {state:?}"))?;
+    check(
+        !state.active,
+        format!("low bandwidth active at call start: {state:?}"),
+    )?;
 
     step("core is in the room");
     for track in ["audio", "video"] {
@@ -134,7 +142,10 @@ async fn call_lifecycle(conn: &CoreConn, core_pid: Option<u32>) -> io::Result<()
             .wait_present(&participant_identity(CORE_USER, track))
             .await?;
     }
-    step(&format!("core answers in {:?}", conn.probe(REQUEST_TIMEOUT)?));
+    step(&format!(
+        "core answers in {:?}",
+        conn.probe(REQUEST_TIMEOUT)?
+    ));
 
     step("end call");
     conn.end_call(call_id)?;
@@ -161,7 +172,9 @@ async fn call_end_race(conn: &CoreConn) -> io::Result<()> {
     let mut observer = Participant::join(OBSERVER).await?;
 
     for round in 1..=3 {
-        step(&format!("call {round}: start and end before the room connects"));
+        step(&format!(
+            "call {round}: start and end before the room connects"
+        ));
         let call_id = conn.start_call(CORE_USER)?;
         conn.end_call(call_id)?;
     }
@@ -188,11 +201,15 @@ async fn stale_call_end(conn: &CoreConn) -> io::Result<()> {
 
     step("resend CallEnd for call A");
     conn.send(Message::CallEnd(Some(old_call)))?;
-    conn.wait_for(REQUEST_TIMEOUT, "CallEnded for call A", |message| match message {
-        Message::CallEnded(id) if id == old_call => Step::Done(()),
-        Message::CallEnded(id) if id == call_id => Step::Fail("core ended call B".into()),
-        _ => Step::Skip,
-    })?;
+    conn.wait_for(
+        REQUEST_TIMEOUT,
+        "CallEnded for call A",
+        |message| match message {
+            Message::CallEnded(id) if id == old_call => Step::Done(()),
+            Message::CallEnded(id) if id == call_id => Step::Fail("core ended call B".into()),
+            _ => Step::Skip,
+        },
+    )?;
     expect_call_stays_up(conn, call_id, Duration::from_secs(3))?;
     let core_identity = participant_identity(CORE_USER, "audio");
     observer.wait_present(&core_identity).await?;
@@ -211,11 +228,16 @@ async fn bandwidth(conn: &CoreConn) -> io::Result<()> {
 
     let call_id = conn.join_call(CORE_USER)?;
     let state = wait_bandwidth_state(conn, "initial BandwidthModeState", |_| true)?;
-    check(!state.active, format!("low bandwidth active at call start: {state:?}"))?;
+    check(
+        !state.active,
+        format!("low bandwidth active at call start: {state:?}"),
+    )?;
 
     step("local request");
     conn.send(Message::SetCallLowBandwidth(true))?;
-    wait_bandwidth_state(conn, "local request active", |s| s.active && s.local_requested)?;
+    wait_bandwidth_state(conn, "local request active", |s| {
+        s.active && s.local_requested
+    })?;
     step("core tells the others");
     remote
         .wait_event("core's low-bandwidth request", |event| match event {
@@ -233,7 +255,9 @@ async fn bandwidth(conn: &CoreConn) -> io::Result<()> {
 
     step("local request withdrawn");
     conn.send(Message::SetCallLowBandwidth(false))?;
-    wait_bandwidth_state(conn, "local request withdrawn", |s| !s.active && !s.local_requested)?;
+    wait_bandwidth_state(conn, "local request withdrawn", |s| {
+        !s.active && !s.local_requested
+    })?;
 
     step("remote request");
     remote.request_low_bandwidth(true).await?;
@@ -289,12 +313,16 @@ async fn viewer_hang(conn: &CoreConn, core_pid: Option<u32>) -> io::Result<()> {
         .map_err(|e| io::Error::other(format!("publishing the fake screen share failed: {e:?}")))?;
     publication.unmute();
 
-    conn.wait_for(ROOM_EVENT_TIMEOUT, "core seeing the remote share", |message| match message {
-        Message::ParticipantsSnapshot(participants) if remote_sharing(&participants) => {
-            Step::Done(())
-        }
-        _ => Step::Skip,
-    })?;
+    conn.wait_for(
+        ROOM_EVENT_TIMEOUT,
+        "core seeing the remote share",
+        |message| match message {
+            Message::ParticipantsSnapshot(participants) if remote_sharing(&participants) => {
+                Step::Done(())
+            }
+            _ => Step::Skip,
+        },
+    )?;
 
     step(&format!("mute/unmute storm ({STORM_CYCLES} cycles)"));
     for _ in 0..STORM_CYCLES {
@@ -302,17 +330,18 @@ async fn viewer_hang(conn: &CoreConn, core_pid: Option<u32>) -> io::Result<()> {
         tokio::time::sleep(Duration::from_millis(100)).await;
         publication.unmute();
         tokio::time::sleep(Duration::from_millis(200)).await;
-        conn.probe(REQUEST_TIMEOUT)
-            .map_err(|e| io::Error::other(format!("core stopped answering during the storm: {e}")))?;
+        conn.probe(REQUEST_TIMEOUT).map_err(|e| {
+            io::Error::other(format!("core stopped answering during the storm: {e}"))
+        })?;
     }
 
     step(&format!("core keeps answering for {LIVENESS_WINDOW:?}"));
     let probing_since = Instant::now();
     let mut slowest = Duration::ZERO;
     while probing_since.elapsed() < LIVENESS_WINDOW {
-        let round_trip = conn
-            .probe(REQUEST_TIMEOUT)
-            .map_err(|e| io::Error::other(format!("core stopped answering after the storm: {e}")))?;
+        let round_trip = conn.probe(REQUEST_TIMEOUT).map_err(|e| {
+            io::Error::other(format!("core stopped answering after the storm: {e}"))
+        })?;
         slowest = slowest.max(round_trip);
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
@@ -355,7 +384,10 @@ async fn screenshare(conn: &CoreConn, core_pid: Option<u32>) -> io::Result<()> {
         .await?;
     check(
         track.1 == sharer_video,
-        format!("screen share came from {}, expected {sharer_video}", track.1),
+        format!(
+            "screen share came from {}, expected {sharer_video}",
+            track.1
+        ),
     )?;
     let frames = count_frames(track.0, FRAME_WINDOW).await;
     step(&format!(
@@ -368,14 +400,16 @@ async fn screenshare(conn: &CoreConn, core_pid: Option<u32>) -> io::Result<()> {
     // Core publishes the track muted at call start, so earlier mute events are stale.
     observer.drain();
     conn.send(Message::StopScreenshare)?;
-    conn.wait_for(REQUEST_TIMEOUT, "participant list without the local share", |message| {
-        match message {
+    conn.wait_for(
+        REQUEST_TIMEOUT,
+        "participant list without the local share",
+        |message| match message {
             Message::ParticipantsSnapshot(participants) if !local_sharing(&participants) => {
                 Step::Done(())
             }
             _ => Step::Skip,
-        }
-    })?;
+        },
+    )?;
     observer
         .wait_event("screen share track gone", |event| match event {
             RoomEvent::TrackUnpublished { publication, .. }
@@ -414,7 +448,9 @@ async fn network_drop(conn: &CoreConn) -> io::Result<()> {
         .status()?;
     check(
         status.success(),
-        format!("`sudo -n {netem} drop` failed ({status}); run through smoke.sh, which caches sudo"),
+        format!(
+            "`sudo -n {netem} drop` failed ({status}); run through smoke.sh, which caches sudo"
+        ),
     )?;
 
     step("call recovers");
