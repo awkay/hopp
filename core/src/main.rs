@@ -40,6 +40,13 @@ fn main() -> Result<(), impl std::error::Error> {
             .to_string(),
     };
 
+    // Cursor badges need the system fonts on the main thread when a participant joins.
+    let _ = std::thread::Builder::new()
+        .name("font-warmup".to_string())
+        .spawn(|| {
+            hopp_core::utils::svg_renderer::system_fonts();
+        });
+
     let render_event_loop = RenderEventLoop::new();
     render_event_loop.run(socket_path)
 }
