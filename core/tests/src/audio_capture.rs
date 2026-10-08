@@ -1,61 +1,33 @@
-use crate::screenshare_client::{call_start, connect_socket};
-use socket_lib::{AudioCaptureMessage, EventSocket, Message, SocketSender};
-use std::env;
+use crate::ipc::CoreConn;
+use crate::screenshare_client::SHARER;
+use socket_lib::Message;
 use std::io;
 use std::time::Duration;
 
-/// Sends LivekitServerUrl + CallStart, the required setup before audio capture.
-fn setup_audio(sender: &SocketSender, event_socket: &EventSocket) -> io::Result<()> {
-    let livekit_server_url =
-        env::var("LIVEKIT_URL").expect("LIVEKIT_URL environment variable not set");
-    sender.send(Message::LivekitServerUrl(livekit_server_url))?;
-    call_start(sender, event_socket)
+/// Connects and joins a call, the required setup before audio capture.
+fn setup_audio() -> io::Result<CoreConn> {
+    let conn = CoreConn::connect_with_livekit_url()?;
+    conn.join_call(SHARER)?;
+    Ok(conn)
 }
 
 pub fn test_list_devices() -> io::Result<()> {
-    let (sender, event_socket) = connect_socket()?;
-    setup_audio(&sender, &event_socket)?;
+    let conn = setup_audio()?;
 
-    sender.send(Message::ListAudioDevices)?;
-    let response = event_socket
-        .responses
-        .recv_timeout(Duration::from_secs(5))
-        .map_err(|e| io::Error::other(format!("Failed to receive AudioDeviceList: {e:?}")))?;
-
-    match response {
-        Message::AudioDeviceList(devices) => {
-            println!("Found {} audio devices:", devices.len());
-            for device in &devices {
-                println!("  {}", device.name);
-            }
-            assert!(!devices.is_empty(), "Expected at least one audio device");
-        }
-        other => {
-            return Err(io::Error::other(format!("Unexpected response: {other:?}")));
-        }
+    let devices = conn.list_audio_devices()?;
+    println!("Found {} audio devices:", devices.len());
+    for device in &devices {
+        println!("  {}", device.name);
     }
+    assert!(!devices.is_empty(), "Expected at least one audio device");
 
     Ok(())
 }
 
 pub fn test_capture_all_devices(duration_secs: u64) -> io::Result<()> {
-    let (sender, event_socket) = connect_socket()?;
-    setup_audio(&sender, &event_socket)?;
+    let conn = setup_audio()?;
 
-    // List devices first
-    sender.send(Message::ListAudioDevices)?;
-    let response = event_socket
-        .responses
-        .recv_timeout(Duration::from_secs(5))
-        .map_err(|e| io::Error::other(format!("Failed to receive AudioDeviceList: {e:?}")))?;
-
-    let devices = match response {
-        Message::AudioDeviceList(devices) => devices,
-        other => {
-            return Err(io::Error::other(format!("Unexpected response: {other:?}")));
-        }
-    };
-
+    let devices = conn.list_audio_devices()?;
     println!(
         "Testing {} devices for {}s each",
         devices.len(),
@@ -65,33 +37,17 @@ pub fn test_capture_all_devices(duration_secs: u64) -> io::Result<()> {
     for device in &devices {
         println!("Capturing from: {}", device.name);
 
-        sender.send(Message::StartAudioCapture(AudioCaptureMessage {
-            device_name: device.name.clone(),
-        }))?;
-
-        let result = event_socket
-            .responses
-            .recv_timeout(Duration::from_secs(10))
-            .map_err(|e| {
-                io::Error::other(format!("Failed to receive StartAudioCaptureResult: {e:?}"))
-            })?;
-
-        match result {
-            Message::StartAudioCaptureResult(Ok(())) => {
-                println!("  Capture started successfully");
-            }
-            Message::StartAudioCaptureResult(Err(e)) => {
+        match conn.start_audio_capture(device.name.clone())? {
+            Ok(()) => println!("  Capture started successfully"),
+            Err(e) => {
                 println!("  Capture failed: {e}, skipping");
                 continue;
-            }
-            other => {
-                return Err(io::Error::other(format!("Unexpected response: {other:?}")));
             }
         }
 
         std::thread::sleep(Duration::from_secs(duration_secs));
 
-        sender.send(Message::StopAudioCapture)?;
+        conn.send(Message::StopAudioCapture)?;
         // Give it a moment to clean up
         std::thread::sleep(Duration::from_secs(1));
         println!("  Capture stopped");
@@ -101,64 +57,32 @@ pub fn test_capture_all_devices(duration_secs: u64) -> io::Result<()> {
 }
 
 pub fn test_mute_unmute() -> io::Result<()> {
-    let (sender, event_socket) = connect_socket()?;
-    setup_audio(&sender, &event_socket)?;
+    let conn = setup_audio()?;
 
-    // List devices and pick first one
-    sender.send(Message::ListAudioDevices)?;
-    let response = event_socket
-        .responses
-        .recv_timeout(Duration::from_secs(5))
-        .map_err(|e| io::Error::other(format!("Failed to receive AudioDeviceList: {e:?}")))?;
-
-    let devices = match response {
-        Message::AudioDeviceList(devices) => devices,
-        other => {
-            return Err(io::Error::other(format!("Unexpected response: {other:?}")));
-        }
-    };
-
+    let devices = conn.list_audio_devices()?;
     let device = devices
         .first()
         .ok_or_else(|| io::Error::other("No audio devices found"))?;
 
     println!("Using device: {}", device.name);
 
-    // Start capture
-    sender.send(Message::StartAudioCapture(AudioCaptureMessage {
-        device_name: device.name.clone(),
-    }))?;
-
-    let result = event_socket
-        .responses
-        .recv_timeout(Duration::from_secs(10))
-        .map_err(|e| {
-            io::Error::other(format!("Failed to receive StartAudioCaptureResult: {e:?}"))
-        })?;
-
-    match result {
-        Message::StartAudioCaptureResult(Ok(())) => println!("Capture started"),
-        Message::StartAudioCaptureResult(Err(e)) => {
-            return Err(io::Error::other(format!("Capture failed: {e}")));
-        }
-        other => {
-            return Err(io::Error::other(format!("Unexpected response: {other:?}")));
-        }
-    }
+    conn.start_audio_capture(device.name.clone())?
+        .map_err(|e| io::Error::other(format!("Capture failed: {e}")))?;
+    println!("Capture started");
 
     println!("Capturing for 2s...");
     std::thread::sleep(Duration::from_secs(2));
 
     println!("Muting...");
-    sender.send(Message::MuteAudio)?;
+    conn.send(Message::MuteAudio)?;
     std::thread::sleep(Duration::from_secs(2));
 
     println!("Unmuting...");
-    sender.send(Message::UnmuteAudio)?;
+    conn.send(Message::UnmuteAudio)?;
     std::thread::sleep(Duration::from_secs(2));
 
     println!("Stopping capture...");
-    sender.send(Message::StopAudioCapture)?;
+    conn.send(Message::StopAudioCapture)?;
     std::thread::sleep(Duration::from_secs(1));
 
     println!("Mute/unmute test complete");
@@ -166,23 +90,9 @@ pub fn test_mute_unmute() -> io::Result<()> {
 }
 
 pub fn test_capture_30s(mic_name: Option<&str>) -> io::Result<()> {
-    let (sender, event_socket) = connect_socket()?;
-    setup_audio(&sender, &event_socket)?;
+    let conn = setup_audio()?;
 
-    // List devices first
-    sender.send(Message::ListAudioDevices)?;
-    let response = event_socket
-        .responses
-        .recv_timeout(Duration::from_secs(5))
-        .map_err(|e| io::Error::other(format!("Failed to receive AudioDeviceList: {e:?}")))?;
-
-    let devices = match response {
-        Message::AudioDeviceList(devices) => devices,
-        other => {
-            return Err(io::Error::other(format!("Unexpected response: {other:?}")));
-        }
-    };
-
+    let devices = conn.list_audio_devices()?;
     println!("Found {} audio devices:", devices.len());
     for device in &devices {
         println!("  {}", device.name);
@@ -200,32 +110,15 @@ pub fn test_capture_30s(mic_name: Option<&str>) -> io::Result<()> {
         device.name.clone()
     };
 
-    sender.send(Message::StartAudioCapture(AudioCaptureMessage {
-        device_name,
-    }))?;
-
-    let result = event_socket
-        .responses
-        .recv_timeout(Duration::from_secs(10))
-        .map_err(|e| {
-            io::Error::other(format!("Failed to receive StartAudioCaptureResult: {e:?}"))
-        })?;
-
-    match result {
-        Message::StartAudioCaptureResult(Ok(())) => println!("Capture started"),
-        Message::StartAudioCaptureResult(Err(e)) => {
-            return Err(io::Error::other(format!("Capture failed: {e}")));
-        }
-        other => {
-            return Err(io::Error::other(format!("Unexpected response: {other:?}")));
-        }
-    }
+    conn.start_audio_capture(device_name)?
+        .map_err(|e| io::Error::other(format!("Capture failed: {e}")))?;
+    println!("Capture started");
 
     println!("Capturing for 30s...");
     std::thread::sleep(Duration::from_secs(30));
 
     println!("Stopping capture...");
-    sender.send(Message::StopAudioCapture)?;
+    conn.send(Message::StopAudioCapture)?;
     std::thread::sleep(Duration::from_secs(1));
 
     println!("30s capture test complete");

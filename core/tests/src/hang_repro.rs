@@ -1,61 +1,34 @@
+use crate::ipc::CoreConn;
 use crate::livekit_utils;
-use crate::screenshare_client;
 use livekit::options::{TrackPublishOptions, VideoCodec, VideoEncoding};
 use livekit::prelude::*;
 use livekit::webrtc::prelude::VideoResolution as WebrtcVideoResolution;
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::RtcVideoSource;
-use socket_lib::{CallStartMessage, Message};
 use std::env;
 use std::io;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const H264_BITRATE_DEFAULT: u64 = 12_000_000;
 const MAX_FRAMERATE: f64 = 40.0;
 const MUTE_UNMUTE_CYCLES: usize = 5;
+/// How long core must keep answering after the mute/unmute cycles.
+const LIVENESS_WINDOW: Duration = Duration::from_secs(30);
+const PROBE_INTERVAL: Duration = Duration::from_secs(2);
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub async fn test_screenshare_reconnect_hang() -> io::Result<()> {
     let livekit_url = env::var("LIVEKIT_URL").expect("LIVEKIT_URL environment variable not set");
 
     // 1. Socket setup — connect to core, send LiveKit URL, start call as viewer
-    let (sender, event_socket) = screenshare_client::connect_socket()?;
+    let conn = CoreConn::connect_with_livekit_url()?;
     println!("Connected to core socket.");
 
-    sender.send(Message::LivekitServerUrl(livekit_url.clone()))?;
-
-    let audio_token = livekit_utils::generate_token("Viewer Audio");
-    let video_token = livekit_utils::generate_token("Viewer Video");
-    sender.send(Message::CallStart(CallStartMessage {
-        audio_token,
-        video_token,
-        audio_device_name: String::new(),
-        start_mic_on_call: None,
-        start_camera_on_call: None,
-    }))?;
-
-    // Wait for CallStartResult
-    match event_socket.responses.recv_timeout(Duration::from_secs(10)) {
-        Ok(Message::CallStartResult(Ok(()))) => println!("CallStart succeeded."),
-        Ok(Message::CallStartResult(Err(e))) => {
-            return Err(io::Error::other(format!("CallStart failed: {e}")));
-        }
-        Ok(msg) => {
-            return Err(io::Error::other(format!(
-                "Unexpected response to CallStart: {msg:?}"
-            )));
-        }
-        Err(e) => {
-            return Err(io::Error::other(format!(
-                "Failed to receive CallStartResult: {e:?}"
-            )));
-        }
-    }
-
-    println!("Viewer call started. Waiting for core to join room...");
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    let call_id = conn.join_call("Viewer")?;
+    println!("Viewer call started and core joined the room.");
 
     // 2. Fake audio participant — presence only for identity resolution
-    let audio_token = livekit_utils::generate_token("FakeSharer:audio");
+    let audio_token = livekit_utils::generate_participant_token("FakeSharer", "audio");
     let (audio_room, mut audio_rx) =
         Room::connect(&livekit_url, &audio_token, RoomOptions::default())
             .await
@@ -66,7 +39,7 @@ pub async fn test_screenshare_reconnect_hang() -> io::Result<()> {
     );
 
     // 3. Fake video participant — publish screen_share track
-    let video_token = livekit_utils::generate_token("FakeSharer:video");
+    let video_token = livekit_utils::generate_participant_token("FakeSharer", "video");
     let (video_room, mut video_rx) =
         Room::connect(&livekit_url, &video_token, RoomOptions::default())
             .await
@@ -175,11 +148,18 @@ pub async fn test_screenshare_reconnect_hang() -> io::Result<()> {
     }
 
     println!(
-        "All {} mute/unmute cycles completed. Waiting 30s to check for hang...",
-        MUTE_UNMUTE_CYCLES
+        "All {} mute/unmute cycles completed. Probing core for {:?}...",
+        MUTE_UNMUTE_CYCLES, LIVENESS_WINDOW
     );
-    tokio::time::sleep(Duration::from_secs(30)).await;
-    println!("30s wait complete. If core process is still alive, no hang detected.");
+    let probing_since = Instant::now();
+    while probing_since.elapsed() < LIVENESS_WINDOW {
+        let round_trip = conn
+            .probe(PROBE_TIMEOUT)
+            .map_err(|e| io::Error::other(format!("core stopped answering (hang?): {e}")))?;
+        println!("Core answered in {round_trip:?}.");
+        tokio::time::sleep(PROBE_INTERVAL).await;
+    }
+    println!("No hang detected.");
 
     // 6. Cleanup
     println!("Cleaning up...");
@@ -187,9 +167,7 @@ pub async fn test_screenshare_reconnect_hang() -> io::Result<()> {
     drop(screen_source);
     drop(audio_room);
     drop(video_room);
-    drop(event_socket);
-
-    sender.send(Message::CallEnd)?;
+    conn.end_call(call_id)?;
     println!("Cleanup complete.");
 
     Ok(())

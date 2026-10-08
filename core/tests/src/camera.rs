@@ -1,65 +1,39 @@
+use crate::ipc::CoreConn;
 use crate::livekit_utils;
-use crate::screenshare_client::{self, call_start_with_name, connect_socket};
+use crate::screenshare_client;
 use livekit::prelude::*;
-use socket_lib::{AudioCaptureMessage, CameraStartMessage, EventSocket, Message, SocketSender};
-use std::env;
+use socket_lib::Message;
 use std::io;
 use std::time::Duration;
 
-fn setup_camera(sender: &SocketSender, event_socket: &EventSocket, name: &str) -> io::Result<()> {
-    let livekit_server_url =
-        env::var("LIVEKIT_URL").expect("LIVEKIT_URL environment variable not set");
-    sender.send(Message::LivekitServerUrl(livekit_server_url))?;
-    call_start_with_name(sender, event_socket, name)
+/// Connects and joins a call as `name`.
+fn setup_camera(name: &str) -> io::Result<(CoreConn, socket_lib::CallId)> {
+    let conn = CoreConn::connect_with_livekit_url()?;
+    let call_id = conn.join_call(name)?;
+    Ok((conn, call_id))
 }
 
 pub fn test_list_cameras() -> io::Result<()> {
-    let (sender, event_socket) = connect_socket()?;
-    setup_camera(&sender, &event_socket, "Test Camera")?;
+    let (conn, _) = setup_camera("Test Camera")?;
 
-    sender.send(Message::ListCameras)?;
-    let response = event_socket
-        .responses
-        .recv_timeout(Duration::from_secs(5))
-        .map_err(|e| io::Error::other(format!("Failed to receive CameraList: {e:?}")))?;
-
-    match response {
-        Message::CameraList(devices) => {
-            println!("Found {} cameras:", devices.len());
-            for device in &devices {
-                println!("  {}", device.name);
-            }
-            assert!(!devices.is_empty(), "Expected at least one camera");
-        }
-        other => {
-            return Err(io::Error::other(format!("Unexpected response: {other:?}")));
-        }
+    let devices = conn.list_cameras()?;
+    println!("Found {} cameras:", devices.len());
+    for device in &devices {
+        println!("  {}", device.name);
     }
+    assert!(!devices.is_empty(), "Expected at least one camera");
 
     Ok(())
 }
 
 pub fn test_camera_30s(camera_name: Option<&str>) -> io::Result<()> {
-    let (sender, event_socket) = connect_socket()?;
-    setup_camera(&sender, &event_socket, "Test Camera")?;
+    let (conn, _) = setup_camera("Test Camera")?;
 
     let device_name = if let Some(name) = camera_name {
         println!("Using explicitly provided camera: {}", name);
         name.to_string()
     } else {
-        sender.send(Message::ListCameras)?;
-        let response = event_socket
-            .responses
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(|e| io::Error::other(format!("Failed to receive CameraList: {e:?}")))?;
-
-        let devices = match response {
-            Message::CameraList(devices) => devices,
-            other => {
-                return Err(io::Error::other(format!("Unexpected response: {other:?}")));
-            }
-        };
-
+        let devices = conn.list_cameras()?;
         let device = devices
             .first()
             .ok_or_else(|| io::Error::other("No cameras found"))?;
@@ -68,32 +42,15 @@ pub fn test_camera_30s(camera_name: Option<&str>) -> io::Result<()> {
         device.name.clone()
     };
 
-    sender.send(Message::StartCamera(CameraStartMessage {
-        device_name: Some(device_name.clone()),
-    }))?;
-
-    let result = event_socket
-        .responses
-        .recv_timeout(Duration::from_secs(10))
-        .map_err(|e| io::Error::other(format!("Failed to receive StartCameraResult: {e:?}")))?;
-
-    match result {
-        Message::StartCameraResult(Ok(())) => {
-            println!("Camera started successfully");
-        }
-        Message::StartCameraResult(Err(e)) => {
-            return Err(io::Error::other(format!("Camera start failed: {e}")));
-        }
-        other => {
-            return Err(io::Error::other(format!("Unexpected response: {other:?}")));
-        }
-    }
+    conn.start_camera(device_name)?
+        .map_err(|e| io::Error::other(format!("Camera start failed: {e}")))?;
+    println!("Camera started successfully");
 
     println!("Capturing for 30s...");
     std::thread::sleep(Duration::from_secs(30));
 
     println!("Stopping camera...");
-    sender.send(Message::StopCamera)?;
+    conn.send(Message::StopCamera)?;
     std::thread::sleep(Duration::from_secs(1));
 
     println!("Camera 30s test complete");
@@ -182,32 +139,13 @@ pub fn test_call(
 ) -> io::Result<()> {
     println!("\n=== TEST: Call with Camera + Mic ===");
 
-    let (sender, event_socket) = connect_socket()?;
-    setup_camera(&sender, &event_socket, name)?;
-
-    // CallStartResult is sent before the room finishes connecting (non-blocking dispatch),
-    // so we need to wait for the room to be ready before sending StartCamera.
-    // TODO: Make the waiting for robust/deterministic.
-    std::thread::sleep(Duration::from_secs(3));
+    let (conn, call_id) = setup_camera(name)?;
 
     // Start camera — validate the name against available devices first
     let mut camera_started = false;
 
+    let devices = conn.list_cameras()?;
     let device_name = if let Some(name) = camera_name {
-        // Check if the requested camera actually exists
-        sender.send(Message::ListCameras)?;
-        let response = event_socket
-            .responses
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(|e| io::Error::other(format!("Failed to receive CameraList: {e:?}")))?;
-
-        let devices = match response {
-            Message::CameraList(devices) => devices,
-            other => {
-                return Err(io::Error::other(format!("Unexpected response: {other:?}")));
-            }
-        };
-
         if devices.iter().any(|d| d.name == name) {
             println!("Using explicitly provided camera: {}", name);
             Some(name.to_string())
@@ -224,19 +162,6 @@ pub fn test_call(
             None
         }
     } else {
-        sender.send(Message::ListCameras)?;
-        let response = event_socket
-            .responses
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(|e| io::Error::other(format!("Failed to receive CameraList: {e:?}")))?;
-
-        let devices = match response {
-            Message::CameraList(devices) => devices,
-            other => {
-                return Err(io::Error::other(format!("Unexpected response: {other:?}")));
-            }
-        };
-
         println!("Found {:?} cameras:", devices);
         match devices.first() {
             Some(device) => {
@@ -251,25 +176,12 @@ pub fn test_call(
     };
 
     if let Some(device_name) = device_name {
-        sender.send(Message::StartCamera(CameraStartMessage {
-            device_name: Some(device_name),
-        }))?;
-
-        match event_socket
-            .responses
-            .recv_timeout(Duration::from_secs(10))
-            .map_err(|e| io::Error::other(format!("Failed to receive StartCameraResult: {e:?}")))?
-        {
-            Message::StartCameraResult(Ok(())) => {
+        match conn.start_camera(device_name)? {
+            Ok(()) => {
                 println!("Camera started successfully");
                 camera_started = true;
             }
-            Message::StartCameraResult(Err(e)) => {
-                println!("Camera start failed: {e}. Continuing without camera.");
-            }
-            other => {
-                return Err(io::Error::other(format!("Unexpected response: {other:?}")));
-            }
+            Err(e) => println!("Camera start failed: {e}. Continuing without camera."),
         }
     }
 
@@ -278,19 +190,7 @@ pub fn test_call(
         println!("Using explicitly provided mic: {}", name);
         name.to_string()
     } else {
-        sender.send(Message::ListAudioDevices)?;
-        let response = event_socket
-            .responses
-            .recv_timeout(Duration::from_secs(5))
-            .map_err(|e| io::Error::other(format!("Failed to receive AudioDeviceList: {e:?}")))?;
-
-        let devices = match response {
-            Message::AudioDeviceList(devices) => devices,
-            other => {
-                return Err(io::Error::other(format!("Unexpected response: {other:?}")));
-            }
-        };
-
+        let devices = conn.list_audio_devices()?;
         let device = devices
             .last()
             .ok_or_else(|| io::Error::other("No audio devices found"))?;
@@ -299,39 +199,18 @@ pub fn test_call(
         device.name.clone()
     };
 
-    sender.send(Message::StartAudioCapture(AudioCaptureMessage {
-        device_name,
-    }))?;
-
-    match event_socket
-        .responses
-        .recv_timeout(Duration::from_secs(10))
-        .map_err(|e| {
-            io::Error::other(format!("Failed to receive StartAudioCaptureResult: {e:?}"))
-        })? {
-        Message::StartAudioCaptureResult(Ok(())) => println!("Mic started successfully"),
-        Message::StartAudioCaptureResult(Err(e)) => {
-            return Err(io::Error::other(format!("Mic start failed: {e}")));
-        }
-        other => {
-            return Err(io::Error::other(format!("Unexpected response: {other:?}")));
-        }
-    }
+    conn.start_audio_capture(device_name)?
+        .map_err(|e| io::Error::other(format!("Mic start failed: {e}")))?;
+    println!("Mic started successfully");
 
     // Start screen sharing if requested
     if screenshare {
         println!("Starting screen share...");
-        let screen_id = std::env::var("HOPP_TEST_SCREEN_ID")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0u32);
+        let screen_id = screenshare_client::screen_id();
         println!("Using display: {screen_id}");
 
         // Use default resolution for screenshare
-        let width = 1920.0;
-        let height = 1080.0;
-
-        screenshare_client::request_screenshare(&sender, &event_socket, screen_id, width, height)?;
+        screenshare_client::request_screenshare(&conn, screen_id, 1920.0, 1080.0)?;
         println!("Screen share started successfully");
     }
 
@@ -347,13 +226,13 @@ pub fn test_call(
     println!("\nCtrl-C received, stopping...");
 
     if screenshare {
-        sender.send(Message::StopScreenshare)?;
+        conn.send(Message::StopScreenshare)?;
     }
     if camera_started {
-        sender.send(Message::StopCamera)?;
+        conn.send(Message::StopCamera)?;
     }
-    sender.send(Message::StopAudioCapture)?;
-    std::thread::sleep(Duration::from_secs(1));
+    conn.send(Message::StopAudioCapture)?;
+    conn.end_call(call_id)?;
 
     println!("Call test complete");
     Ok(())
@@ -368,11 +247,10 @@ pub fn test_call(
 pub fn test_open_camera() -> io::Result<()> {
     println!("\n=== TEST: Open Camera Window ===");
 
-    let (sender, event_socket) = connect_socket()?;
-    setup_camera(&sender, &event_socket, "Test Camera")?;
+    let (conn, _) = setup_camera("Test Camera")?;
     println!("Connected to socket and joined room.");
 
-    screenshare_client::open_camera(&sender)?;
+    screenshare_client::open_camera(&conn)?;
     println!("OpenCamera sent. Camera window should appear.");
     println!("You have 60_000 seconds to interact with the window...");
 

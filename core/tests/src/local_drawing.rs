@@ -6,10 +6,10 @@ pub fn test_local_drawing_permanent() -> io::Result<()> {
     println!("\n=== TEST: Local Drawing (Permanent) ===");
 
     // Start screenshare session
-    let (sender, _event_socket) = screenshare_client::start_screenshare_session()?;
+    let session = screenshare_client::start_screenshare_session()?;
 
     // Enable permanent drawing mode
-    sender.send(Message::DrawingEnabled(DrawingEnabled { permanent: true }))?;
+    session.send(Message::DrawingEnabled(DrawingEnabled { permanent: true }))?;
     println!("Permanent drawing enabled. Draw with mouse, press Escape to exit.");
     println!(
         "Type to write text at the cursor (it follows the mouse); Enter or click places it, \
@@ -21,7 +21,7 @@ pub fn test_local_drawing_permanent() -> io::Result<()> {
     std::thread::sleep(Duration::from_secs(15));
 
     // Stop screenshare
-    screenshare_client::stop_screenshare_session(&sender)?;
+    screenshare_client::stop_screenshare_session(&session)?;
 
     println!("Test completed.");
     Ok(())
@@ -31,10 +31,10 @@ pub fn test_local_drawing_non_permanent() -> io::Result<()> {
     println!("\n=== TEST: Local Drawing (Non-Permanent) ===");
 
     // Start screenshare session
-    let (sender, _event_socket) = screenshare_client::start_screenshare_session()?;
+    let session = screenshare_client::start_screenshare_session()?;
 
     // Enable non-permanent drawing mode
-    sender.send(Message::DrawingEnabled(DrawingEnabled { permanent: false }))?;
+    session.send(Message::DrawingEnabled(DrawingEnabled { permanent: false }))?;
     println!("Non-permanent drawing enabled. Draw with mouse, press Escape to exit.");
     println!(
         "Type to write text at the cursor (it follows the mouse); Enter or click places it, \
@@ -46,7 +46,7 @@ pub fn test_local_drawing_non_permanent() -> io::Result<()> {
     std::thread::sleep(Duration::from_secs(15));
 
     // Stop screenshare
-    screenshare_client::stop_screenshare_session(&sender)?;
+    screenshare_client::stop_screenshare_session(&session)?;
 
     println!("Test completed.");
     Ok(())

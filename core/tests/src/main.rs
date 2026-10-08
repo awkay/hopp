@@ -8,6 +8,7 @@ mod audio_capture;
 mod camera;
 mod events;
 mod hang_repro;
+mod ipc;
 mod livekit_utils;
 mod local_drawing;
 mod remote_clipboard;

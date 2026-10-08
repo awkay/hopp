@@ -1,3 +1,4 @@
+use crate::ipc::CoreConn;
 use crate::screenshare_client;
 use std::{io, time::Duration};
 
@@ -10,10 +11,10 @@ use std::{io, time::Duration};
 pub fn test_open_screensharing() -> io::Result<()> {
     println!("\n=== TEST: Open Screensharing Window ===");
 
-    let (sender, _event_socket) = screenshare_client::connect_socket()?;
+    let conn = CoreConn::connect()?;
     println!("Connected to socket.");
 
-    screenshare_client::open_screensharing(&sender)?;
+    screenshare_client::open_screensharing(&conn)?;
     println!("OpenScreensharing sent. Screensharing window should appear.");
     println!("You have 15_000 seconds to interact with the window...");
 

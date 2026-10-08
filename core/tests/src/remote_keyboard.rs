@@ -103,7 +103,7 @@ async fn internal_test_keyboard_fn_keys(room: &Room) -> io::Result<()> {
 /// Connects screenshare, runs the function key test, and stops screenshare.
 pub async fn test_keyboard_fn_keys() -> io::Result<()> {
     println!("Starting function key test...");
-    let (mut cursor_socket, _) = screenshare_client::start_screenshare_session()?;
+    let session = screenshare_client::start_screenshare_session()?;
 
     sleep(Duration::from_secs(2)).await;
 
@@ -118,7 +118,7 @@ pub async fn test_keyboard_fn_keys() -> io::Result<()> {
     internal_test_keyboard_fn_keys(&room).await?;
 
     println!("Stopping screenshare...");
-    screenshare_client::stop_screenshare(&mut cursor_socket)?;
+    screenshare_client::stop_screenshare(&session)?;
     println!("Screenshare stopped.");
     println!("Function key test complete.");
     Ok(())
@@ -180,7 +180,7 @@ async fn simulate_key_press_with_modifiers(
 /// Connects screenshare, sends Ctrl+Option+Left Arrow after user focuses a window.
 pub async fn test_keyboard_ctrl_option_arrow() -> io::Result<()> {
     println!("Starting Ctrl+Option+Left Arrow test...");
-    let (sender, _event_socket) = screenshare_client::start_screenshare_session()?;
+    let session = screenshare_client::start_screenshare_session()?;
 
     sleep(Duration::from_secs(2)).await;
 
@@ -214,7 +214,7 @@ pub async fn test_keyboard_ctrl_option_arrow() -> io::Result<()> {
     sleep(Duration::from_secs(2)).await;
 
     println!("Stopping screenshare...");
-    screenshare_client::stop_screenshare(&sender)?;
+    screenshare_client::stop_screenshare(&session)?;
     println!("Ctrl+Option+Left Arrow test complete.");
     Ok(())
 }
@@ -222,7 +222,7 @@ pub async fn test_keyboard_ctrl_option_arrow() -> io::Result<()> {
 /// Connects screenshare, sends Cmd+Shift+3 (screenshot) after user focuses a window.
 pub async fn test_keyboard_cmd_shift_3() -> io::Result<()> {
     println!("Starting Cmd+Shift+3 test...");
-    let (sender, _event_socket) = screenshare_client::start_screenshare_session()?;
+    let session = screenshare_client::start_screenshare_session()?;
 
     sleep(Duration::from_secs(2)).await;
 
@@ -256,7 +256,7 @@ pub async fn test_keyboard_cmd_shift_3() -> io::Result<()> {
     sleep(Duration::from_secs(2)).await;
 
     println!("Stopping screenshare...");
-    screenshare_client::stop_screenshare(&sender)?;
+    screenshare_client::stop_screenshare(&session)?;
     println!("Cmd+Shift+3 test complete.");
     Ok(())
 }
@@ -264,7 +264,7 @@ pub async fn test_keyboard_cmd_shift_3() -> io::Result<()> {
 /// Connects screenshare, sends Alt+Tab (Windows window switcher) after user focuses a window.
 pub async fn test_keyboard_alt_tab() -> io::Result<()> {
     println!("Starting Alt+Tab test...");
-    let (sender, _event_socket) = screenshare_client::start_screenshare_session()?;
+    let session = screenshare_client::start_screenshare_session()?;
 
     sleep(Duration::from_secs(2)).await;
 
@@ -297,7 +297,7 @@ pub async fn test_keyboard_alt_tab() -> io::Result<()> {
     sleep(Duration::from_secs(2)).await;
 
     println!("Stopping screenshare...");
-    screenshare_client::stop_screenshare(&sender)?;
+    screenshare_client::stop_screenshare(&session)?;
     println!("Alt+Tab test complete.");
     Ok(())
 }
@@ -305,7 +305,7 @@ pub async fn test_keyboard_alt_tab() -> io::Result<()> {
 /// Connects screenshare, runs the keyboard character test, and stops screenshare.
 pub async fn test_keyboard_chars() -> io::Result<()> {
     println!("Starting keyboard test...");
-    let (sender, _event_socket) = screenshare_client::start_screenshare_session()?;
+    let session = screenshare_client::start_screenshare_session()?;
 
     sleep(Duration::from_secs(2)).await; // Give time for screenshare to potentially start
 
@@ -320,7 +320,7 @@ pub async fn test_keyboard_chars() -> io::Result<()> {
     internal_test_keyboard_chars(&room).await?;
 
     println!("Stopping screenshare...");
-    screenshare_client::stop_screenshare(&sender)?;
+    screenshare_client::stop_screenshare(&session)?;
     println!("Screenshare stopped.");
     println!("Keyboard test complete.");
     Ok(())

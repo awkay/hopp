@@ -15,7 +15,7 @@ The test suite provides automated testing for:
 
 - Rust (latest stable version)
 - LiveKit server instance with API credentials
-- Core process running (use `task dev` from the core directory)
+- Core process running (use `task dev` from the core directory). Core exits when the test disconnects, so restart it between runs
 
 ## Setup
 
@@ -32,7 +32,7 @@ Set the following environment variables:
 - `LIVEKIT_URL`: The WebSocket URL of your LiveKit server
 - `LIVEKIT_API_KEY`: Your LiveKit API key
 - `LIVEKIT_API_SECRET`: Your LiveKit API secret
-- `CONTENT_ID`: Source ID for the display to be shared (screen capture source identifier)
+- `HOPP_TEST_SCREEN_ID`: Display to share (defaults to `0`)
 
 ## Usage
 
