@@ -82,16 +82,25 @@ work can be compared before and after a change without a second person.
 
 | Role | Load |
 | --- | --- |
-| `viewer` | A fake participant shares a scrolling text page at 3024x1964 and 40 fps (H.264, 12 Mbps, core's own maximums). It and a second fake participant send 720p cameras at 30 fps and quiet audio. Core opens its screen-share and camera windows. |
-| `sharer` | Core shares the main display (or `HOPP_TEST_SCREEN_ID`) at the app's default 4K setting. A fake viewer watches it and sends camera and audio. It alternates 4 s of cursor movement and 4 s of drawing on the overlay, at 60 events/s. |
+| `viewer` | A fake participant shares a scrolling text page at 3024x1964 and 40 fps (H.264, 12 Mbps, core's own maximums), as a screencast source that keeps its resolution, like core's own share. It and a second fake participant send 720p cameras at 30 fps and quiet audio. Core opens its screen-share and camera windows. |
+| `sharer` | Core joins, waits 7 s (past the 5 s after which it stops its muted tracks' keepalive frames), then shares the main display (or `HOPP_TEST_SCREEN_ID`) at the app's default 4K setting. A fake viewer watches it, reports the size, frame intervals and time to first frame it received, and sends camera and audio. It alternates 4 s of cursor movement and 4 s of drawing on the overlay, at 60 events/s. |
 
-- **What you get:** the release core is built as shipped, with symbols. Recording starts after a
-  5 s warm-up. Results go to `out/profile/<label>-<role>.*`:
+- **What you get:** the release core is built as shipped, with symbols. After a 5 s warm-up,
+  `energy.py` reads core's CPU time, wake-ups and energy from the kernel for 20 s
+  (`--energy-seconds`) with no profiler attached; then the Time Profiler records. Results go to
+  `out/profile/<label>-<role>.*`:
   - `.svg`: the flamegraph; open it in a browser and hover a frame for its share.
-  - `.txt`: CPU per thread, the functions with the most self time, and core's own functions by
-    total time. Diff two labels' `.txt` for a before/after comparison.
+  - `.txt`: CPU per thread, the functions with the most self time, core's own functions by total
+    time, the energy line, and core's `FramePacing` lines (every 10 s: the size the screen-share
+    window showed, presented fps, present intervals, render time and frame age, frames never
+    shown). Diff two labels' `.txt` for a before/after comparison.
   - `.folded`: stacks for other flamegraph tools (inferno, speedscope).
   - `.trace`: the raw recording; open it in Instruments.
+- **Check the size in `FramePacing`:** WebRTC's own stats count decoder drops only, and a share
+  that WebRTC scaled down still looks healthy there. With the harness on crates.io livekit, the
+  "3K" share arrived at 1128x732.
+- **A baseline needs the old core:** `profile.sh` builds core from the working tree, so check out
+  the old `core/src` for a baseline run.
 - **Sharer runs measure what's on screen:** ScreenCaptureKit sends no frames for a static screen,
   so play a video or scroll something during the run.
 - **The fake viewer never clicks or types:** core would replay those on the real pointer and
