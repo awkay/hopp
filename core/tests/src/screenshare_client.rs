@@ -8,12 +8,44 @@ use std::ops::Deref;
 pub const SHARER: &str = "Test Screenshare";
 
 /// Returns the screen content id to capture, read from the `HOPP_TEST_SCREEN_ID`
-/// environment variable. Falls back to `0` if unset.
+/// environment variable. Falls back to the main display: core identifies displays by their
+/// CoreGraphics display id, which is not 0.
 pub fn screen_id() -> u32 {
     env::var("HOPP_TEST_SCREEN_ID")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(0)
+        .unwrap_or_else(main_display_id)
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGMainDisplayID() -> u32;
+    fn CGDisplayIsAsleep(display: u32) -> u32;
+}
+
+#[cfg(target_os = "macos")]
+fn main_display_id() -> u32 {
+    // SAFETY: takes no arguments and only reads the current display configuration.
+    unsafe { CGMainDisplayID() }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn main_display_id() -> u32 {
+    0
+}
+
+/// Whether display `id` is asleep. A sleeping display isn't in the active list, so core finds no
+/// monitor to share (and before a fix, panicked indexing the empty list).
+#[cfg(target_os = "macos")]
+pub fn display_asleep(id: u32) -> bool {
+    // SAFETY: takes a display id by value and only reads its state.
+    unsafe { CGDisplayIsAsleep(id) != 0 }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn display_asleep(_id: u32) -> bool {
+    false
 }
 
 /// Shares display `content_id` and waits for core's result.

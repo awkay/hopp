@@ -35,7 +35,7 @@ const FAKE_SHARER: &str = "Smoke Fake Sharer";
 /// Data topic and payload core uses to negotiate low-bandwidth mode (`room_service.rs`).
 const TOPIC_BANDWIDTH_MODE: &str = "bandwidth_mode";
 
-const ROOM_EVENT_TIMEOUT: Duration = Duration::from_secs(15);
+pub(crate) const ROOM_EVENT_TIMEOUT: Duration = Duration::from_secs(15);
 /// Above this, core is busy with something after the call ended (the call-end CPU bug).
 const MAX_IDLE_CPU: f64 = 0.25;
 
@@ -459,17 +459,17 @@ async fn network_drop(conn: &CoreConn) -> io::Result<()> {
 }
 
 /// Another participant in the room, joined over LiveKit directly.
-struct Participant {
-    room: Room,
+pub(crate) struct Participant {
+    pub(crate) room: Room,
     events: UnboundedReceiver<RoomEvent>,
 }
 
 impl Participant {
-    async fn join(user: &str) -> io::Result<Self> {
+    pub(crate) async fn join(user: &str) -> io::Result<Self> {
         Self::join_track(user, "audio").await
     }
 
-    async fn join_track(user: &str, track: &str) -> io::Result<Self> {
+    pub(crate) async fn join_track(user: &str, track: &str) -> io::Result<Self> {
         let url = std::env::var("LIVEKIT_URL").expect("LIVEKIT_URL environment variable not set");
         let token = generate_participant_token(user, track);
         let (room, events) = Room::connect(&url, &token, RoomOptions::default())
@@ -478,7 +478,7 @@ impl Participant {
         Ok(Self { room, events })
     }
 
-    async fn wait_event<T>(
+    pub(crate) async fn wait_event<T>(
         &mut self,
         what: &str,
         mut pick: impl FnMut(RoomEvent) -> Option<T>,
@@ -554,7 +554,7 @@ impl Participant {
             .map_err(|e| io::Error::other(format!("publishing the bandwidth request failed: {e}")))
     }
 
-    async fn leave(self) {
+    pub(crate) async fn leave(self) {
         let _ = self.room.close().await;
     }
 }

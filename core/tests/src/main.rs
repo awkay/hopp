@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::io;
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 pub static SOCKET_PATH: OnceLock<String> = OnceLock::new();
@@ -11,6 +12,7 @@ mod hang_repro;
 mod ipc;
 mod livekit_utils;
 mod local_drawing;
+mod profile;
 mod remote_clipboard;
 mod remote_cursor;
 mod remote_drawing;
@@ -117,6 +119,19 @@ enum Commands {
         #[arg(long)]
         core_pid: Option<u32>,
     },
+    /// Keep a call busy so a profiler can sample core (see profile.sh)
+    Profile {
+        #[arg(value_enum)]
+        role: profile::Role,
+        /// Created once the load is running
+        #[arg(long)]
+        ready_file: PathBuf,
+        /// The load stops once this file exists
+        #[arg(long)]
+        stop_file: PathBuf,
+    },
+    /// Demangle Rust symbols, one per line from stdin to stdout (for flamegraph.py)
+    Demangle,
 }
 
 #[derive(Clone, ValueEnum, Debug)]
@@ -485,6 +500,21 @@ async fn main() -> io::Result<()> {
         }
         Commands::Smoke { scenario, core_pid } => {
             smoke::run(scenario, core_pid).await?;
+        }
+        Commands::Profile {
+            role,
+            ready_file,
+            stop_file,
+        } => {
+            profile::run(role, &ready_file, &stop_file).await?;
+        }
+        Commands::Demangle => {
+            use std::io::{BufRead, Write};
+            let mut out = io::BufWriter::new(io::stdout().lock());
+            for line in io::stdin().lock().lines() {
+                // `{:#}` drops the hash suffix (`::h0123…` / `[0123…]`).
+                writeln!(out, "{:#}", rustc_demangle::demangle(&line?))?;
+            }
         }
         Commands::LocalDrawing { test_type } => {
             match test_type {

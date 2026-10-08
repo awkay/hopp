@@ -1,2 +1,4 @@
 plots/*
 *.csv
+# smoke.sh and profile.sh logs, traces and flamegraphs
+out/

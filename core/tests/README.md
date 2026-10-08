@@ -69,6 +69,41 @@ profile applied and turns it off at the end.
 failed scenarios. The scenarios live in `src/smoke.rs`; the socket client they share (request ids,
 call ids, keepalive) is `src/ipc.rs`.
 
+## Profiling
+
+`profile.sh` keeps an emulated call busy and records core with Instruments' Time Profiler, so CPU
+work can be compared before and after a change without a second person.
+
+```bash
+./profile.sh viewer                         # core watches a fake share and two fake cameras
+./profile.sh sharer                         # core shares this screen; a fake viewer draws on it
+./profile.sh viewer --seconds 30 --label before-fix --net bad
+```
+
+| Role | Load |
+| --- | --- |
+| `viewer` | A fake participant shares a scrolling text page at 3024x1964 and 40 fps (H.264, 12 Mbps, core's own maximums). It and a second fake participant send 720p cameras at 30 fps and quiet audio. Core opens its screen-share and camera windows. |
+| `sharer` | Core shares the main display (or `HOPP_TEST_SCREEN_ID`) at the app's default 4K setting. A fake viewer watches it and sends camera and audio. It alternates 4 s of cursor movement and 4 s of drawing on the overlay, at 60 events/s. |
+
+- **What you get:** the release core is built as shipped, with symbols. Recording starts after a
+  5 s warm-up. Results go to `out/profile/<label>-<role>.*`:
+  - `.svg`: the flamegraph; open it in a browser and hover a frame for its share.
+  - `.txt`: CPU per thread, the functions with the most self time, and core's own functions by
+    total time. Diff two labels' `.txt` for a before/after comparison.
+  - `.folded`: stacks for other flamegraph tools (inferno, speedscope).
+  - `.trace`: the raw recording; open it in Instruments.
+- **Sharer runs measure what's on screen:** ScreenCaptureKit sends no frames for a static screen,
+  so play a video or scroll something during the run.
+- **The fake viewer never clicks or types:** core would replay those on the real pointer and
+  keyboard. Its cursor and drawings only appear on the overlay.
+- **Audio:** the fake participants send noise at about -60 dBFS. That keeps core's remote-audio
+  path busy, with no silence for DTX to skip, while staying close to inaudible.
+- **Not covered:** input from core's own user (mouse over the screen-share window, local
+  drawing). Core's own camera stays off.
+- **Needs** LiveKit, Xcode's `xctrace`, and Microphone access for the terminal (plus Screen
+  Recording for `sharer`), like the smoke scenarios. The load lives in `src/profile.rs`, the report
+  in `flamegraph.py`.
+
 ## Manual scenarios
 
 The commands below drive core and fake participants, but most of them need a person watching the
@@ -95,7 +130,7 @@ Set the following environment variables:
 - `LIVEKIT_URL`: The WebSocket URL of your LiveKit server
 - `LIVEKIT_API_KEY`: Your LiveKit API key
 - `LIVEKIT_API_SECRET`: Your LiveKit API secret
-- `HOPP_TEST_SCREEN_ID`: Display to share (defaults to `0`)
+- `HOPP_TEST_SCREEN_ID`: CoreGraphics id of the display to share (defaults to the main display)
 
 ## Usage
 

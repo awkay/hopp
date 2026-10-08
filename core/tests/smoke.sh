@@ -82,7 +82,12 @@ if ! nc -z "$host" "$port" 2>/dev/null; then
     exit 1
   fi
   echo "Starting livekit-server --dev (log: $OUT_DIR/livekit.log)"
-  livekit-server --dev > "$OUT_DIR/livekit.log" 2>&1 &
+  # Loopback only: everything runs on this Mac, and ICE checks over the LAN and IPv6 addresses
+  # LiveKit advertises by default can time out (a second connection from one process never
+  # connected; core took 13 s).
+  livekit-server --dev --node-ip 127.0.0.1 --rtc.enable_loopback_candidate \
+    --config-body "$(printf 'rtc:\n  interfaces:\n    includes: [lo0]\n')" \
+    > "$OUT_DIR/livekit.log" 2>&1 &
   livekit_pid=$!
   for _ in $(seq 100); do nc -z "$host" "$port" 2>/dev/null && break; sleep 0.1; done
   if ! nc -z "$host" "$port" 2>/dev/null; then
