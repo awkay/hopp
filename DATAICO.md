@@ -40,6 +40,12 @@ The packaging layer lives in new files; it modifies no upstream file:
   (identifier, release sidecar path, no updater artifacts, `plugins.updater.endpoints: []`).
 - `packaging/dataico/build-macos.sh` - the one build script.
 - `packaging/dataico/.env.example` - signing/notarization variables (copy to `.env`, git-ignored).
+- `packaging/dataico/Taskfile.yml` - `build` and `install` tasks, run as
+  `task -d packaging/dataico <task>`. Deliberately not included from the root `Taskfile.yml`:
+  Task would hand its root `dotenv` (`packaging/.env`, `tauri/.env`) to the build, and a dev
+  `VITE_API_BASE_URL` there would override the release server.
+- `scripts/install-macos.sh` - installs the last build to `/Applications`; the `install` task runs
+  it after `build-macos.sh` (see "Installing").
 
 **Fork-only features modify upstream files.** Low-bandwidth mode changes `core/` (new
 `core/src/bandwidth_mode.rs`, plus `room_service.rs`, `lib.rs`, `snapshot_sender.rs`,
@@ -92,7 +98,7 @@ in Settings is still shown but has no effect.
 
 ```bash
 git clone git@github.com:awkay/hopp.git && cd hopp
-packaging/dataico/build-macos.sh
+packaging/dataico/build-macos.sh   # or: task -d packaging/dataico build
 ```
 
 Output: `dist/dataico/Hopp-Dataico-<version>-<sha>-<arch>.zip` (the `.app` is `hopp.app`).
@@ -131,7 +137,11 @@ Other overrides: `VITE_API_BASE_URL=<host>` for a different server.
 
 ## Installing
 
-Unzip, drag `hopp.app` to `/Applications`, open it, and grant Screen Recording, Accessibility,
+From a clone (macOS, Task via `brew install go-task`): `task -d packaging/dataico install` builds
+the current checkout, quits a running Hopp, replaces `/Applications/hopp.app` and opens it. It refuses to overwrite an
+`/Applications/hopp.app` that isn't `com.dataico.hopp` (the official app).
+
+From a zip: unzip, drag `hopp.app` to `/Applications`, open it, and grant Screen Recording, Accessibility,
 Camera and Microphone when prompted. For an unsigned build on another Mac:
 `xattr -dr com.apple.quarantine /Applications/hopp.app`.
 
