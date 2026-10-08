@@ -11,7 +11,7 @@
 //! - Pill-shaped control buttons with solid/gradient backgrounds
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant as StdInstant};
 
@@ -325,21 +325,21 @@ pub enum RedrawCommand {
     Stop,
 }
 
+/// Requests a redraw for every new frame (`ForceRedraw`) and on a timer. A frame that arrives
+/// while the window is drawing still gets its redraw: winit keeps at most one pending redraw per
+/// window and runs a request made during a redraw right after it, so only the latest frame is
+/// drawn and no backlog builds.
 fn spawn_redraw_thread(
     redraw_rx: std::sync::mpsc::Receiver<RedrawCommand>,
-    redraw_in_progress: Arc<AtomicBool>,
     window: Arc<Window>,
     effect_deadline: EffectAnimationDeadline,
 ) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || loop {
-        match redraw_rx.recv_timeout(effect_deadline.interval()) {
-            Ok(RedrawCommand::ForceRedraw) => {
-                if !redraw_in_progress.load(Ordering::Acquire) {
-                    window.request_redraw();
-                }
-            }
-            Ok(RedrawCommand::Stop) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => window.request_redraw(),
+    std::thread::spawn(move || {
+        // Ends on Stop or when the window drops its sender.
+        while let Ok(RedrawCommand::ForceRedraw) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+            redraw_rx.recv_timeout(effect_deadline.interval())
+        {
+            window.request_redraw();
         }
     })
 }
@@ -655,7 +655,6 @@ pub struct ScreensharingWindow {
     effect_deadline: EffectAnimationDeadline,
     last_rendered_frame_id: u64,
     frame_pacing: FramePacing,
-    redraw_in_progress: Arc<AtomicBool>,
     redraw_tx: std::sync::mpsc::Sender<RedrawCommand>,
     redraw_thread: Option<std::thread::JoinHandle<()>>,
     #[cfg_attr(target_os = "windows", allow(dead_code))]
@@ -941,14 +940,9 @@ impl ScreensharingWindow {
         initial_state.bandwidth_mode = bandwidth_mode;
         let call_controls =
             CallControlsState::new(camera_active, selected_camera_name, selected_mic_name);
-        let redraw_in_progress = Arc::new(AtomicBool::new(false));
         let effect_deadline = EffectAnimationDeadline::new();
-        let redraw_thread = spawn_redraw_thread(
-            redraw_rx,
-            Arc::clone(&redraw_in_progress),
-            Arc::clone(&window),
-            effect_deadline.clone(),
-        );
+        let redraw_thread =
+            spawn_redraw_thread(redraw_rx, Arc::clone(&window), effect_deadline.clone());
         let effects = EffectLayer::new(
             device.clone(),
             context_manager.screensharing_context.queue.clone(),
@@ -981,7 +975,6 @@ impl ScreensharingWindow {
             effect_deadline,
             last_rendered_frame_id: 0,
             frame_pacing: FramePacing::new("screen share"),
-            redraw_in_progress,
             redraw_tx,
             redraw_thread: Some(redraw_thread),
             event_loop_proxy,
@@ -1212,7 +1205,6 @@ impl ScreensharingWindow {
         self.stop_redraw_thread();
         self.redraw_thread = Some(spawn_redraw_thread(
             new_rx,
-            Arc::clone(&self.redraw_in_progress),
             Arc::clone(&self.window),
             self.effect_deadline.clone(),
         ));
@@ -1988,9 +1980,7 @@ impl ScreensharingWindow {
                 }
             }
             WindowEvent::RedrawRequested => {
-                self.redraw_in_progress.store(true, Ordering::Release);
                 let cleared = self.redraw();
-                self.redraw_in_progress.store(false, Ordering::Release);
                 if !cleared.is_empty() {
                     input_events.push(ScreenShareInputEvent::DrawClearPaths(cleared));
                 }
