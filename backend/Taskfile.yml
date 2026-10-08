@@ -32,7 +32,7 @@ tasks:
   compose-up:
     desc: Start the development databases and related services (local Go server for faster dev)
     cmds:
-      - docker compose -f docker-files/docker-compose.yml up -d
+      - docker compose -f dev-compose.yml up -d
 
   build:
     cmds:
