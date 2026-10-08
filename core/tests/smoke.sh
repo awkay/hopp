@@ -4,7 +4,7 @@
 #
 #   core/tests/smoke.sh                        # every scenario except network-drop
 #   core/tests/smoke.sh bandwidth screenshare  # just these
-#   core/tests/smoke.sh --net bad              # all of them over a bad connection (netem.sh)
+#   core/tests/smoke.sh --net bad              # every scenario except network-drop, over a bad connection (netem.sh)
 #   core/tests/smoke.sh network-drop           # opt-in: cuts LiveKit traffic mid-call
 #   core/tests/smoke.sh --list
 #

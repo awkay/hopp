@@ -6,9 +6,7 @@
 //! `core/tests/smoke.sh` starts one per scenario.
 
 use crate::ipc::{CoreConn, Step, REQUEST_TIMEOUT};
-use crate::livekit_utils::{
-    generate_participant_token, participant_base_identity, participant_identity,
-};
+use crate::livekit_utils::{generate_participant_token, participant_identity};
 use crate::screenshare_client;
 use clap::ValueEnum;
 use futures::StreamExt;
@@ -224,7 +222,6 @@ async fn stale_call_end(conn: &CoreConn) -> io::Result<()> {
 
 async fn bandwidth(conn: &CoreConn) -> io::Result<()> {
     let mut remote = Participant::join(REMOTE).await?;
-    let remote_identity = participant_base_identity(REMOTE);
 
     let call_id = conn.join_call(CORE_USER)?;
     let state = wait_bandwidth_state(conn, "initial BandwidthModeState", |_| true)?;
@@ -262,7 +259,7 @@ async fn bandwidth(conn: &CoreConn) -> io::Result<()> {
     step("remote request");
     remote.request_low_bandwidth(true).await?;
     wait_bandwidth_state(conn, "remote request active", |s| {
-        s.active && s.requested_by.contains(&remote_identity)
+        s.active && s.requested_by.iter().any(|r| r == REMOTE)
     })?;
 
     step("requester leaves");

@@ -19,7 +19,8 @@ pub fn participant_identity(user: &str, track: &str) -> String {
     format!("{}:{track}", participant_base_identity(user))
 }
 
-/// The identity without the track suffix, as core reports it in `BandwidthModeState`.
+/// The `room:<room>:<user id>` prefix shared by a participant's audio and video track identities,
+/// the user id being `user` lowercased with separators replaced.
 pub fn participant_base_identity(user: &str) -> String {
     let user_id: String = user
         .chars()
