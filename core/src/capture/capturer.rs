@@ -149,6 +149,12 @@ pub struct Capturer {
     event_loop_proxy: EventLoopProxy<UserEvent>,
 
     app_veil_filter: AppVeilCaptureFilter,
+
+    /// Frame rate the screen share encoder takes, set by the room service.
+    encoder_framerate: f64,
+
+    /// Refresh rate of the captured display in Hz, `None` for a window share.
+    display_refresh_hz: Option<u32>,
 }
 
 impl Capturer {
@@ -171,6 +177,22 @@ impl Capturer {
             active_stream: None,
             event_loop_proxy,
             app_veil_filter: AppVeilCaptureFilter::default(),
+            encoder_framerate: crate::bandwidth_mode::MAX_FRAMERATE,
+            display_refresh_hz: None,
+        }
+    }
+
+    fn capture_framerate(&self) -> u32 {
+        crate::bandwidth_mode::capture_framerate(self.encoder_framerate, self.display_refresh_hz)
+    }
+
+    /// Follows the encoder's frame rate (it changes with low-bandwidth mode), so the capture
+    /// doesn't produce frames the encoder drops. See `bandwidth_mode::capture_framerate`.
+    pub fn set_encoder_framerate(&mut self, fps: f64) {
+        self.encoder_framerate = fps;
+        #[cfg(target_os = "macos")]
+        if let Some(stream) = self.active_stream.as_ref() {
+            stream.set_framerate(self.capture_framerate());
         }
     }
 
@@ -179,6 +201,7 @@ impl Capturer {
     /// # Parameters
     /// - `content`: The content source to capture (display or window with display_id)
     /// - `stream_resolution`: The resolution of the stream buffer
+    /// - `display_refresh_hz`: Refresh rate of the captured display, `None` for a window
     ///
     /// # Returns
     /// - `Ok(())`: Successfully started the capture stream
@@ -200,10 +223,12 @@ impl Capturer {
         stream_resolution: Extent,
         buffer_source: NativeVideoSource,
         scale: f64,
+        display_refresh_hz: Option<u32>,
     ) -> Result<(), CapturerError> {
         log::info!(
-            "start_capture: content {content:?} resolution: {stream_resolution:?} scale: {scale}"
+            "start_capture: content {content:?} resolution: {stream_resolution:?} scale: {scale} refresh: {display_refresh_hz:?} Hz"
         );
+        self.display_refresh_hz = display_refresh_hz;
         if self.active_stream.is_some() {
             log::warn!("start_capture: active stream, stopping it");
             self.active_stream.as_mut().unwrap().stop_capture();
@@ -218,6 +243,8 @@ impl Capturer {
             buffer_source,
             self.app_veil_filter.clone(),
         )?;
+        #[cfg(target_os = "macos")]
+        stream.set_framerate(self.capture_framerate());
 
         stream.start_capture()?;
         self.active_stream = Some(stream);

@@ -2532,6 +2532,14 @@ fn apply_screen_share_encoding(inner: &RoomServiceInner) {
         ),
         Err(e) => log::error!("apply_screen_share_encoding: Failed to set encoding: {e:?}"),
     }
+    if let Err(e) = inner
+        .event_loop_proxy
+        .send_event(UserEvent::ScreenShareEncoderFramerate(
+            encoding.max_framerate,
+        ))
+    {
+        log::error!("apply_screen_share_encoding: Failed to send the capture frame rate: {e:?}");
+    }
 }
 
 fn bandwidth_mode_state(inner: &RoomServiceInner) -> socket_lib::BandwidthModeState {

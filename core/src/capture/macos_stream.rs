@@ -12,7 +12,7 @@ use screencapturekit::{
 };
 use socket_lib::{Content, ContentType};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU32, Ordering},
     mpsc, Arc, Mutex,
 };
 
@@ -140,6 +140,10 @@ pub struct Stream {
     scale: f64,
     target_process_id: Option<i32>,
     app_veil_filter: AppVeilCaptureFilter,
+    /// ScreenCaptureKit's frame rate, from `bandwidth_mode::capture_framerate`.
+    framerate: AtomicU32,
+    /// Output size of the current configuration, kept to change the frame rate alone.
+    configured_size: Mutex<(u32, u32)>,
 }
 
 impl Stream {
@@ -167,7 +171,34 @@ impl Stream {
             scale,
             target_process_id: None,
             app_veil_filter,
+            framerate: AtomicU32::new(60),
+            configured_size: Mutex::new((0, 0)),
         })
+    }
+
+    fn configuration(&self, width: u32, height: u32) -> SCStreamConfiguration {
+        *self.configured_size.lock().unwrap() = (width, height);
+        SCStreamConfiguration::new()
+            .with_width(width)
+            .with_height(height)
+            .with_pixel_format(PixelFormat::YCbCr_420v)
+            .with_shows_cursor(false)
+            .with_fps(self.framerate.load(Ordering::Relaxed))
+    }
+
+    /// Sets the capture frame rate, applying it right away to a running stream.
+    pub fn set_framerate(&self, fps: u32) {
+        if self.framerate.swap(fps, Ordering::Relaxed) == fps {
+            return;
+        }
+        log::info!("capture stream: {fps} fps");
+        let Some(stream) = self.sc_stream.as_ref() else {
+            return;
+        };
+        let (width, height) = *self.configured_size.lock().unwrap();
+        if let Err(error) = stream.update_configuration(&self.configuration(width, height)) {
+            log::error!("capture stream frame rate change failed: {error}");
+        }
     }
 
     fn display_filter(
@@ -276,12 +307,7 @@ impl Stream {
             *sb = StreamBuffer::new(stream_width, stream_height);
         }
 
-        let config = SCStreamConfiguration::new()
-            .with_width(stream_width)
-            .with_height(stream_height)
-            .with_pixel_format(PixelFormat::YCbCr_420v)
-            .with_shows_cursor(false)
-            .with_fps(60);
+        let config = self.configuration(stream_width, stream_height);
 
         let error_tx = self.permanent_error_tx.clone();
         let stop_tx = self.permanent_error_tx.clone();
@@ -490,12 +516,7 @@ impl Stream {
         let Some(stream) = self.sc_stream.as_ref() else {
             return;
         };
-        let config = SCStreamConfiguration::new()
-            .with_width(width)
-            .with_height(height)
-            .with_pixel_format(PixelFormat::YCbCr_420v)
-            .with_shows_cursor(false)
-            .with_fps(60);
+        let config = self.configuration(width, height);
         if let Err(error) = stream.update_configuration(&config) {
             log::error!("capture stream reconfiguration failed: {error}");
         }
@@ -551,6 +572,8 @@ impl Stream {
             scale: self.scale,
             target_process_id: self.target_process_id,
             app_veil_filter: self.app_veil_filter.clone(),
+            framerate: AtomicU32::new(self.framerate.load(Ordering::Relaxed)),
+            configured_size: Mutex::new(*self.configured_size.lock().unwrap()),
         })
     }
 

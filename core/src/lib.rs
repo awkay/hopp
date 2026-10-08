@@ -781,6 +781,10 @@ impl<'a> Application<'a> {
         let scale = selected_monitor
             .as_ref()
             .map_or(1.0, |monitor| monitor.scale_factor());
+        let refresh_hz = selected_monitor
+            .as_ref()
+            .and_then(MonitorHandle::refresh_rate_millihertz)
+            .map(|millihertz| (millihertz + 500) / 1000);
 
         #[cfg(target_os = "macos")]
         if is_display_share {
@@ -810,6 +814,7 @@ impl<'a> Application<'a> {
             },
             buffer_source,
             scale,
+            refresh_hz,
         );
         if let Err(error) = res {
             #[cfg(target_os = "macos")]
@@ -1777,6 +1782,11 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                 debug!("user_event: sharer position: {x} {y}");
                 if let Some(room_service) = self.room_service.as_ref() {
                     room_service.publish_cursor_position(x, y, true);
+                }
+            }
+            UserEvent::ScreenShareEncoderFramerate(fps) => {
+                if let Ok(mut capturer) = self.screen_capturer.lock() {
+                    capturer.set_encoder_framerate(fps);
                 }
             }
             UserEvent::CaptureFrameChanged => {
@@ -3330,6 +3340,8 @@ pub enum UserEvent {
     RequestRedraw,
     SharerPosition(f64, f64),
     CaptureFrameChanged,
+    /// The screen share encoder's frame rate changed; the capture follows it.
+    ScreenShareEncoderFramerate(f64),
     SetAppVeilBundleIds(Vec<String>),
     RefreshAppVeilFilter,
     #[cfg(target_os = "macos")]
