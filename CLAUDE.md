@@ -6,6 +6,25 @@
 spec drafting and implementation. Never work on two specs in the same worktree or implement a spec
 in the main checkout.
 
+§SPEC-IMMUTABLE: Once a spec is done and merged, `docs/specs/<ID>-<slug>.md` and its
+`notes.md` are a historical record: never edit them again, not even for typos, broken links or
+outdated details. A later change to that behavior gets its own spec (or bug fix) that names what it
+replaces, e.g. "replaces 0004 B3". Knowledge that must stay current lives in the topic docs
+(`docs/`, `DATAICO.md`, `CLAUDE.md`), which are updated with the behavior. Until it is merged, a
+spec is a working document and changes with the plan.
+
+§TILING-WM: Hopp must behave correctly under AeroSpace and similar tiling window managers (yabai,
+Amethyst), in every window style. Popups and overlays (the menu-bar popup, core's sharing overlay
+and drawing window) stay unmanaged: any NSWindow style bit makes a window report
+`AXStandardWindow`, and AeroSpace then adopts it into a workspace and jumps there whenever it is
+shown (see the style-mask comment in `tauri/src-tauri/src/main.rs` setup). Standalone windows, like
+the main window in the floating and regular styles, may be tiled or floated and must stay usable
+at whatever frame the manager gives them. Showing, focusing or activating a window, or changing the
+activation policy, must never switch the user's workspace or move a window to another one. Verify
+every change to window creation, style masks, levels, focus, activation or positioning under
+AeroSpace. When you can't run or emulate that check (agents never start the app), ask the user to
+run it with concrete steps, and don't call the change done until they have.
+
 §WORKTREE-CONTEXT: Every worktree must have a root-level [workingcontext.md](workingcontext.md)
 with meaningful, non-empty content for the current session. This file is local and Git-ignored;
 never commit it. Initialize it from [workingcontext.md.template](workingcontext.md.template) when

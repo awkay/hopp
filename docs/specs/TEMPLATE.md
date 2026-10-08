@@ -1,7 +1,9 @@
 # NNNN: Title
 
 <!-- Write down what a later session would otherwise have to re-ask or re-investigate. "None" is
-fine for an empty section. When the build changes the plan, update the spec in the same commit. -->
+fine for an empty section. When the build changes the plan, update the spec in the same commit.
+Once the spec is done and merged it is frozen (§SPEC-IMMUTABLE in CLAUDE.md): later changes get a
+new spec that names what it replaces. -->
 
 ## Goal
 
