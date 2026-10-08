@@ -9,6 +9,7 @@ use livekit::options::{
 use livekit::participant::{ConnectionQuality, LocalParticipant};
 use livekit::track::{LocalTrack, LocalVideoTrack, TrackSource, VideoQuality};
 use livekit::webrtc::prelude::{RtcVideoSource, VideoResolution};
+use livekit::webrtc::video_frame::{I420Buffer, VideoFrame, VideoRotation};
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::{DataPacket, Room, RoomEvent, RoomOptions};
 use thread_priority::{set_current_thread_priority, ThreadPriority};
@@ -43,6 +44,9 @@ const TOPIC_BANDWIDTH_MODE: &str = "bandwidth_mode";
 const CAMERA_TRACK_NAME: &str = "camera";
 const CAMERA_MAX_BITRATE: u64 = 1_700_000;
 const CAMERA_MAX_FRAMERATE: f64 = 30.0;
+/// How long a muted camera or screen track keeps sending keepalive frames after it is
+/// published. See `end_video_keepalive`.
+const VIDEO_KEEPALIVE_GRACE: Duration = Duration::from_secs(5);
 /// Per-attempt LiveKit signal connect timeout (websocket + TLS). The SDK default is 5s,
 /// which a 3G link can't meet: every attempt timed out mid-handshake and retried forever.
 const SIGNAL_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -1216,6 +1220,7 @@ async fn room_service_commands(
                             "room_service_commands: Camera track published in {}ms",
                             phase_start.elapsed().as_millis()
                         );
+                        end_video_keepalive(camera_source.clone(), camera_track.clone(), "camera");
                         *inner_clone.camera_buffer_source.lock().unwrap() = Some(camera_source);
                         *inner_clone.camera_track.lock().unwrap() = Some(camera_track);
                     }
@@ -1297,6 +1302,11 @@ async fn room_service_commands(
                         log::info!(
                             "room_service_commands: Screen share track published in {}ms",
                             phase_start.elapsed().as_millis()
+                        );
+                        end_video_keepalive(
+                            screen_source.clone(),
+                            screen_track.clone(),
+                            "screen share",
                         );
                         *inner_clone_video.buffer_source.lock().unwrap() = Some(screen_source);
                         *inner_clone_video.screen_share_track.lock().unwrap() = Some(screen_track);
@@ -2466,6 +2476,37 @@ struct RoomEventContext {
     audio_handle: TokioHandle,
     inner: Arc<RoomServiceInner>,
     service_command_tx: mpsc::UnboundedSender<RoomServiceCommand>,
+}
+
+/// Stops the black keepalive frames of a track published muted, once the SFU has seen it.
+///
+/// `NativeVideoSource::new` (our LiveKit fork, from upstream) captures a black frame every
+/// 100 ms until the source's first `capture_frame`, so a published track carries media before
+/// it has real frames. Core publishes its camera and screen tracks muted at call start, so a
+/// participant who never turned them on encoded and sent those frames for the whole call (about
+/// 1% of a core, plus traffic). After `VIDEO_KEEPALIVE_GRACE`, a track still muted gets one
+/// frame captured here, which ends the keepalive. A muted track's frames go out black anyway,
+/// and a track in use already ended it with its first real frame.
+fn end_video_keepalive(source: NativeVideoSource, track: LocalVideoTrack, label: &'static str) {
+    tokio::spawn(async move {
+        tokio::time::sleep(VIDEO_KEEPALIVE_GRACE).await;
+        if !track.is_muted() {
+            return;
+        }
+        let resolution = source.video_resolution();
+        let mut buffer = I420Buffer::new(resolution.width, resolution.height);
+        let (y, u, v) = buffer.data_mut();
+        y.fill(16);
+        u.fill(128);
+        v.fill(128);
+        source.capture_frame(&VideoFrame {
+            rotation: VideoRotation::VideoRotation0,
+            timestamp_us: 0,
+            frame_metadata: None,
+            buffer,
+        });
+        log::info!("end_video_keepalive: {label} track still muted, keepalive frames stopped");
+    });
 }
 
 /// The call room's local participant, or `None` outside a call.
