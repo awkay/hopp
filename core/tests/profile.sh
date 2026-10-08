@@ -60,7 +60,9 @@ stop_file="$OUT_DIR/.stop-$$"
 cleanup() {
   [ -n "$harness_pid" ] && kill "$harness_pid" 2>/dev/null
   [ -n "$core_pid" ] && kill "$core_pid" 2>/dev/null
-  [ -n "$livekit_pid" ] && kill "$livekit_pid" 2>/dev/null
+  # Wait for it to exit: a back-to-back run would otherwise find the port still open, skip
+  # starting its own server and fail to connect once this one is gone.
+  [ -n "$livekit_pid" ] && kill "$livekit_pid" 2>/dev/null && wait "$livekit_pid" 2>/dev/null
   [ -n "$network_profile" ] && sudo -n "$TESTS_DIR/netem.sh" off > /dev/null
   rm -f "$socket" "$ready_file" "$stop_file"
 }
