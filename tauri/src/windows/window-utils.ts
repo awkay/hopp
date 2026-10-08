@@ -458,3 +458,6 @@ export const tauriUtils = {
  * initialization script sets the class before any app script runs.
  */
 export const isFloatingMainWindow = () => document.documentElement.classList.contains("floating-window");
+
+/** Whether this is the main window in the regular (titled) window style (macOS). */
+export const isRegularMainWindow = () => document.documentElement.classList.contains("regular-window");

@@ -21,7 +21,7 @@ import { typedInvoke } from "@/core_payloads";
 import { listen } from "@tauri-apps/api/event";
 import posthog from "posthog-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { isFloatingMainWindow } from "@/windows/window-utils";
+import { isRegularMainWindow } from "@/windows/window-utils";
 
 const options: Partial<PostHogConfig> = {
   api_host: POSTHOG_HOST,
@@ -65,7 +65,7 @@ if (OS === "macos") {
 }
 
 /**
- * Floating window style: Escape hides the main window, unless something else uses it: a
+ * Menu bar and floating window styles (macOS): Escape hides the main window, unless something else uses it: a
  * menu, popover or dialog (Radix marks the event handled when it closes one, and any open one
  * also counts), a focused text field, or an IME composition.
  */
@@ -83,7 +83,7 @@ function hideOnEscape(event: KeyboardEvent) {
   getCurrentWindow().hide();
 }
 
-if (isFloatingMainWindow()) {
+if (OS === "macos" && !isRegularMainWindow()) {
   window.addEventListener("keydown", hideOnEscape);
 }
 
