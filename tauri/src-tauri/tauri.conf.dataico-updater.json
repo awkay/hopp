@@ -1,7 +1,7 @@
 {
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFFQjg0OUFEQTI3NzQ1MDgKUldRSVJYZWlyVW00SG1HS2dFM0VkZlg5bkV5YkVtZ1VjK1RmRWZxRURRZGJzTzhWVjgvb0tkQXMK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE2RjU0OENERUFBOTlFQzEKUldUQm5xbnF6VWoxcGlHY3lqNmJDR2U1UithOVF2Ym51UEdVTXJHZk14cVhsV3o5a1IyZ2N5NjIK",
       "endpoints": ["https://github.com/awkay/hopp/releases/latest/download/latest.json"]
     }
   }

@@ -98,7 +98,7 @@ build we ever signed (an older one, or a test build) as "newer". Our key stops a
 relaunch into a version other than the one offered, `hopp.log` warns. Updates keep TCC grants
 because every release has the same Developer ID team and bundle ID. **If the updater private key is
 lost, no installed app can be updated again**: everyone would reinstall by hand a build with a new
-`pubkey`. The private key and its password live in the team's password manager.
+`pubkey`. The private key and its password live in the Brazil team's shared Bitwarden.
 
 **Known upstream hardcodings of `com.hopp.app`** (not patched, so packaging stays in new files):
 - "Report issue" -> copy logs reads `~/Library/Logs/com.hopp.app/hopp.log`; our logs are in
@@ -193,7 +193,7 @@ checks that they are set, and only `build-macos.sh` receives them.
    Key ID; download `AuthKey_<KEYID>.p8` (downloadable once), keep it outside the repo.
 3. **Updater key** (once for the team, not per releaser). From `tauri/`:
    `yarn tauri signer generate -w ~/.tauri/hopp-dataico.key`, with a password. Put the private
-   key file's contents and the password in the team's password manager, and commit the printed
+   key file's contents and the password in the Brazil team's shared Bitwarden, and commit the printed
    public key as `pubkey` in `tauri/src-tauri/tauri.conf.dataico-updater.json`. Releasers set
    `TAURI_SIGNING_PRIVATE_KEY` (contents or path) and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`.
    Never regenerate it while installed apps carry the old `pubkey`: they could not update again.
