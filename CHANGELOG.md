@@ -2,6 +2,12 @@
 
 What's new in each Hopp for Dataico release, newest first.
 
+## 1.0.35 (2026-10-08)
+
+- **Update button.** When a new version is out, an "Update" tile appears in the sidebar, above your avatar. Click it and Hopp downloads the update and restarts. You stay logged in and keep your settings and permissions. During a call it waits until you hang up. This is the last version you install by hand.
+- **What's new.** After an update, a "New" tile in the sidebar shows what changed. The notes are always in the avatar menu › What's new.
+- **No more "Automatic updates" toggle in Settings.** Updates are offered by the Update tile instead.
+
 ## 1.0.34 (2026-10-08)
 
 - **Sharing buttons in the menu bar.** While you share your screen, the Hopp menu-bar icon grows a draw button and a stop-sharing button next to it. Turn it off in Settings › Call settings › "Show sharing buttons in menu bar".
