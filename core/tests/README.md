@@ -107,8 +107,9 @@ work can be compared before and after a change without a second person.
   trusting one number.
 - **Sharer runs measure what's on screen:** ScreenCaptureKit sends no frames for a static screen,
   so play a video or scroll something during the run, and compare sharer runs only roughly. The
-  capture rate also depends on the shared display's refresh rate (40 fps at 120 Hz, 60 fps at 60
-  or 144 Hz: `bandwidth_mode::capture_framerate`), so compare runs on the same display.
+  capture rate also depends on the refresh rate of the shared display, or of the monitor a shared
+  window is on (40 fps at 120 Hz, 60 fps at 60 or 144 Hz: `bandwidth_mode::capture_framerate`),
+  so compare runs on the same display.
 - **The fake viewer never clicks or types:** core would replay those on the real pointer and
   keyboard. Its cursor and drawings only appear on the overlay.
 - **Audio:** the fake participants send noise at about -60 dBFS. That keeps core's remote-audio

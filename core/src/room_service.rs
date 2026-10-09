@@ -2567,12 +2567,14 @@ fn apply_screen_share_encoding(inner: &RoomServiceInner) {
         scale_resolution_down_by: Some(encoding.scale_down_by),
         degradation_preference: Some(DegradationPreference::MaintainResolution),
     });
-    match res {
-        Ok(()) => log::info!(
-            "apply_screen_share_encoding: low={low} capture={width}x{height} encoding={encoding:?}"
-        ),
-        Err(e) => log::error!("apply_screen_share_encoding: Failed to set encoding: {e:?}"),
+    if let Err(e) = res {
+        // The encoder keeps its previous rate, so the capture keeps following it.
+        log::error!("apply_screen_share_encoding: Failed to set encoding: {e:?}");
+        return;
     }
+    log::info!(
+        "apply_screen_share_encoding: low={low} capture={width}x{height} encoding={encoding:?}"
+    );
     if let Err(e) = inner
         .event_loop_proxy
         .send_event(UserEvent::ScreenShareEncoderFramerate(

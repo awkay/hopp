@@ -150,11 +150,38 @@ pub struct Capturer {
 
     app_veil_filter: AppVeilCaptureFilter,
 
-    /// Frame rate the screen share encoder takes, set by the room service.
-    encoder_framerate: f64,
+    /// What the capture frame rate is chosen from.
+    framerate_inputs: FramerateInputs,
+}
 
-    /// Refresh rate of the captured display in Hz, `None` for a window share.
-    display_refresh_hz: Option<u32>,
+/// What the capture frame rate is chosen from. See `bandwidth_mode::capture_framerate`.
+#[derive(Debug, Clone, Copy)]
+struct FramerateInputs {
+    /// Frame rate the screen share encoder takes, set by the room service.
+    encoder_fps: f64,
+    /// Refresh rate in Hz of the captured display, or of the monitor the shared window is on;
+    /// `None` when unknown.
+    refresh_hz: Option<u32>,
+}
+
+impl FramerateInputs {
+    fn capture_framerate(&self) -> u32 {
+        crate::bandwidth_mode::capture_framerate(self.encoder_fps, self.refresh_hz)
+    }
+
+    /// Returns whether the capture rate changed.
+    fn set_encoder_fps(&mut self, fps: f64) -> bool {
+        let before = self.capture_framerate();
+        self.encoder_fps = fps;
+        before != self.capture_framerate()
+    }
+
+    /// Returns whether the capture rate changed.
+    fn set_refresh_hz(&mut self, refresh_hz: Option<u32>) -> bool {
+        let before = self.capture_framerate();
+        self.refresh_hz = refresh_hz;
+        before != self.capture_framerate()
+    }
 }
 
 impl Capturer {
@@ -177,22 +204,50 @@ impl Capturer {
             active_stream: None,
             event_loop_proxy,
             app_veil_filter: AppVeilCaptureFilter::default(),
-            encoder_framerate: crate::bandwidth_mode::MAX_FRAMERATE,
-            display_refresh_hz: None,
+            framerate_inputs: FramerateInputs {
+                encoder_fps: crate::bandwidth_mode::MAX_FRAMERATE,
+                refresh_hz: None,
+            },
         }
-    }
-
-    fn capture_framerate(&self) -> u32 {
-        crate::bandwidth_mode::capture_framerate(self.encoder_framerate, self.display_refresh_hz)
     }
 
     /// Follows the encoder's frame rate (it changes with low-bandwidth mode), so the capture
     /// doesn't produce frames the encoder drops. See `bandwidth_mode::capture_framerate`.
     pub fn set_encoder_framerate(&mut self, fps: f64) {
-        self.encoder_framerate = fps;
+        if self.framerate_inputs.set_encoder_fps(fps) {
+            self.capture_framerate_changed();
+        }
+    }
+
+    /// Sets the refresh rate the capture rate is chosen for: a shared window's monitor is only
+    /// known once its capture started, and the window can move to another one.
+    pub fn set_display_refresh_hz(&mut self, refresh_hz: Option<u32>) {
+        if self.framerate_inputs.set_refresh_hz(refresh_hz) {
+            self.capture_framerate_changed();
+        }
+    }
+
+    /// Leaves switching the running stream to the new capture rate to the poll thread. The
+    /// setters above run on the main thread, the encoder's at any participant's request
+    /// (low-bandwidth mode), and changing a running stream's rate blocks until ScreenCaptureKit
+    /// answers. A setter that leaves the rate unchanged sends nothing: the stream already
+    /// captures at it, or an earlier change is still pending and the poll thread reads the
+    /// latest rate when it applies it.
+    fn capture_framerate_changed(&self) {
         #[cfg(target_os = "macos")]
+        if self.active_stream.is_some() {
+            if let Err(error) = self.tx.send(StreamRuntimeMessage::CaptureFramerateChanged) {
+                log::error!("capture_framerate_changed: error notifying the poll thread: {error}");
+            }
+        }
+    }
+
+    /// Switches the running stream to the current capture rate. Blocks on ScreenCaptureKit when
+    /// the rate changes, so only the poll thread calls it.
+    #[cfg(target_os = "macos")]
+    fn apply_capture_framerate(&self) {
         if let Some(stream) = self.active_stream.as_ref() {
-            stream.set_framerate(self.capture_framerate());
+            stream.set_framerate(self.framerate_inputs.capture_framerate());
         }
     }
 
@@ -201,7 +256,8 @@ impl Capturer {
     /// # Parameters
     /// - `content`: The content source to capture (display or window with display_id)
     /// - `stream_resolution`: The resolution of the stream buffer
-    /// - `display_refresh_hz`: Refresh rate of the captured display, `None` for a window
+    /// - `display_refresh_hz`: Refresh rate of the captured display, `None` for a window (see
+    ///   `set_display_refresh_hz`)
     ///
     /// # Returns
     /// - `Ok(())`: Successfully started the capture stream
@@ -228,7 +284,7 @@ impl Capturer {
         log::info!(
             "start_capture: content {content:?} resolution: {stream_resolution:?} scale: {scale} refresh: {display_refresh_hz:?} Hz"
         );
-        self.display_refresh_hz = display_refresh_hz;
+        self.framerate_inputs.refresh_hz = display_refresh_hz;
         if self.active_stream.is_some() {
             log::warn!("start_capture: active stream, stopping it");
             self.active_stream.as_mut().unwrap().stop_capture();
@@ -244,7 +300,7 @@ impl Capturer {
             self.app_veil_filter.clone(),
         )?;
         #[cfg(target_os = "macos")]
-        stream.set_framerate(self.capture_framerate());
+        stream.set_framerate(self.framerate_inputs.capture_framerate());
 
         stream.start_capture()?;
         self.active_stream = Some(stream);
@@ -486,6 +542,49 @@ impl Capturer {
     }
 }
 
+/// The latest of a burst of changes, due once no newer one has arrived for
+/// `STREAM_RECONFIGURE_DEBOUNCE_MS`. The poll thread applies window resizes and capture rate
+/// changes this way, so that a burst of them costs one blocking ScreenCaptureKit call.
+#[cfg(target_os = "macos")]
+#[derive(Debug)]
+struct Debounced<T> {
+    pending: Option<(T, std::time::Instant)>,
+}
+
+#[cfg(target_os = "macos")]
+impl<T> Default for Debounced<T> {
+    fn default() -> Self {
+        Self { pending: None }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl<T> Debounced<T> {
+    /// Replaces any pending change and restarts the wait.
+    fn request(&mut self, change: T, now: std::time::Instant) {
+        self.pending = Some((
+            change,
+            now + std::time::Duration::from_millis(STREAM_RECONFIGURE_DEBOUNCE_MS),
+        ));
+    }
+
+    /// How long until the pending change is due, `None` when there is none.
+    fn timeout(&self, now: std::time::Instant) -> Option<std::time::Duration> {
+        self.pending
+            .as_ref()
+            .map(|(_, due)| due.saturating_duration_since(now))
+    }
+
+    /// Takes the pending change once it is due. A change requested after this, while the
+    /// taken one is being applied, stays pending for a later call.
+    fn take_due(&mut self, now: std::time::Instant) -> Option<T> {
+        match self.pending {
+            Some((_, due)) if due <= now => self.pending.take().map(|(change, _)| change),
+            _ => None,
+        }
+    }
+}
+
 /*
  * This function is spawned in a separate thread and
  * is used for checking whether the stream failed, if it
@@ -496,7 +595,11 @@ impl Capturer {
 pub fn poll_stream(capturer: Arc<Mutex<Capturer>> /* mut socket: CursorSocket */) {
     let rx = { capturer.lock().unwrap().rx.clone() };
     #[cfg(target_os = "macos")]
-    let mut pending_resize = None;
+    let mut pending_resize = Debounced::<(u32, u32)>::default();
+    // Carries no rate: it is read from the capturer when applied, so it fits the share running
+    // by then.
+    #[cfg(target_os = "macos")]
+    let mut pending_framerate = Debounced::<()>::default();
     loop {
         log::debug!("poll_stream: waiting for message");
         let rx_lock = rx.lock();
@@ -506,11 +609,14 @@ pub fn poll_stream(capturer: Arc<Mutex<Capturer>> /* mut socket: CursorSocket */
         }
         let rx_lock = rx_lock.unwrap();
         #[cfg(target_os = "macos")]
-        let timeout = pending_resize
-            .map(|(_, deadline): ((u32, u32), std::time::Instant)| {
-                deadline.saturating_duration_since(std::time::Instant::now())
-            })
-            .unwrap_or(std::time::Duration::from_secs(POLL_STREAM_TIMEOUT_SECS));
+        let timeout = {
+            let now = std::time::Instant::now();
+            [pending_resize.timeout(now), pending_framerate.timeout(now)]
+                .into_iter()
+                .flatten()
+                .min()
+                .unwrap_or(std::time::Duration::from_secs(POLL_STREAM_TIMEOUT_SECS))
+        };
         #[cfg(not(target_os = "macos"))]
         let timeout = std::time::Duration::from_secs(POLL_STREAM_TIMEOUT_SECS);
         match rx_lock.recv_timeout(timeout) {
@@ -528,32 +634,120 @@ pub fn poll_stream(capturer: Arc<Mutex<Capturer>> /* mut socket: CursorSocket */
             }
             #[cfg(target_os = "macos")]
             Ok(StreamRuntimeMessage::FrameChanged { resize }) => {
-                if let Some((width, height)) = resize {
-                    pending_resize = Some((
-                        (width, height),
-                        std::time::Instant::now()
-                            + std::time::Duration::from_millis(STREAM_RECONFIGURE_DEBOUNCE_MS),
-                    ));
+                if let Some(size) = resize {
+                    pending_resize.request(size, std::time::Instant::now());
                 }
                 let capturer = capturer.lock().unwrap();
                 let _ = capturer
                     .event_loop_proxy
                     .send_event(UserEvent::CaptureFrameChanged);
             }
+            #[cfg(target_os = "macos")]
+            Ok(StreamRuntimeMessage::CaptureFramerateChanged) => {
+                pending_framerate.request((), std::time::Instant::now());
+            }
             Ok(StreamRuntimeMessage::Stop) => {
                 log::info!("poll_stream: stop message");
                 break;
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {
-                #[cfg(target_os = "macos")]
-                if let Some(((width, height), _)) = pending_resize.take() {
-                    if let Some(stream) = capturer.lock().unwrap().active_stream.as_ref() {
-                        stream.reconfigure(width, height);
-                    }
-                }
-            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
             _ => {}
         };
+        #[cfg(target_os = "macos")]
+        {
+            let now = std::time::Instant::now();
+            if let Some((width, height)) = pending_resize.take_due(now) {
+                if let Some(stream) = capturer.lock().unwrap().active_stream.as_ref() {
+                    stream.reconfigure(width, height);
+                }
+            }
+            if pending_framerate.take_due(now).is_some() {
+                capturer.lock().unwrap().apply_capture_framerate();
+            }
+        }
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+    use crate::bandwidth_mode::{LOW_BANDWIDTH_FRAMERATE, MAX_FRAMERATE};
+    use std::time::{Duration, Instant};
+
+    const DEBOUNCE: Duration = Duration::from_millis(STREAM_RECONFIGURE_DEBOUNCE_MS);
+
+    #[test]
+    fn only_a_changed_capture_rate_is_sent_to_the_poll_thread() {
+        let mut inputs = FramerateInputs {
+            encoder_fps: MAX_FRAMERATE,
+            refresh_hz: Some(60),
+        };
+        assert_eq!(inputs.capture_framerate(), 60);
+        // Low-bandwidth mode on a 60 Hz display: 60 -> 15 fps and back.
+        assert!(inputs.set_encoder_fps(LOW_BANDWIDTH_FRAMERATE));
+        assert!(!inputs.set_encoder_fps(LOW_BANDWIDTH_FRAMERATE));
+        assert!(inputs.set_encoder_fps(MAX_FRAMERATE));
+        // On a 144 Hz display both modes capture 60, so flipping them never reconfigures.
+        assert!(!inputs.set_refresh_hz(Some(144)));
+        assert!(!inputs.set_encoder_fps(LOW_BANDWIDTH_FRAMERATE));
+        assert!(!inputs.set_encoder_fps(MAX_FRAMERATE));
+        // A shared window moving to a 120 Hz monitor, then to one of unknown refresh rate.
+        assert!(inputs.set_refresh_hz(Some(120)));
+        assert_eq!(inputs.capture_framerate(), 40);
+        assert!(inputs.set_refresh_hz(None));
+        assert_eq!(inputs.capture_framerate(), 60);
+    }
+
+    #[test]
+    fn a_change_is_due_after_the_debounce() {
+        let mut pending = Debounced::default();
+        let start = Instant::now();
+        assert_eq!(pending.timeout(start), None);
+        assert_eq!(pending.take_due(start), None);
+        pending.request(15, start);
+        assert_eq!(pending.timeout(start), Some(DEBOUNCE));
+        assert_eq!(pending.take_due(start + DEBOUNCE / 2), None);
+        assert_eq!(pending.timeout(start + DEBOUNCE / 2), Some(DEBOUNCE / 2));
+        assert_eq!(pending.take_due(start + DEBOUNCE), Some(15));
+        // Applied once.
+        assert_eq!(pending.timeout(start + DEBOUNCE), None);
+        assert_eq!(pending.take_due(start + DEBOUNCE * 2), None);
+    }
+
+    #[test]
+    fn a_burst_waits_for_its_last_change_and_applies_only_that() {
+        let mut pending = Debounced::default();
+        let start = Instant::now();
+        // A peer flipping low-bandwidth mode faster than the debounce.
+        let step = DEBOUNCE / 2;
+        for (i, fps) in [15, 60, 15, 60].into_iter().enumerate() {
+            let now = start + step * i as u32;
+            assert_eq!(pending.take_due(now), None);
+            pending.request(fps, now);
+        }
+        let last = start + step * 3;
+        assert_eq!(
+            pending.take_due(last + DEBOUNCE - Duration::from_millis(1)),
+            None
+        );
+        assert_eq!(pending.take_due(last + DEBOUNCE), Some(60));
+    }
+
+    #[test]
+    fn a_change_requested_while_one_is_applied_stays_pending() {
+        let mut pending = Debounced::default();
+        let start = Instant::now();
+        pending.request((1280, 720), start);
+        let applied_at = start + DEBOUNCE;
+        assert_eq!(pending.take_due(applied_at), Some((1280, 720)));
+        // Requested while the poll thread waits on ScreenCaptureKit for the first one.
+        let requested_at = applied_at + Duration::from_millis(1);
+        pending.request((1920, 1080), requested_at);
+        assert_eq!(pending.timeout(requested_at), Some(DEBOUNCE));
+        assert_eq!(
+            pending.take_due(requested_at + DEBOUNCE),
+            Some((1920, 1080))
+        );
     }
 }

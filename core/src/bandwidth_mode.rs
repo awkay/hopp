@@ -134,19 +134,18 @@ pub(crate) fn screen_encoding(
 const CAPTURE_FALLBACK_FRAMERATE: u32 = 60;
 
 /// Capture rate for a share encoded at `encoder_fps` from a display refreshing at `refresh_hz`
-/// (`None`: unknown, e.g. a window share, assumed 60 Hz).
+/// (for a window share, the monitor the window is on; `None` or 0: unknown).
 ///
 /// Capturing faster than the encoder takes only makes libwebrtc drop the extra frames after
 /// they were copied. But ScreenCaptureKit delivers frames on display refreshes only, so a rate
 /// that doesn't divide the refresh rate comes out lower and uneven: 40 fps on a 60 Hz display
-/// would capture 30. Those cases keep the 60 fps capture and the encoder's dropping.
+/// would capture 30, 15 fps on a 144 Hz one about 14.4. Those cases, and an unknown refresh
+/// rate, keep the 60 fps capture and the encoder's dropping.
 pub(crate) fn capture_framerate(encoder_fps: f64, refresh_hz: Option<u32>) -> u32 {
     let fps = encoder_fps.round() as u32;
-    let refresh_hz = refresh_hz.unwrap_or(60);
-    if fps > 0 && refresh_hz.is_multiple_of(fps) {
-        fps
-    } else {
-        CAPTURE_FALLBACK_FRAMERATE
+    match refresh_hz {
+        Some(refresh_hz) if refresh_hz > 0 && fps > 0 && refresh_hz.is_multiple_of(fps) => fps,
+        _ => CAPTURE_FALLBACK_FRAMERATE,
     }
 }
 
@@ -159,13 +158,27 @@ mod tests {
         // Low-bandwidth mode: 15 divides 60 and 120.
         assert_eq!(capture_framerate(LOW_BANDWIDTH_FRAMERATE, Some(60)), 15);
         assert_eq!(capture_framerate(LOW_BANDWIDTH_FRAMERATE, Some(120)), 15);
-        assert_eq!(capture_framerate(LOW_BANDWIDTH_FRAMERATE, None), 15);
         // ProMotion displays refresh at 120 Hz.
         assert_eq!(capture_framerate(MAX_FRAMERATE, Some(120)), 40);
         // 40 fps can't be captured evenly at 60 Hz: keep capturing 60.
         assert_eq!(capture_framerate(MAX_FRAMERATE, Some(60)), 60);
-        assert_eq!(capture_framerate(MAX_FRAMERATE, None), 60);
         assert_eq!(capture_framerate(MAX_FRAMERATE, Some(144)), 60);
+    }
+
+    #[test]
+    fn capture_keeps_60_fps_on_144_hz_displays_and_windows() {
+        // 15 doesn't divide 144: a 15 fps cap would capture every 10th refresh, about 14.4 fps.
+        // A window share on that monitor passes its 144 Hz like a display share does.
+        assert_eq!(capture_framerate(LOW_BANDWIDTH_FRAMERATE, Some(144)), 60);
+        assert_eq!(capture_framerate(MAX_FRAMERATE, Some(144)), 60);
+    }
+
+    #[test]
+    fn capture_keeps_60_fps_when_the_refresh_rate_is_unknown() {
+        // A window on no known monitor, or one whose refresh rate couldn't be read.
+        assert_eq!(capture_framerate(LOW_BANDWIDTH_FRAMERATE, None), 60);
+        assert_eq!(capture_framerate(MAX_FRAMERATE, None), 60);
+        assert_eq!(capture_framerate(LOW_BANDWIDTH_FRAMERATE, Some(0)), 60);
     }
 
     const ALICE: &str = "room:1:alice:audio";

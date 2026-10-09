@@ -30,7 +30,11 @@ fn should_exclude_application(bundle_id: &str, excluded_bundle_ids: &[String]) -
 #[allow(dead_code)]
 pub enum StreamRuntimeMessage {
     Failed,
-    FrameChanged { resize: Option<(u32, u32)> },
+    FrameChanged {
+        resize: Option<(u32, u32)>,
+    },
+    /// The capture frame rate the encoder and the refresh rate allow changed.
+    CaptureFramerateChanged,
     Stop,
     StopCapture,
     UserStoppedCapture,
@@ -186,7 +190,8 @@ impl Stream {
             .with_fps(self.framerate.load(Ordering::Relaxed))
     }
 
-    /// Sets the capture frame rate, applying it right away to a running stream.
+    /// Sets the capture frame rate, applying it right away to a running stream. That waits for
+    /// ScreenCaptureKit to answer, so a running stream's rate is changed on the poll thread only.
     pub fn set_framerate(&self, fps: u32) {
         if self.framerate.swap(fps, Ordering::Relaxed) == fps {
             return;

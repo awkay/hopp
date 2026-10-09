@@ -307,6 +307,13 @@ fn monitor_containing_frame(monitors: &[MonitorHandle], frame: Frame) -> Option<
         .cloned()
 }
 
+/// The monitor's refresh rate rounded to whole Hz, `None` when the system doesn't report one.
+fn monitor_refresh_hz(monitor: &MonitorHandle) -> Option<u32> {
+    monitor
+        .refresh_rate_millihertz()
+        .map(|millihertz| (millihertz + 500) / 1000)
+}
+
 #[derive(Error, Debug)]
 pub enum ServerError {
     #[error("Livekit room service not found")]
@@ -788,10 +795,7 @@ impl<'a> Application<'a> {
         let scale = selected_monitor
             .as_ref()
             .map_or(1.0, |monitor| monitor.scale_factor());
-        let refresh_hz = selected_monitor
-            .as_ref()
-            .and_then(MonitorHandle::refresh_rate_millihertz)
-            .map(|millihertz| (millihertz + 500) / 1000);
+        let refresh_hz = selected_monitor.as_ref().and_then(monitor_refresh_hz);
 
         #[cfg(target_os = "macos")]
         if is_display_share {
@@ -851,10 +855,15 @@ impl<'a> Application<'a> {
         let capture_frame_snapshot = capture_frame
             .as_ref()
             .and_then(|frame| frame.lock().ok().map(|frame| *frame));
+        let window_monitor =
+            capture_frame_snapshot.and_then(|frame| monitor_containing_frame(&monitors, frame));
+        if !is_display_share {
+            // The window's frame is known now that its capture started.
+            screen_capturer
+                .set_display_refresh_hz(window_monitor.as_ref().and_then(monitor_refresh_hz));
+        }
         let overlay_monitor = selected_monitor
-            .or_else(|| {
-                capture_frame_snapshot.and_then(|frame| monitor_containing_frame(&monitors, frame))
-            })
+            .or(window_monitor)
             .or_else(|| monitors.first().cloned());
         drop(screen_capturer);
 
@@ -1828,6 +1837,10 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                     log::warn!("CaptureFrameChanged: no monitor contains the capture frame");
                     return;
                 };
+                // The shared window may have moved to a monitor with another refresh rate.
+                if let Ok(mut capturer) = self.screen_capturer.lock() {
+                    capturer.set_display_refresh_hz(monitor_refresh_hz(&target_monitor));
+                }
                 let target_monitor_id = ScreenshareFunctions::get_monitor_id(&target_monitor);
                 let registered_monitor_id = self
                     .window_manager
