@@ -98,6 +98,7 @@ tract-onnx = "=0.21.4"
 tract-core = "=0.21.4"
 realfft = "3.4"
 rustfft = "6.2"
+rtrb = "0.3.4"
 
 [build-dependencies]
 # Screen effects: build.rs parses resources/effects/effects.toml and decodes every
@@ -108,3 +109,5 @@ image = { version = "0.25.5", default-features = false, features = ["webp", "png
 
 [dev-dependencies]
 toml = "1"
+# Counts heap use in tests (`audio::mixer`); it replaces the test binary's global allocator.
+allocation-counter = "0.8.1"

@@ -9,7 +9,7 @@ use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 
 use crate::audio::denoiser::Denoiser;
-use crate::audio::mixer::{AudioSource, MixerHandle, SharedProcessor, MIXER_SAMPLE_RATE};
+use crate::audio::mixer::{MixerHandle, SharedProcessor, MIXER_SAMPLE_RATE};
 
 pub const LIVEKIT_SAMPLE_RATE: u32 = 16000;
 pub const AUDIO_NUM_CHANNELS: u32 = 1;
@@ -168,9 +168,8 @@ async fn process_audio_samples(
 }
 
 /// Handle for a remote audio track subscription.
-/// On drop, removes the source from the mixer and aborts the receive task.
+/// On drop, aborts the receive task; the mixer keeps the source, which then plays silence.
 pub struct AudioTrackHandle {
-    _source: AudioSource,
     task: tokio::task::JoinHandle<()>,
 }
 
@@ -189,8 +188,7 @@ pub fn play_remote_audio_track(
     participant_id: &str,
     audio_handle: &TokioHandle,
 ) -> AudioTrackHandle {
-    let source = mixer.add_source(LIVEKIT_SAMPLE_RATE, AUDIO_NUM_CHANNELS as u16);
-    let source_clone = source.clone();
+    let mut source = mixer.add_source(LIVEKIT_SAMPLE_RATE, AUDIO_NUM_CHANNELS as u16);
 
     let mut stream = livekit::webrtc::audio_stream::native::NativeAudioStream::new(
         track.rtc_track(),
@@ -208,7 +206,7 @@ pub fn play_remote_audio_track(
         let mut last_log = start;
 
         while let Some(frame) = stream.next().await {
-            source_clone.push_samples(&frame.data);
+            source.push_samples(&frame.data);
             frame_count += 1;
             total_samples += frame.data.len() as u64;
 
@@ -233,10 +231,7 @@ pub fn play_remote_audio_track(
         log::info!("Audio receive loop ended for {}", stream_key);
     });
 
-    AudioTrackHandle {
-        _source: source,
-        task,
-    }
+    AudioTrackHandle { task }
 }
 
 async fn capture_frame(
