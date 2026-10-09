@@ -123,6 +123,9 @@ enum Commands {
     Profile {
         #[arg(value_enum)]
         role: profile::Role,
+        /// Codec of the fake share in the viewer run
+        #[arg(long, value_enum, default_value = "h264")]
+        codec: profile::Codec,
         /// Created once the load is running
         #[arg(long)]
         ready_file: PathBuf,
@@ -503,10 +506,11 @@ async fn main() -> io::Result<()> {
         }
         Commands::Profile {
             role,
+            codec,
             ready_file,
             stop_file,
         } => {
-            profile::run(role, &ready_file, &stop_file).await?;
+            profile::run(role, codec, &ready_file, &stop_file).await?;
         }
         Commands::Demangle => {
             use std::io::{BufRead, Write};

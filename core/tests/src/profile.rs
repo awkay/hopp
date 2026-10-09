@@ -21,6 +21,7 @@ use livekit::webrtc::audio_frame::AudioFrame;
 use livekit::webrtc::audio_source::native::NativeAudioSource;
 use livekit::webrtc::audio_source::{AudioSourceOptions, RtcAudioSource};
 use livekit::webrtc::prelude::VideoResolution as WebrtcVideoResolution;
+use livekit::webrtc::stats::RtcStats;
 use livekit::webrtc::video_frame::{I420Buffer, VideoFrame, VideoRotation};
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::RtcVideoSource;
@@ -67,16 +68,38 @@ pub enum Role {
     Sharer,
 }
 
+/// The codec of the fake share in the viewer run. The sharer run uses core's own codec.
+#[derive(Clone, Copy, ValueEnum, Debug)]
+pub enum Codec {
+    H264,
+    /// HEVC
+    H265,
+}
+
+impl From<Codec> for VideoCodec {
+    fn from(codec: Codec) -> Self {
+        match codec {
+            Codec::H264 => VideoCodec::H264,
+            Codec::H265 => VideoCodec::H265,
+        }
+    }
+}
+
 /// Runs the `role` load against the core at `--socket-path`.
-pub async fn run(role: Role, ready_file: &Path, stop_file: &Path) -> io::Result<()> {
+pub async fn run(role: Role, codec: Codec, ready_file: &Path, stop_file: &Path) -> io::Result<()> {
     let conn = CoreConn::connect_with_livekit_url()?;
     match role {
-        Role::Viewer => viewer(&conn, ready_file, stop_file).await,
+        Role::Viewer => viewer(&conn, codec, ready_file, stop_file).await,
         Role::Sharer => sharer(&conn, ready_file, stop_file).await,
     }
 }
 
-async fn viewer(conn: &CoreConn, ready_file: &Path, stop_file: &Path) -> io::Result<()> {
+async fn viewer(
+    conn: &CoreConn,
+    codec: Codec,
+    ready_file: &Path,
+    stop_file: &Path,
+) -> io::Result<()> {
     let call_id = conn.join_call(CORE_USER)?;
     let mut tasks = Vec::new();
 
@@ -86,7 +109,8 @@ async fn viewer(conn: &CoreConn, ready_file: &Path, stop_file: &Path) -> io::Res
     tasks.push(publish_audio(&sharer).await?);
     tasks.push(publish_camera(&sharer, 3).await?);
     let sharer_video = Participant::join_track(SHARER, "video").await?;
-    tasks.push(publish_screen(&sharer_video).await?);
+    let (screen_task, screen_track) = publish_screen(&sharer_video, codec.into()).await?;
+    tasks.push(screen_task);
 
     step("second fake participant joins with camera and audio");
     let camera_user = Participant::join(CAMERA_USER).await?;
@@ -109,6 +133,7 @@ async fn viewer(conn: &CoreConn, ready_file: &Path, stop_file: &Path) -> io::Res
     )?;
 
     run_until_stopped(ready_file, stop_file).await?;
+    step(&encoder_report(&screen_track).await);
 
     for task in tasks {
         task.abort();
@@ -184,7 +209,10 @@ async fn run_until_stopped(ready_file: &Path, stop_file: &Path) -> io::Result<()
     Ok(())
 }
 
-async fn publish_screen(participant: &Participant) -> io::Result<JoinHandle<()>> {
+async fn publish_screen(
+    participant: &Participant,
+    codec: VideoCodec,
+) -> io::Result<(JoinHandle<()>, LocalVideoTrack)> {
     let picture = ScrollingPicture::new(SCREEN.0, SCREEN.1);
     let source = NativeVideoSource::new(
         WebrtcVideoResolution {
@@ -202,7 +230,7 @@ async fn publish_screen(participant: &Participant) -> io::Result<JoinHandle<()>>
             LocalTrack::Video(track.clone()),
             TrackPublishOptions {
                 source: TrackSource::Screenshare,
-                video_codec: VideoCodec::H264,
+                video_codec: codec,
                 video_encoding: Some(VideoEncoding {
                     max_bitrate: SCREEN_BITRATE,
                     max_framerate: SCREEN_FPS,
@@ -226,7 +254,38 @@ async fn publish_screen(participant: &Participant) -> io::Result<JoinHandle<()>>
             io::Error::other(format!("setting the fake share's encoding failed: {e:?}"))
         })?;
     // Scrolling a document by a few lines per frame.
-    Ok(tokio::spawn(push_video(source, picture, SCREEN_FPS, 6)))
+    Ok((
+        tokio::spawn(push_video(source, picture, SCREEN_FPS, 6)),
+        track,
+    ))
+}
+
+/// The fake share's codec, encoder and what it sent, from WebRTC's outbound stats.
+async fn encoder_report(track: &LocalVideoTrack) -> String {
+    let stats = match track.get_stats().await {
+        Ok(stats) => stats,
+        Err(e) => return format!("fake share encoder: no stats ({e:?})"),
+    };
+    let codec_of = |id: &str| {
+        stats.iter().find_map(|stat| match stat {
+            RtcStats::Codec(codec) if codec.rtc.id == id => Some(codec.codec.mime_type.clone()),
+            _ => None,
+        })
+    };
+    stats
+        .iter()
+        .find_map(|stat| match stat {
+            RtcStats::OutboundRtp(outbound) if outbound.stream.kind == "video" => Some(format!(
+                "fake share encoder: codec={} implementation={} frames_encoded={} bytes_sent={} quality_limitation={:?}",
+                codec_of(&outbound.stream.codec_id).unwrap_or_default(),
+                outbound.outbound.encoder_implementation,
+                outbound.outbound.frames_encoded,
+                outbound.sent.bytes_sent,
+                outbound.outbound.quality_limitation_reason,
+            )),
+            _ => None,
+        })
+        .unwrap_or_else(|| "fake share encoder: no outbound video stats".to_string())
 }
 
 async fn publish_camera(participant: &Participant, speed: u32) -> io::Result<JoinHandle<()>> {
