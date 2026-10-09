@@ -78,6 +78,15 @@ is in progress must remain pending until handled: never lose the final dirty sta
 Protocol-required transport keepalives and codec recovery are separate from content updates and do
 not justify ongoing black-frame encoding or timer-driven idle presentation.
 
+§NO-UNSAFE: Don't write `unsafe` Rust: no `unsafe` blocks, functions or trait impls, tests
+included. Take the safe design even when it costs a little (an allocation, a copy, an uncontended
+lock), and a crate's safe API over raw FFI. If a task seems to need `unsafe` (an OS API with no
+safe binding, say), stop and ask the user. When `unsafe` would only make something better, take the
+safe route and record the opportunity in [docs/unsafe.md](docs/unsafe.md): where, what it would
+buy, what the safe version costs, and how to get the benefit later, preferably through a safe API
+in a dependency or our LiveKit fork. The `unsafe` already in core and Tauri, nearly all OS FFI,
+predates this rule and is no precedent for new code.
+
 ## Fork policy
 
 This is the `awkay/hopp` fork, maintained for our own users (Dataico build, see `DATAICO.md`). It is
