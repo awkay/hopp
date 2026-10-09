@@ -16,6 +16,7 @@ pub mod livekit {
 mod bandwidth_mode;
 pub(crate) mod effects;
 pub mod room_service;
+mod screen_share_codec;
 mod snapshot_sender;
 
 #[cfg(target_os = "macos")]
