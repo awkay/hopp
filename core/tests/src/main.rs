@@ -123,7 +123,8 @@ enum Commands {
     Profile {
         #[arg(value_enum)]
         role: profile::Role,
-        /// Codec of the fake share in the viewer run
+        /// Codec of the fake share in the viewer run (in the sharer run, profile.sh passes it
+        /// to core)
         #[arg(long, value_enum, default_value = "h264")]
         codec: profile::Codec,
         /// Created once the load is running

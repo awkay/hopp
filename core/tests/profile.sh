@@ -5,15 +5,17 @@
 #   core/tests/profile.sh sharer                  # core shares this screen; a fake viewer draws
 #   core/tests/profile.sh viewer --seconds 30 --net bad --label before-fix
 #   core/tests/profile.sh viewer --codec h265         # the fake share sends HEVC (default h264)
+#   core/tests/profile.sh sharer --codec h265         # core shares in HEVC (HOPP_SCREEN_SHARE_CODEC)
 #   core/tests/profile.sh viewer --energy-seconds 0   # skip the energy phase
 #
 # Builds the release core (as shipped, symbols kept) and the harness, starts
 # `livekit-server --dev` when nothing answers at LIVEKIT_URL, runs the load (src/profile.rs),
 # measures core's CPU, wake-ups and energy with no profiler attached (energy.py), then records
 # it with Instruments' Time Profiler and writes out/profile/<label>-<role>.{trace,folded,svg,txt}.
-# The .txt ends with the energy line and core's FramePacing lines (what the screen-share window
-# presented) and core's VideoHealthSummary (codecs and encoder/decoder implementations). Compare
-# two labels' .txt for before/after.
+# The .txt ends with the energy line, core's FramePacing lines (what the screen-share window
+# presented), the fake share's encoder (viewer run) or what the fake viewer received and its
+# decoder (sharer run), and core's VideoHealthSummary (codecs and encoder/decoder
+# implementations). Compare two labels' .txt for before/after.
 #
 # The sharer run measures whatever changes on screen: ScreenCaptureKit sends no frames for a
 # static screen, so play a video or scroll something during it. Its fake viewer only moves a
@@ -31,7 +33,7 @@ export LIVEKIT_API_KEY="${LIVEKIT_API_KEY:-devkey}"
 export LIVEKIT_API_SECRET="${LIVEKIT_API_SECRET:-secret}"
 export RUST_LOG="${RUST_LOG:-hopp_core=info}"
 
-usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; }
 
 role=""
 seconds=60
@@ -132,6 +134,10 @@ fi
 # ── Load ─────────────────────────────────────────────────────────────────────
 echo "Starting core and the $role load (logs: $OUT_DIR/$name.log, .core.log)"
 rm -f "$socket" "$ready_file" "$stop_file"
+# The sharer run's share is core's own: have core publish it with the requested codec.
+if [ "$role" = sharer ]; then
+  export HOPP_SCREEN_SHARE_CODEC="$codec"
+fi
 "$CORE_BIN" --socket-path "$socket" > "$OUT_DIR/$name.core.log" 2>&1 &
 core_pid=$!
 for _ in $(seq 100); do [ -S "$socket" ] && break; sleep 0.1; done
@@ -199,6 +205,7 @@ rm -f "$OUT_DIR/$name.xml"
   grep -o 'FramePacing .*' "$OUT_DIR/$name.core.log" || echo "  none (no remote share shown)"
   echo
   grep -o 'fake share encoder: .*' "$OUT_DIR/$name.log"
+  grep -oE 'fake viewer (received|decoder:) .*' "$OUT_DIR/$name.log"
   grep -o 'VideoHealthSummary .*' "$OUT_DIR/$name.core.log" || echo "VideoHealthSummary: none logged"
 } | tee -a "$OUT_DIR/$name.txt"
 echo

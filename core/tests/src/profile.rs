@@ -68,7 +68,8 @@ pub enum Role {
     Sharer,
 }
 
-/// The codec of the fake share in the viewer run. The sharer run uses core's own codec.
+/// The codec of the fake share in the viewer run. In the sharer run profile.sh passes it to core
+/// (`HOPP_SCREEN_SHARE_CODEC`), and the fake viewer reports the codec it received.
 #[derive(Clone, Copy, ValueEnum, Debug)]
 pub enum Codec {
     H264,
@@ -179,12 +180,13 @@ async fn sharer(conn: &CoreConn, ready_file: &Path, stop_file: &Path) -> io::Res
         share_started: Some(share_started),
         ..FrameLog::default()
     }));
-    tasks.push(tokio::spawn(log_frames(track, frames.clone())));
+    tasks.push(tokio::spawn(log_frames(track.clone(), frames.clone())));
     tasks.push(tokio::spawn(drive_overlay(viewer.room.local_participant())));
 
     let started = Instant::now();
     run_until_stopped(ready_file, stop_file).await?;
     step(&frames.lock().unwrap().report(started.elapsed()));
+    step(&decoder_report(&track).await);
 
     for task in tasks {
         task.abort();
@@ -266,18 +268,12 @@ async fn encoder_report(track: &LocalVideoTrack) -> String {
         Ok(stats) => stats,
         Err(e) => return format!("fake share encoder: no stats ({e:?})"),
     };
-    let codec_of = |id: &str| {
-        stats.iter().find_map(|stat| match stat {
-            RtcStats::Codec(codec) if codec.rtc.id == id => Some(codec.codec.mime_type.clone()),
-            _ => None,
-        })
-    };
     stats
         .iter()
         .find_map(|stat| match stat {
             RtcStats::OutboundRtp(outbound) if outbound.stream.kind == "video" => Some(format!(
                 "fake share encoder: codec={} implementation={} frames_encoded={} bytes_sent={} quality_limitation={:?}",
-                codec_of(&outbound.stream.codec_id).unwrap_or_default(),
+                codec_of(&stats, &outbound.stream.codec_id),
                 outbound.outbound.encoder_implementation,
                 outbound.outbound.frames_encoded,
                 outbound.sent.bytes_sent,
@@ -286,6 +282,40 @@ async fn encoder_report(track: &LocalVideoTrack) -> String {
             _ => None,
         })
         .unwrap_or_else(|| "fake share encoder: no outbound video stats".to_string())
+}
+
+/// The codec and decoder of the share the fake viewer received, from WebRTC's inbound stats.
+async fn decoder_report(track: &RemoteVideoTrack) -> String {
+    let stats = match track.get_stats().await {
+        Ok(stats) => stats,
+        Err(e) => return format!("fake viewer decoder: no stats ({e:?})"),
+    };
+    stats
+        .iter()
+        .find_map(|stat| match stat {
+            RtcStats::InboundRtp(inbound) if inbound.stream.kind == "video" => Some(format!(
+                "fake viewer decoder: codec={} implementation={} frames_decoded={} key_frames_decoded={} bytes_received={} pli_count={}",
+                codec_of(&stats, &inbound.stream.codec_id),
+                inbound.inbound.decoder_implementation,
+                inbound.inbound.frames_decoded,
+                inbound.inbound.key_frames_decoded,
+                inbound.inbound.bytes_received,
+                inbound.inbound.pli_count,
+            )),
+            _ => None,
+        })
+        .unwrap_or_else(|| "fake viewer decoder: no inbound video stats".to_string())
+}
+
+/// The MIME type of codec stat `id` (e.g. `video/H265`), or empty when it isn't there.
+fn codec_of(stats: &[RtcStats], id: &str) -> String {
+    stats
+        .iter()
+        .find_map(|stat| match stat {
+            RtcStats::Codec(codec) if codec.rtc.id == id => Some(codec.codec.mime_type.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 async fn publish_camera(participant: &Participant, speed: u32) -> io::Result<JoinHandle<()>> {
