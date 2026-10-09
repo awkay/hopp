@@ -10,7 +10,7 @@ use parking_lot::Mutex;
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Instant;
 
 pub type SharedProcessor = Arc<Mutex<AudioProcessor>>;
@@ -205,12 +205,13 @@ impl SourceQueue {
     }
 }
 
+/// A remote participant's source, at `MIXER_SAMPLE_RATE`, so the mix is at that rate too.
 struct MixerSource {
     ssrc: i32,
-    sample_rate: u32,
     num_channels: u32,
-    // Only `AudioMixer::mix` locks this, under the mixer lock, so it never waits.
-    queue: Mutex<SourceQueue>,
+    // Only `AudioMixer::mix` locks this, under the mixer lock, so it never waits. The
+    // participant's `MixerSourceGuard` holds the other reference.
+    queue: Arc<Mutex<SourceQueue>>,
 }
 
 impl audio_mixer::AudioMixerSource for MixerSource {
@@ -219,7 +220,7 @@ impl audio_mixer::AudioMixerSource for MixerSource {
     }
 
     fn preferred_sample_rate(&self) -> u32 {
-        self.sample_rate
+        MIXER_SAMPLE_RATE
     }
 
     fn get_audio_frame_with_info(&self, _target_sample_rate: u32) -> Option<AudioFrame<'_>> {
@@ -230,42 +231,72 @@ impl audio_mixer::AudioMixerSource for MixerSource {
         let data = self.queue.lock().next_frame(Instant::now())?;
         Some(AudioFrame {
             data: Cow::Owned(data),
-            sample_rate: self.sample_rate,
+            sample_rate: MIXER_SAMPLE_RATE,
             num_channels: self.num_channels,
-            samples_per_channel: self.sample_rate / 100,
+            samples_per_channel: MIXER_SAMPLE_RATE / 100,
         })
     }
 }
 
-fn add_mixer_source(
-    mixer: &Mutex<AudioMixer>,
+/// Keeps a remote participant's source in the mixer; dropping it removes the source, so the
+/// output callback stops mixing it.
+pub struct MixerSourceGuard {
+    mixer: Weak<Mutex<AudioMixer>>,
     ssrc: i32,
-    sample_rate: u32,
+    // Removing the source only drops the mixer's reference to the queue under the mixer lock.
+    // This one goes after the lock is released, so the queue and its ring (unless the receive
+    // task still holds the ring's other end) are freed outside it.
+    _queue: Arc<Mutex<SourceQueue>>,
+}
+
+impl Drop for MixerSourceGuard {
+    fn drop(&mut self) {
+        // `remove_source` and `mix` both take the mixer lock, and libwebrtc unlinks the source
+        // under its own lock before destroying it, so the output callback never sees a removed
+        // source; it waits at most for this brief removal, as for `add_source`. The mixer is
+        // already gone if the call ended first.
+        if let Some(mixer) = self.mixer.upgrade() {
+            mixer.lock().remove_source(self.ssrc);
+        }
+    }
+}
+
+fn add_mixer_source(
+    mixer: &Arc<Mutex<AudioMixer>>,
+    ssrc: i32,
     channels: u16,
-) -> AudioSource {
+) -> (AudioSource, MixerSourceGuard) {
     // Allocate before taking the lock the output callback waits on.
-    let (source, queue) = source_queue((sample_rate / 100) as usize * channels as usize);
+    let (source, queue) = source_queue((MIXER_SAMPLE_RATE / 100) as usize * channels as usize);
+    let queue = Arc::new(Mutex::new(queue));
     let mixer_source = MixerSource {
         ssrc,
-        sample_rate,
         num_channels: channels as u32,
-        queue: Mutex::new(queue),
+        queue: queue.clone(),
     };
     mixer.lock().add_source(mixer_source);
-    source
+    let guard = MixerSourceGuard {
+        mixer: Arc::downgrade(mixer),
+        ssrc,
+        _queue: queue,
+    };
+    (source, guard)
 }
 
 /// The last mixed frame in the device's format, until the device has taken all of it.
 struct PendingOutput {
     samples: Vec<f32>,
     read: usize,
+    /// 10 ms of the device's audio, the length of every refill.
+    frame_samples: usize,
 }
 
 impl PendingOutput {
-    fn with_capacity(capacity: usize) -> Self {
+    fn new(frame_samples: usize) -> Self {
         Self {
-            samples: Vec::with_capacity(capacity),
+            samples: Vec::with_capacity(frame_samples),
             read: 0,
+            frame_samples,
         }
     }
 
@@ -298,6 +329,11 @@ impl PendingOutput {
                 }));
             }
         }
+        debug_assert_eq!(
+            self.samples.len(),
+            self.frame_samples,
+            "a mixed frame must be 10 ms of device audio"
+        );
     }
 }
 
@@ -307,7 +343,7 @@ impl PendingOutput {
 /// steady state it must not wait on a lock another thread holds, and it keeps heap use to the
 /// one frame per participant the mixer needs (see `MixerSource`): it reuses its buffers, reads
 /// participants' audio from lock-free rings, writes the far end for echo cancellation to
-/// another, and only shares the mixer lock with `add_source`.
+/// another, and only shares the mixer lock with adding and removing sources.
 struct OutputRenderer {
     mixer: Arc<Mutex<AudioMixer>>,
     resampler: AudioResampler,
@@ -329,7 +365,7 @@ impl OutputRenderer {
             mixer,
             resampler: AudioResampler::default(),
             far_end,
-            pending: PendingOutput::with_capacity(frame_samples),
+            pending: PendingOutput::new(frame_samples),
             output_sample_rate,
             output_channels,
         }
@@ -349,11 +385,12 @@ impl OutputRenderer {
     fn mix_next_frame(&mut self) {
         let mut mixer = self.mixer.lock();
         let mixed = mixer.mix(MIXER_NUM_CHANNELS as usize);
-        // Before any source exists, libwebrtc mixes silence at 48 kHz, so take one 16 kHz
-        // frame's worth. A full queue drops it; the capture side then starts over.
-        let _ = self
-            .far_end
-            .push_entire_slice(&mixed[..MIXER_FRAME_SAMPLES]);
+        // Every source is at MIXER_SAMPLE_RATE, so the mix is one frame at that rate, except
+        // while there are no sources: then libwebrtc mixes silence at 48 kHz, and this takes
+        // one 16 kHz frame's worth. A full queue drops it; the capture side then starts over.
+        if let Some(frame) = mixed.get(..MIXER_FRAME_SAMPLES) {
+            let _ = self.far_end.push_entire_slice(frame);
+        }
         // WebRTC only upmixes mono to stereo. Keep that path for
         // mono/stereo devices and handle wider outputs ourselves.
         let resampler_channels = if self.output_channels > 2 {
@@ -432,11 +469,13 @@ impl MixerHandle {
         Ok((handle, processor))
     }
 
-    pub fn add_source(&self, sample_rate: u32, channels: u16) -> AudioSource {
+    /// Adds a remote participant's source, which takes 10 ms frames at `MIXER_SAMPLE_RATE`. It
+    /// stays in the mixer until the guard is dropped.
+    pub fn add_source(&self, channels: u16) -> (AudioSource, MixerSourceGuard) {
         let mut inner = self.inner.lock();
         let ssrc = inner.next_ssrc;
         inner.next_ssrc += 1;
-        add_mixer_source(&inner.mixer, ssrc, sample_rate, channels)
+        add_mixer_source(&inner.mixer, ssrc, channels)
     }
 
     pub fn reconnect(&self) -> Result<(), String> {
@@ -536,8 +575,8 @@ mod tests {
     #[test]
     fn mixes_every_source_across_short_callbacks() {
         let mixer = Arc::new(Mutex::new(AudioMixer::new()));
-        let mut first = add_mixer_source(&mixer, 1, MIXER_SAMPLE_RATE, 1);
-        let mut second = add_mixer_source(&mixer, 2, MIXER_SAMPLE_RATE, 1);
+        let (mut first, _first_guard) = add_mixer_source(&mixer, 1, 1);
+        let (mut second, _second_guard) = add_mixer_source(&mixer, 2, 1);
         for _ in 0..3 {
             first.push_samples(&frame(1000));
             second.push_samples(&frame(2000));
@@ -559,7 +598,7 @@ mod tests {
     #[test]
     fn wide_outputs_get_the_mix_in_the_first_two_channels() {
         let mixer = Arc::new(Mutex::new(AudioMixer::new()));
-        let mut source = add_mixer_source(&mixer, 1, MIXER_SAMPLE_RATE, 1);
+        let (mut source, _guard) = add_mixer_source(&mixer, 1, 1);
         source.push_samples(&frame(1000));
         let (far_end_tx, _far_end_rx) = far_end_queue();
         let mut renderer = OutputRenderer::new(mixer, far_end_tx, MIXER_SAMPLE_RATE, 4);
@@ -568,6 +607,64 @@ mod tests {
         renderer.render(&mut out);
         for sample in out.chunks(4) {
             assert_eq!(sample, [normalized(1000), normalized(1000), 0.0, 0.0]);
+        }
+    }
+
+    #[test]
+    fn dropping_the_guard_removes_the_source() {
+        let mixer = Arc::new(Mutex::new(AudioMixer::new()));
+        let (mut kept, kept_guard) = add_mixer_source(&mixer, 1, 1);
+        // Participants leaving and rejoining.
+        for ssrc in 2..100 {
+            let (mut source, guard) = add_mixer_source(&mixer, ssrc, 1);
+            let queue = Arc::downgrade(&guard._queue);
+            kept.push_samples(&frame(1000));
+            source.push_samples(&frame(2000));
+            drop(guard);
+            // The mixer let go of the source and its queue was freed, so only the kept source
+            // plays.
+            assert!(queue.upgrade().is_none());
+            let mut locked = mixer.lock();
+            assert_eq!(locked.mix(1), frame(1000));
+        }
+        // With no sources left, libwebrtc mixes at 48 kHz again.
+        drop(kept_guard);
+        assert_eq!(mixer.lock().mix(1).len(), 480);
+
+        // A guard that outlives the mixer has nothing to remove.
+        let (_source, guard) = add_mixer_source(&mixer, 100, 1);
+        drop(mixer);
+        drop(guard);
+    }
+
+    #[test]
+    fn every_mix_is_10ms_of_device_audio() {
+        for sample_rate in [16000, 44100, 48000] {
+            for channels in [1, 2, 4, 6] {
+                let mixer = Arc::new(Mutex::new(AudioMixer::new()));
+                let (far_end_tx, _far_end_rx) = far_end_queue();
+                let mut renderer =
+                    OutputRenderer::new(mixer.clone(), far_end_tx, sample_rate, channels);
+                let frame_samples = sample_rate as usize / 100 * channels as usize;
+                let check = |renderer: &OutputRenderer, when: &str| {
+                    assert_eq!(
+                        renderer.pending.samples.len(),
+                        frame_samples,
+                        "{sample_rate}Hz {channels}ch {when}"
+                    );
+                };
+
+                // libwebrtc mixes at 48 kHz without sources and at 16 kHz with one.
+                renderer.mix_next_frame();
+                check(&renderer, "before any source");
+                let (mut source, guard) = add_mixer_source(&mixer, 1, 1);
+                source.push_samples(&frame(1000));
+                renderer.mix_next_frame();
+                check(&renderer, "with a source");
+                drop(guard);
+                renderer.mix_next_frame();
+                check(&renderer, "after it left");
+            }
         }
     }
 
@@ -582,9 +679,8 @@ mod tests {
             // Before any source, libwebrtc mixes at a different rate.
             renderer.render(&mut out);
 
-            let mut sources =
-                [1, 2].map(|ssrc| add_mixer_source(&mixer, ssrc, MIXER_SAMPLE_RATE, 1));
-            for source in &mut sources {
+            let mut sources = [1, 2].map(|ssrc| add_mixer_source(&mixer, ssrc, 1));
+            for (source, _guard) in &mut sources {
                 for value in 0..HARD_CAP_FRAMES as i16 + 20 {
                     source.push_samples(&frame(value));
                 }

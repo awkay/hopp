@@ -9,9 +9,8 @@ use tokio::sync::mpsc;
 use tokio_stream::StreamExt;
 
 use crate::audio::denoiser::Denoiser;
-use crate::audio::mixer::{MixerHandle, SharedProcessor, MIXER_SAMPLE_RATE};
+use crate::audio::mixer::{MixerHandle, MixerSourceGuard, SharedProcessor, MIXER_SAMPLE_RATE};
 
-pub const LIVEKIT_SAMPLE_RATE: u32 = 16000;
 pub const AUDIO_NUM_CHANNELS: u32 = 1;
 const AUDIO_TRACK_NAME: &str = "microphone";
 const AUDIO_QUEUE_SIZE: u32 = 100;
@@ -168,9 +167,11 @@ async fn process_audio_samples(
 }
 
 /// Handle for a remote audio track subscription.
-/// On drop, aborts the receive task; the mixer keeps the source, which then plays silence.
+/// On drop, aborts the receive task and removes the participant's source from the mixer.
 pub struct AudioTrackHandle {
     task: tokio::task::JoinHandle<()>,
+    // Dropped after `drop` aborts the task.
+    _mixer_source: MixerSourceGuard,
 }
 
 impl Drop for AudioTrackHandle {
@@ -180,7 +181,7 @@ impl Drop for AudioTrackHandle {
     }
 }
 
-/// Sets up a remote audio track to feed into the rodio mixer.
+/// Sets up a remote audio track to feed into the mixer.
 /// Returns a handle that cleans up automatically on drop.
 pub fn play_remote_audio_track(
     track: RemoteAudioTrack,
@@ -188,11 +189,12 @@ pub fn play_remote_audio_track(
     participant_id: &str,
     audio_handle: &TokioHandle,
 ) -> AudioTrackHandle {
-    let mut source = mixer.add_source(LIVEKIT_SAMPLE_RATE, AUDIO_NUM_CHANNELS as u16);
+    let (mut source, mixer_source) = mixer.add_source(AUDIO_NUM_CHANNELS as u16);
 
+    // Decoded at the mixer's rate, which its sources must use.
     let mut stream = livekit::webrtc::audio_stream::native::NativeAudioStream::new(
         track.rtc_track(),
-        LIVEKIT_SAMPLE_RATE as i32,
+        MIXER_SAMPLE_RATE as i32,
         AUDIO_NUM_CHANNELS as i32,
     );
 
@@ -213,7 +215,7 @@ pub fn play_remote_audio_track(
             let now = std::time::Instant::now();
             if now.duration_since(last_log).as_secs() >= 5 {
                 let elapsed = now.duration_since(start).as_secs_f64();
-                let expected_secs = total_samples as f64 / LIVEKIT_SAMPLE_RATE as f64;
+                let expected_secs = total_samples as f64 / MIXER_SAMPLE_RATE as f64;
                 let drift_ms = (expected_secs - elapsed) * 1000.0;
                 if drift_ms.abs() > 50.0 {
                     log::debug!(
@@ -231,7 +233,10 @@ pub fn play_remote_audio_track(
         log::info!("Audio receive loop ended for {}", stream_key);
     });
 
-    AudioTrackHandle { task }
+    AudioTrackHandle {
+        task,
+        _mixer_source: mixer_source,
+    }
 }
 
 async fn capture_frame(
