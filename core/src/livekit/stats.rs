@@ -219,6 +219,9 @@ impl HealthMonitor {
             return;
         }
 
+        // The first sample often has no codec or decoder yet: libwebrtc fills them in once the
+        // first frame is decoded.
+        self.record_inbound_labels(&sample);
         let state = self.inbound.as_mut().unwrap();
         let received = sample.frames_received - state.previous.frames_received;
         let decoded = sample.frames_decoded - state.previous.frames_decoded;
@@ -712,4 +715,35 @@ async fn collect_stats(
     }
 
     (counters, snapshot, inbound_sample, outbound_sample)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn inbound(codec: &str, decoder: &str, frames: u64) -> InboundSample {
+        InboundSample {
+            id: "inbound".to_string(),
+            codec: codec.to_string(),
+            decoder: decoder.to_string(),
+            frames_received: frames,
+            frames_decoded: frames,
+            frames_dropped: 0,
+            freeze_duration: 0.0,
+        }
+    }
+
+    #[test]
+    fn summary_records_inbound_codec_known_only_after_the_first_sample() {
+        let mut monitor = HealthMonitor::new();
+        let now = Instant::now();
+        monitor.update(Some(inbound("", "", 0)), None, now);
+        monitor.update(
+            Some(inbound("H265", "VideoToolbox", 40)),
+            None,
+            now + Duration::from_secs(1),
+        );
+        assert!(monitor.summary.codecs.contains("H265"));
+        assert!(monitor.summary.implementations.contains("VideoToolbox"));
+    }
 }
