@@ -584,6 +584,16 @@ function SettingsWindow() {
                       typedInvoke("set_remote_control_enabled", { enabled: v }).then(() => refetchSettings());
                     }}
                   />
+                  {OS === "macos" && (
+                    <CheckboxRow
+                      title="Use HEVC for screen sharing"
+                      description="Sharper text on less bandwidth; falls back to H.264 automatically when someone in the call can't use it"
+                      checked={settings.screen_share_hevc}
+                      onCheckedChange={(v) => {
+                        typedInvoke("set_screen_share_hevc", { enabled: v }).then(() => refetchSettings());
+                      }}
+                    />
+                  )}
                   <ResolutionRow
                     value={settings.screen_share_resolution}
                     onValueChange={(resolution) => {

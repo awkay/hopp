@@ -84,6 +84,7 @@ impl Settings {
             Message::SetNoiseCancellation(settings.noise_cancellation_enabled),
             Message::SetScreenShareResolution(settings.screen_share_resolution),
             Message::SetLowBandwidthDefault(settings.low_bandwidth_default),
+            Message::SetScreenShareHevc(settings.screen_share_hevc),
             Message::SetScreenSharePickerMode(settings.screen_share_picker_mode),
             Message::SetTelemetryEnabled(settings.telemetry_enabled),
             Message::ControllerCursorEnabled(settings.remote_control_enabled),

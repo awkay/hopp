@@ -945,6 +945,16 @@ fn set_low_bandwidth_default(app: tauri::AppHandle, enabled: bool) {
 }
 
 #[tauri::command(async)]
+fn set_screen_share_hevc(app: tauri::AppHandle, enabled: bool) {
+    log::info!("set_screen_share_hevc: {enabled}");
+    update_user_setting_and_send(
+        &app,
+        |settings| settings.screen_share_hevc = enabled,
+        Message::SetScreenShareHevc(enabled),
+    );
+}
+
+#[tauri::command(async)]
 fn set_call_low_bandwidth(app: tauri::AppHandle, enabled: bool) {
     log::info!("set_call_low_bandwidth: {enabled}");
     core_send(&app, Message::SetCallLowBandwidth(enabled));
@@ -1593,6 +1603,7 @@ fn main() {
             set_noise_cancellation,
             set_screen_share_resolution,
             set_low_bandwidth_default,
+            set_screen_share_hevc,
             set_call_low_bandwidth,
             set_screen_share_picker_mode,
             list_microphones,

@@ -197,6 +197,10 @@ pub struct UserSettings {
     pub screen_share_picker_mode: ScreenSharePickerMode,
     #[serde(default)]
     pub low_bandwidth_default: bool,
+    /// "Use HEVC for screen sharing" (spec 0007). On by default, also for settings saved
+    /// before it existed.
+    #[serde(default = "default_true")]
+    pub screen_share_hevc: bool,
     pub hopp_server_url: Option<String>,
     pub shortcut_toggle_mic: Option<String>,
     pub shortcut_toggle_camera: Option<String>,
@@ -225,6 +229,7 @@ impl Default for UserSettings {
             screen_share_resolution: ScreenShareResolution::P4K,
             screen_share_picker_mode: ScreenSharePickerMode::Screen,
             low_bandwidth_default: false,
+            screen_share_hevc: true,
             hopp_server_url: None,
             shortcut_toggle_mic: None,
             shortcut_toggle_camera: None,
@@ -941,6 +946,26 @@ mod window_style_tests {
                 assert!(effective.show_menu_bar_icon);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod screen_share_hevc_tests {
+    use super::*;
+
+    #[test]
+    fn hevc_is_on_for_new_and_existing_settings_and_off_survives_a_reload() {
+        assert!(UserSettings::default().screen_share_hevc);
+
+        let mut legacy = serde_json::to_value(UserSettings::default()).unwrap();
+        legacy.as_object_mut().unwrap().remove("screen_share_hevc");
+        let settings: UserSettings = serde_json::from_value(legacy).unwrap();
+        assert!(settings.screen_share_hevc);
+
+        let mut off = serde_json::to_value(UserSettings::default()).unwrap();
+        off["screen_share_hevc"] = serde_json::json!(false);
+        let settings: UserSettings = serde_json::from_value(off).unwrap();
+        assert!(!settings.screen_share_hevc);
     }
 }
 

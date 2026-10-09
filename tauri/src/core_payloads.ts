@@ -123,6 +123,8 @@ export interface UserSettings {
   screen_share_resolution: ScreenShareResolution;
   screen_share_picker_mode: ScreenSharePickerMode;
   low_bandwidth_default: boolean;
+  /** "Use HEVC for screen sharing" (spec 0007); on by default. */
+  screen_share_hevc: boolean;
   hopp_server_url: string | null;
   shortcut_toggle_mic: string;
   shortcut_toggle_camera: string;
@@ -275,6 +277,7 @@ export interface CommandMap {
   set_noise_cancellation: { args: { enabled: boolean }; return: void };
   set_screen_share_resolution: { args: { resolution: ScreenShareResolution }; return: void };
   set_low_bandwidth_default: { args: { enabled: boolean }; return: void };
+  set_screen_share_hevc: { args: { enabled: boolean }; return: void };
   set_call_low_bandwidth: { args: { enabled: boolean }; return: void };
   set_screen_share_picker_mode: { args: { mode: ScreenSharePickerMode }; return: void };
   list_microphones: { args: void; return: AudioDevice[] };
