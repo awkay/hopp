@@ -16,6 +16,28 @@ LiveKit `--dev`).
   says nothing about bitrate at equal quality.
 - Fixed: core's `VideoHealthSummary` logged empty inbound `codecs` and `implementations`, because
   it read them only from the first stats sample, before libwebrtc fills them in.
+- Sharer spike (2026-10-09, M4, 3440x1440 display, `profile.sh sharer --codec`, which sets the
+  `HOPP_SCREEN_SHARE_CODEC` dev override): core encodes its real ScreenCaptureKit capture as
+  H.265 in hardware (WebRTC logs `RTCVideoEncoderH265.mm:433: Compression session created with hw
+  accl enabled`), and the fake viewer decodes `video/H265` with VideoToolbox: ~39.6 fps, first
+  frame 442 ms after the share starts (H.264: 439 ms), 1 keyframe, 0 PLIs, no quality limitation.
+  One run each with uncontrolled screen content: H.264 1.70 Mbps, 236 mW; HEVC 1.31 Mbps,
+  385 mW. HEVC drew more power in all three pairs so far (two viewer, one sharer).
+- Our SDK fork pin (`2ce5cf0`) already has upstream's three HEVC follow-ups (`6857edc` "modified
+  h265", `73f614c` "Fix mixed-codec publisher preferences", `d3442fb` "Keep VideoToolbox for
+  selected H264 profiles"); upstream's reverts each flip one codec line. No SDK change was needed
+  in either direction. Core publishes the share alone on the `:video` connection, so the
+  mixed-codec case `73f614c` fixed (camera H.264 and share H.265 on one connection) can't arise.
+- `implementation=VideoToolbox` in WebRTC stats doesn't prove hardware: the Apple wrappers report
+  it either way (the decoder even logs `is_hardware_accelerated = false`). The proof is the "hw
+  accl enabled" line, logged with `RUST_LOG=hopp_core=info,libwebrtc=debug`. B6 needs a check
+  that doesn't rely on the stats name.
+- Risk for B7 (text clarity): our WebRTC binary's HEVC screen-share encoder sets VideoToolbox
+  `minQP: 23` (maxQP 51, screen-sharing mode); the H.264 screen share sets only maxQP 51. A QP
+  floor may stop HEVC getting as sharp as H.264 on static text. Changing it is tuning inside the
+  WebRTC binary, which this spec puts out of scope.
+- Core feeds ScreenCaptureKit frames to WebRTC as CPU `NV12Buffer`s (`capture/stream.rs`), for
+  both codecs.
 
 - Apple hardware (VideoToolbox probe on an M4, macOS 15.7.9): hardware encoders for H.264 and
   HEVC only, no AV1 encoder at all; hardware decode for H.264, HEVC and AV1, not VP9. Apple's M5

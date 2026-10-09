@@ -97,7 +97,7 @@ Alternatives rejected:
       2026-10-09).
 - [x] Spike: the harness shares in HEVC to core with `profile.sh`; core receives, decodes and shows
       it; record codec, encoder implementation and CPU. (2026-10-09, results in the notes.)
-- [ ] Codec decision module with unit tests.
+- [x] Codec decision module with unit tests (`core/src/screen_share_codec.rs`; not wired yet).
 - [ ] Announce support with the participant attribute; react to joins, leaves and attribute changes.
 - [ ] Publish with the chosen codec; republish on a change; re-apply low-bandwidth settings.
 - [ ] Viewer handling of a replaced screen track.
