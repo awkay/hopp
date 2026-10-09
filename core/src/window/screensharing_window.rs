@@ -329,20 +329,87 @@ pub enum RedrawCommand {
 /// while the window is drawing still gets its redraw: winit keeps at most one pending redraw per
 /// window and runs a request made during a redraw right after it, so only the latest frame is
 /// drawn and no backlog builds.
+///
+/// Off the main thread, winit's `request_redraw` waits for the main thread to run it
+/// (`dispatch_sync` onto the main queue), so this thread blocks while the main thread is busy,
+/// drawing for example. The main thread must never wait for this thread: `Stop` and dropping the
+/// handle detach it.
 fn spawn_redraw_thread(
     redraw_rx: std::sync::mpsc::Receiver<RedrawCommand>,
     window: Arc<Window>,
     effect_deadline: EffectAnimationDeadline,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        // Ends on Stop or when the window drops its sender.
-        while let Ok(RedrawCommand::ForceRedraw) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
-            redraw_rx.recv_timeout(effect_deadline.interval())
-        {
-            window.request_redraw();
-        }
+        run_redraw_loop(
+            redraw_rx,
+            || effect_deadline.interval(),
+            || window.request_redraw(),
+        )
     })
 }
+
+/// Calls `request_redraw` once per `ForceRedraw`, and whenever `interval()` passes without a
+/// command. Returns on `Stop` or once every sender is dropped.
+fn run_redraw_loop(
+    redraw_rx: std::sync::mpsc::Receiver<RedrawCommand>,
+    interval: impl Fn() -> Duration,
+    mut request_redraw: impl FnMut(),
+) {
+    loop {
+        // No wildcard arm, so a new `RedrawCommand` has to say whether it redraws.
+        let redraw = match redraw_rx.recv_timeout(interval()) {
+            Ok(RedrawCommand::ForceRedraw) | Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                true
+            }
+            Ok(RedrawCommand::Stop) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => false,
+        };
+        if !redraw {
+            break;
+        }
+        request_redraw();
+    }
+}
+
+/// What the screen-share buffer holds, compared with the last frame the window presented.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LatestFrame {
+    /// The stream hasn't delivered a frame yet (frame id 0).
+    Missing,
+    /// The frame the window last presented.
+    Repeat,
+    /// A frame the window hasn't presented yet.
+    New,
+    /// A new frame whose id is far below the last one presented: a new stream on the same buffer
+    /// restarted the ids.
+    Restarted,
+}
+
+impl LatestFrame {
+    /// Whether a redraw should upload this frame and count it as presented.
+    fn is_new(self) -> bool {
+        matches!(self, LatestFrame::New | LatestFrame::Restarted)
+    }
+}
+
+/// How far the frame id has to drop below the last one presented to count as a stream restart.
+const STREAM_RESTART_ID_GAP: u64 = 40;
+
+/// Compares the buffer's frame id with `last_rendered_id`, the id of the last frame the window
+/// presented (0 for none). `process_video_stream` numbers frames from 1.
+fn classify_latest_frame(current_id: u64, last_rendered_id: u64) -> LatestFrame {
+    if current_id == 0 {
+        LatestFrame::Missing
+    } else if last_rendered_id > STREAM_RESTART_ID_GAP
+        && current_id < last_rendered_id - STREAM_RESTART_ID_GAP
+    {
+        LatestFrame::Restarted
+    } else if current_id <= last_rendered_id {
+        LatestFrame::Repeat
+    } else {
+        LatestFrame::New
+    }
+}
+
 /// Dedicated renderer ID for the screensharing stream in YUV pipeline caches.
 const SCREENSHARE_STREAM_ID: u64 = u64::MAX;
 
@@ -2418,35 +2485,30 @@ impl ScreensharingWindow {
     fn redraw_inner(&mut self) -> Vec<u64> {
         let render_started = StdInstant::now();
         let current_frame_id = self.screen_share_buffer.current_frame_id();
-        let mut skip_buffer = false;
-
-        // Reset the last_rendered_frame_id on the first frame, we do this because we might get
-        // stale frame ids in the initial renders from the video buffer manager.
-        if current_frame_id > 0
-            && self.last_rendered_frame_id > 40
-            && current_frame_id < self.last_rendered_frame_id - 40
-        {
-            log::info!(
+        let latest_frame = classify_latest_frame(current_frame_id, self.last_rendered_frame_id);
+        match latest_frame {
+            LatestFrame::Restarted => log::info!(
                 "redraw_inner: stream restart detected (frame_id={current_frame_id}, last_rendered={}), resetting",
                 self.last_rendered_frame_id
-            );
-            self.last_rendered_frame_id = 0;
+            ),
+            LatestFrame::Repeat => {
+                // While an effect plays the window redraws every 16 ms, faster than the
+                // stream delivers frames, so a redraw without a new frame is expected.
+                let level = if self.effects.is_playing() {
+                    log::Level::Debug
+                } else {
+                    log::Level::Warn
+                };
+                log::log!(
+                    level,
+                    "redraw_inner: dropping redraw {current_frame_id} {}",
+                    self.last_rendered_frame_id
+                );
+            }
+            LatestFrame::Missing | LatestFrame::New => {}
         }
-        if current_frame_id > 0 && current_frame_id <= self.last_rendered_frame_id {
-            // While an effect plays the window redraws every 16 ms, faster than the
-            // stream delivers frames, so a redraw without a new frame is expected.
-            let level = if self.effects.is_playing() {
-                log::Level::Debug
-            } else {
-                log::Level::Warn
-            };
-            log::log!(
-                level,
-                "redraw_inner: dropping redraw {current_frame_id} {}",
-                self.last_rendered_frame_id
-            );
-            skip_buffer = true;
-        }
+        // Upload, and count as presented, only a frame no present has shown yet.
+        let skip_buffer = !latest_frame.is_new();
 
         let (stream_w, stream_h, received_at);
         {
@@ -2872,5 +2934,100 @@ mod app_veil_tests {
             Point::ORIGIN,
             Size::new(160.0, 39.0)
         )));
+    }
+}
+
+#[cfg(test)]
+mod redraw_tests {
+    use super::*;
+
+    #[test]
+    fn classifies_the_latest_frame_against_the_last_presented() {
+        // Nothing presented yet.
+        assert_eq!(classify_latest_frame(0, 0), LatestFrame::Missing);
+        assert_eq!(classify_latest_frame(1, 0), LatestFrame::New);
+        // Frame 1 presented: a timer redraw repeats it, frame 2 is new.
+        assert_eq!(classify_latest_frame(1, 1), LatestFrame::Repeat);
+        assert_eq!(classify_latest_frame(2, 1), LatestFrame::New);
+        // Skipping ids (frames replaced before any redraw) is still a new frame.
+        assert_eq!(classify_latest_frame(9, 2), LatestFrame::New);
+        assert_eq!(classify_latest_frame(9, 9), LatestFrame::Repeat);
+        // A new stream on the same buffer restarts its ids at 1.
+        assert_eq!(classify_latest_frame(1, 500), LatestFrame::Restarted);
+        // A smaller drop isn't taken for a restart.
+        assert_eq!(
+            classify_latest_frame(500 - STREAM_RESTART_ID_GAP, 500),
+            LatestFrame::Repeat
+        );
+
+        assert!(!LatestFrame::Missing.is_new());
+        assert!(!LatestFrame::Repeat.is_new());
+        assert!(LatestFrame::New.is_new());
+        assert!(LatestFrame::Restarted.is_new());
+    }
+
+    /// No timeout fires during a test that uses it.
+    const NEVER: Duration = Duration::from_secs(3600);
+
+    // Each request closure fails past the expected count, so a loop that doesn't end fails the
+    // test instead of hanging it.
+
+    #[test]
+    fn redraw_loop_requests_once_per_force_redraw_until_stop() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        for _ in 0..3 {
+            tx.send(RedrawCommand::ForceRedraw).unwrap();
+        }
+        tx.send(RedrawCommand::Stop).unwrap();
+        tx.send(RedrawCommand::ForceRedraw).unwrap();
+        drop(tx);
+
+        let mut requests = 0;
+        run_redraw_loop(
+            rx,
+            || NEVER,
+            || {
+                requests += 1;
+                assert!(requests <= 3, "redrew after Stop");
+            },
+        );
+        assert_eq!(requests, 3);
+    }
+
+    #[test]
+    fn redraw_loop_ends_when_the_sender_is_dropped() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(RedrawCommand::ForceRedraw).unwrap();
+        tx.send(RedrawCommand::ForceRedraw).unwrap();
+        drop(tx);
+
+        let mut requests = 0;
+        run_redraw_loop(
+            rx,
+            || NEVER,
+            || {
+                requests += 1;
+                assert!(requests <= 2, "redrew after the sender was dropped");
+            },
+        );
+        assert_eq!(requests, 2);
+    }
+
+    #[test]
+    fn redraw_loop_requests_a_redraw_when_the_interval_passes() {
+        let (tx, rx) = std::sync::mpsc::channel::<RedrawCommand>();
+        let mut tx = Some(tx);
+        let mut requests = 0;
+        // The first timeout's request drops the sender, which ends the loop.
+        run_redraw_loop(
+            rx,
+            || Duration::from_millis(1),
+            || {
+                requests += 1;
+                assert!(requests <= 1, "redrew after the sender was dropped");
+                tx.take();
+            },
+        );
+        assert_eq!(requests, 1);
     }
 }

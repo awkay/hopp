@@ -145,14 +145,16 @@ impl VideoBufferManager {
         self.inactive.store(inactive, Ordering::Release);
     }
 
-    /// Returns the current frame counter (lock-free).
+    /// Returns the id of the frame in `latest_frame` (lock-free). `process_video_stream` numbers
+    /// frames from 1, so on a remote stream's buffer 0 means it has never held a frame.
     pub fn current_frame_id(&self) -> u64 {
-        self.frame_id.load(Ordering::Relaxed)
+        self.frame_id.load(Ordering::Acquire)
     }
 
-    /// Sets the frame counter (lock-free).
+    /// Sets the frame id (lock-free). Call it after `advance_write`: a reader that sees the id
+    /// then also sees the swap, so `latest_frame` holds that frame.
     pub fn set_frame_id(&self, id: u64) {
-        self.frame_id.store(id, Ordering::Relaxed);
+        self.frame_id.store(id, Ordering::Release);
     }
 
     /// Running total of decoded frames dropped because a newer one was already queued.
@@ -223,9 +225,10 @@ pub async fn process_video_stream(
                             guard.copy_from_i420(&i420, width, height);
                             guard.received_at = Some(received_at);
                         }
-                        manager.set_frame_id(frame_counter);
-                        frame_counter += 1;
                         manager.advance_write();
+                        // Ids start at 1, so a window can tell frame 1 from "no frame yet".
+                        frame_counter += 1;
+                        manager.set_frame_id(frame_counter);
 
                         if let Some(tx) = &redraw_tx {
                             if let Err(e) = tx.send(crate::window::screensharing_window::RedrawCommand::ForceRedraw) {

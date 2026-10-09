@@ -22,6 +22,7 @@ const LOG_EVERY: Duration = Duration::from_secs(10);
 
 /// A stream frame shown by a present.
 pub(crate) struct PresentedFrame {
+    /// The stream's frame id. Ids start at 1.
     pub id: u64,
     pub received_at: Option<Instant>,
     pub width: u32,
@@ -32,6 +33,7 @@ pub(crate) struct FramePacing {
     label: &'static str,
     window_start: Instant,
     last_presented_at: Option<Instant>,
+    /// 0 until the first present (stream ids start at 1).
     last_presented_id: u64,
     presented: u32,
     intervals_ms: Vec<f32>,
@@ -39,7 +41,9 @@ pub(crate) struct FramePacing {
     age_ms: Vec<f32>,
     idle_redraws: u32,
     never_presented: u64,
-    stale_skipped_at_start: u64,
+    /// The stream's `stale_skipped` total when this window started. `None` until the first
+    /// present after a reset: the buffer, and its total, can outlive a stream.
+    stale_skipped_at_start: Option<u64>,
     resolution: (u32, u32),
 }
 
@@ -56,7 +60,7 @@ impl FramePacing {
             age_ms: Vec::new(),
             idle_redraws: 0,
             never_presented: 0,
-            stale_skipped_at_start: 0,
+            stale_skipped_at_start: None,
             resolution: (0, 0),
         }
     }
@@ -70,7 +74,18 @@ impl FramePacing {
         frame: Option<PresentedFrame>,
         stale_skipped: u64,
     ) {
-        let now = Instant::now();
+        self.record_present_at(Instant::now(), render_started, frame, stale_skipped);
+    }
+
+    /// [`Self::record_present`] for a present at `now`, so tests can set the clock.
+    fn record_present_at(
+        &mut self,
+        now: Instant,
+        render_started: Instant,
+        frame: Option<PresentedFrame>,
+        stale_skipped: u64,
+    ) {
+        self.stale_skipped_at_start.get_or_insert(stale_skipped);
         self.render_ms.push(millis(now - render_started));
         match frame {
             Some(frame) => {
@@ -119,7 +134,7 @@ impl FramePacing {
             summary(&mut self.age_ms),
             self.idle_redraws,
             self.never_presented,
-            stale_skipped.saturating_sub(self.stale_skipped_at_start),
+            stale_skipped.saturating_sub(self.stale_skipped_at_start.unwrap_or(stale_skipped)),
         );
         self.window_start = now;
         self.intervals_ms.clear();
@@ -128,7 +143,7 @@ impl FramePacing {
         self.presented = 0;
         self.idle_redraws = 0;
         self.never_presented = 0;
-        self.stale_skipped_at_start = stale_skipped;
+        self.stale_skipped_at_start = Some(stale_skipped);
     }
 }
 
@@ -168,17 +183,18 @@ mod tests {
         assert_eq!(summary(&mut []), "n=0");
     }
 
+    fn frame(id: u64) -> Option<PresentedFrame> {
+        Some(PresentedFrame {
+            id,
+            received_at: None,
+            width: 4,
+            height: 2,
+        })
+    }
+
     #[test]
     fn counts_frames_replaced_before_any_present() {
         let mut pacing = FramePacing::new("test");
-        let frame = |id| {
-            Some(PresentedFrame {
-                id,
-                received_at: None,
-                width: 4,
-                height: 2,
-            })
-        };
         let started = Instant::now();
         pacing.record_present(started, frame(1), 0);
         pacing.record_present(started, None, 0);
@@ -188,5 +204,62 @@ mod tests {
         assert_eq!(pacing.idle_redraws, 1);
         assert_eq!(pacing.intervals_ms.len(), 1);
         assert_eq!(pacing.resolution, (4, 2));
+    }
+
+    #[test]
+    fn log_starts_a_new_window_but_keeps_the_stream() {
+        let mut pacing = FramePacing::new("test");
+        let started = Instant::now();
+        pacing.record_present(started, frame(1), 2);
+        pacing.record_present(started, None, 2);
+        pacing.record_present(started, frame(3), 2);
+
+        let now = Instant::now();
+        pacing.log(now, 7);
+        assert_eq!(pacing.window_start, now);
+        assert_eq!(pacing.presented, 0);
+        assert_eq!(pacing.idle_redraws, 0);
+        assert_eq!(pacing.never_presented, 0);
+        assert!(pacing.intervals_ms.is_empty());
+        assert!(pacing.render_ms.is_empty());
+        assert_eq!(pacing.stale_skipped_at_start, Some(7));
+
+        // The next window still counts from the last frame presented.
+        pacing.record_present(started, frame(6), 7);
+        assert_eq!(pacing.never_presented, 2);
+        assert_eq!(pacing.intervals_ms.len(), 1);
+    }
+
+    #[test]
+    fn rolls_over_once_log_every_has_passed() {
+        let mut pacing = FramePacing::new("test");
+        let start = pacing.window_start;
+        let almost = start + LOG_EVERY - Duration::from_millis(1);
+        pacing.record_present_at(almost, almost, frame(1), 0);
+        assert_eq!(pacing.presented, 1);
+
+        let due = start + LOG_EVERY;
+        pacing.record_present_at(due, due, frame(2), 5);
+        assert_eq!(pacing.window_start, due);
+        assert_eq!(pacing.presented, 0);
+        assert_eq!(pacing.stale_skipped_at_start, Some(5));
+    }
+
+    #[test]
+    fn finish_forgets_the_stream() {
+        let mut pacing = FramePacing::new("test");
+        pacing.record_present(Instant::now(), frame(5), 3);
+        pacing.finish(4);
+        assert_eq!(pacing.last_presented_id, 0);
+        assert!(pacing.last_presented_at.is_none());
+        assert_eq!(pacing.stale_skipped_at_start, None);
+        assert!(pacing.render_ms.is_empty());
+
+        // Without the reset, frames 6 and 7 would count as never presented.
+        pacing.record_present(Instant::now(), frame(8), 10);
+        assert_eq!(pacing.never_presented, 0);
+        assert!(pacing.intervals_ms.is_empty());
+        // A reused buffer keeps its running total: the new stream counts from here.
+        assert_eq!(pacing.stale_skipped_at_start, Some(10));
     }
 }
