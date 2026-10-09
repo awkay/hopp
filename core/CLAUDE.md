@@ -13,6 +13,10 @@ Architecture and diagrams: `core/README.md`.
 - From `core/`: `cargo build`, `cargo test --workspace --lib` and
   `cargo clippy --all-features -- -D warnings`. Bare `cargo test` also picks up the harness in
   `core/tests/src/main.rs` and fails to compile.
+- That clippy run, like CI's, skips unit tests. Lint them with
+  `cargo clippy --lib --profile test --all-features -- -D warnings` (`--tests` also builds the
+  harness and fails).
+- The `svg_renderer` tests write badge PNGs into `core/`. Delete them; don't commit them.
 - CI uses the latest stable Rust. Run `rustup update` if CI reports clippy lints yours doesn't.
 - After changes to calls, IPC or screen sharing, run `core/tests/smoke.sh`: it makes real calls
   against a local LiveKit and prints `PASS` / `FAIL` per scenario (needs `brew install livekit`;

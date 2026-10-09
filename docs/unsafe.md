@@ -20,9 +20,9 @@ if one was written, and how to get the benefit without `unsafe`.
   (`Cow::Owned`), which the fork's wrapper frees after copying it into libwebrtc's frame.
 - **What it costs:** one 320-byte allocation and one free per remote participant every 10 ms, both
   on the real-time thread. `rendering_allocates_only_the_frames_lent_to_the_mixer` pins that count
-  and checks nothing else on the render path touches the heap. Small same-thread allocations are
-  fast on macOS, but malloc can take a lock, so under load or memory pressure it's a glitch risk.
-  Not measured.
+  and checks nothing else on the render path touches the heap (it counts Rust allocations only,
+  not libwebrtc's C++ ones). Small same-thread allocations are fast on macOS, but malloc can take
+  a lock, so under load or memory pressure it's a glitch risk. Not measured.
 - **The `unsafe` version (written and rejected on 2026-10-09):** `queue: UnsafeCell<SourceQueue>`,
   `let queue = unsafe { &mut *self.queue.get() };` in `get_audio_frame_with_info`, returning
   `Cow::Borrowed` of a frame buffer the queue reuses. It is sound only because

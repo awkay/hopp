@@ -75,7 +75,10 @@ its own grants, and an unsigned build loses them on every rebuild (`DATAICO.md`,
   scenario. `core/tests/netem.sh` emulates bad networks (needs sudo), also under the real app.
   Setup and scenarios: `core/tests/README.md`.
 - **The first core build is slow:** it downloads libwebrtc (several hundred MB). See
-  `LK_CUSTOM_WEBRTC` in `DATAICO.md`, "Prerequisites".
+  `LK_CUSTOM_WEBRTC` in `DATAICO.md`, "Prerequisites". A new worktree starts again from an empty
+  `core/target`. Cloning another checkout's `core/target/{aarch64-apple-darwin,release,debug}` and
+  `core/tests/target` into it with `cp -cR` (APFS copy-on-write) takes about a minute and no extra
+  disk; only the workspace crates rebuild.
 - **Installing your build:** `task -d packaging/dataico install` from the repo root builds the
   current checkout and replaces `/Applications/hopp.app`. Signing, notarization, in-app updates,
   releasing (`task -d packaging/dataico release`) and logs: `DATAICO.md`.
