@@ -42,6 +42,8 @@ const TOPIC_DRAW: &str = "draw";
 const TOPIC_APP_VEIL: &str = "app_veil";
 const TOPIC_BANDWIDTH_MODE: &str = "bandwidth_mode";
 const CAMERA_TRACK_NAME: &str = "camera";
+/// Dev override of the screen share's codec. See `screen_share_codec`.
+const SCREEN_SHARE_CODEC_ENV: &str = "HOPP_SCREEN_SHARE_CODEC";
 const CAMERA_MAX_BITRATE: u64 = 1_700_000;
 const CAMERA_MAX_FRAMERATE: f64 = 30.0;
 /// How long a muted camera or screen track keeps sending keepalive frames after it is
@@ -1272,11 +1274,7 @@ async fn room_service_commands(
                     );
                     screen_track.mute();
                     let max_bitrate = default_screen_bitrate();
-                    let video_codec = if SCREEN_SHARE_USES_AV1 {
-                        VideoCodec::AV1
-                    } else {
-                        VideoCodec::H264
-                    };
+                    let video_codec = screen_share_codec();
                     let screen_result = video_room
                         .local_participant()
                         .publish_track(
@@ -2476,6 +2474,26 @@ struct RoomEventContext {
     audio_handle: TokioHandle,
     inner: Arc<RoomServiceInner>,
     service_command_tx: mpsc::UnboundedSender<RoomServiceCommand>,
+}
+
+/// The codec the screen share track is published with: AV1 on Windows, H.264 elsewhere.
+///
+/// `HOPP_SCREEN_SHARE_CODEC=h264` or `h265` overrides it, for comparing codecs with
+/// `core/tests/profile.sh sharer --codec`; unset or any other value keeps the default. A dev
+/// override only, until the codec is negotiated per call (spec 0007).
+fn screen_share_codec() -> VideoCodec {
+    let requested = std::env::var(SCREEN_SHARE_CODEC_ENV).ok();
+    let codec = match requested.as_deref() {
+        Some("h264") => VideoCodec::H264,
+        Some("h265") => VideoCodec::H265,
+        _ if SCREEN_SHARE_USES_AV1 => VideoCodec::AV1,
+        _ => VideoCodec::H264,
+    };
+    log::info!(
+        "screen_share_codec: publishing the screen share as {} ({SCREEN_SHARE_CODEC_ENV}={requested:?})",
+        codec.as_str()
+    );
+    codec
 }
 
 /// Stops the black keepalive frames of a track published muted, once the SFU has seen it.
