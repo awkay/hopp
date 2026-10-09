@@ -1,0 +1,5 @@
+Connecting to socket: /var/folders/zs/36s8rrj550l3slxn22j3xy9w0000gn/T/hopp-profile-27704.sock
+  - core shares the screen
+  - fake viewer watches the share and draws on the overlay
+  - load running; waiting for the stop file
+  - fake viewer received 2469 frames at 3440x1440, 39.7 fps, the first 849 ms after the share started; interval_ms p50=19.2 p95=38.0 p99=53.6 max=123.9

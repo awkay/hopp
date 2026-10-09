@@ -1,0 +1,114 @@
+From f1b473e12a1b9717129cddeb980720709a3521fe Mon Sep 17 00:00:00 2001
+From: Martin Mariano <martin@dataico.com>
+Date: Fri, 9 Oct 2026 11:26:12 -0300
+Subject: [PATCH] fix(livekit-runtime): don't panic when the runtime cancels a
+ task at shutdown
+
+When a multi-thread tokio runtime shuts down, each worker notices on its own, at its next
+maintenance tick or park. One worker can already be cancelling idle tasks while another keeps
+polling tasks, including ones it steals. If that second worker polls a task awaiting a
+livekit_runtime::JoinHandle whose task the first one has just cancelled, the wrapper's
+expect("Tasks should not panic") turned JoinError::Cancelled into a panic. Hopp's core hits this
+on exit: it drops its runtime right after queueing the room close, which awaits the room,
+session and signal tasks, and it logs "Tasks should not panic: JoinError::Cancelled" from a
+tokio worker and fires the panic hook.
+
+Nothing can abort the inner tokio handle, so a cancelled task means its runtime is shutting down.
+The awaiter on that runtime is being dropped by the same shutdown, and the task will never
+produce a value, so the handle now stays pending instead. It remembers the cancellation, because
+tokio's JoinHandle panics if it is polled again after returning Ready. A task that really
+panicked now resumes its own panic in the awaiter, with the original payload, instead of raising
+a new panic that replaced it.
+---
+ livekit-runtime/src/tokio.rs | 56 ++++++++++++++++++++++++++++++++----
+ 1 file changed, 51 insertions(+), 5 deletions(-)
+
+diff --git a/livekit-runtime/src/tokio.rs b/livekit-runtime/src/tokio.rs
+index 2aac8fc..001f8f4 100644
+--- a/livekit-runtime/src/tokio.rs
++++ b/livekit-runtime/src/tokio.rs
+@@ -26,9 +26,14 @@ pub use tokio_stream::Stream;
+ pub type JoinHandle<T> = TokioJoinHandle<T>;
+ pub type Interval = tokio::time::Interval;
+ 
++/// Resolves to the task's output. If the task panicked, the awaiter resumes that panic. If the
++/// runtime cancelled the task while shutting down, the handle stays pending forever.
+ #[derive(Debug)]
+ pub struct TokioJoinHandle<T> {
+     handle: tokio::task::JoinHandle<T>,
++    /// Set once the task was cancelled, so the inner handle, which panics if polled after it
++    /// returned `Ready`, isn't polled again.
++    cancelled: bool,
+ }
+ 
+ pub fn spawn<F>(future: F) -> JoinHandle<F::Output>
+@@ -36,7 +41,7 @@ where
+     F: Future + Send + 'static,
+     F::Output: Send + 'static,
+ {
+-    TokioJoinHandle { handle: tokio::task::spawn(future) }
++    TokioJoinHandle { handle: tokio::task::spawn(future), cancelled: false }
+ }
+ 
+ impl<T> Future for TokioJoinHandle<T> {
+@@ -47,12 +52,53 @@ impl<T> Future for TokioJoinHandle<T> {
+         cx: &mut std::task::Context<'_>,
+     ) -> std::task::Poll<Self::Output> {
+         let this = &mut *self;
+-        let mut handle = &mut this.handle;
+-        match Pin::new(&mut handle).poll(cx) {
+-            std::task::Poll::Ready(value) => {
+-                std::task::Poll::Ready(value.expect("Tasks should not panic"))
++        if this.cancelled {
++            return std::task::Poll::Pending;
++        }
++        match Pin::new(&mut this.handle).poll(cx) {
++            std::task::Poll::Ready(Ok(value)) => std::task::Poll::Ready(value),
++            // Nothing can abort the inner handle, so only a runtime shutting down cancels a task.
++            // During a multi-thread shutdown, a worker that hasn't noticed it yet can still poll
++            // an awaiter after another worker has cancelled the awaited task. That awaiter is
++            // being torn down by the same shutdown, and the task will never produce a value.
++            std::task::Poll::Ready(Err(err)) if err.is_cancelled() => {
++                this.cancelled = true;
++                std::task::Poll::Pending
+             }
++            std::task::Poll::Ready(Err(err)) => std::panic::resume_unwind(err.into_panic()),
+             std::task::Poll::Pending => std::task::Poll::Pending,
+         }
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use std::task::{Context, Waker};
++
++    #[test]
++    fn task_cancelled_at_shutdown_stays_pending() {
++        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
++        let mut handle = {
++            let _guard = rt.enter();
++            spawn(std::future::pending::<()>())
++        };
++        // Shutting the runtime down cancels the task.
++        drop(rt);
++
++        // Poll it after the cancellation, as a worker that hasn't noticed the shutdown yet does.
++        let mut cx = Context::from_waker(Waker::noop());
++        assert!(Pin::new(&mut handle).poll(&mut cx).is_pending());
++        assert!(Pin::new(&mut handle).poll(&mut cx).is_pending());
++    }
++
++    #[test]
++    fn task_panic_resumes_with_its_payload() {
++        let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
++        let payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++            rt.block_on(async { spawn(async { panic!("boom") }).await })
++        }))
++        .unwrap_err();
++        assert_eq!(payload.downcast_ref::<&str>(), Some(&"boom"));
++    }
++}
+-- 
+2.56.0
+

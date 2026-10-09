@@ -1,0 +1,238 @@
+[2026-10-08T19:33:28Z INFO  hopp_core] Starting RenderEventLoop
+[2026-10-08T19:33:28Z INFO  hopp_core] Creating socket at path: /var/folders/zs/36s8rrj550l3slxn22j3xy9w0000gn/T/hopp-profile-58040.sock
+[2026-10-08T19:33:29Z INFO  hopp_core::audio::device_monitor::macos] Device monitor started (input)
+[2026-10-08T19:33:29Z INFO  hopp_core] Application::resumed: initializing WindowManager
+[2026-10-08T19:33:29Z INFO  hopp_core::window_manager] WindowManager::new: creating windows for available monitors
+[2026-10-08T19:33:29Z INFO  hopp_core::graphics::graphics_context] GraphicsContext::new
+[2026-10-08T19:33:29Z INFO  hopp_core::graphics::graphics_context] GraphicsContext::new: window size: PhysicalSize { width: 1, height: 1 }, scale: 1
+[2026-10-08T19:33:29Z WARN  hopp_core] window_event: remote control is none redraw requested
+[2026-10-08T19:33:29Z INFO  hopp_core] user_event: CallStart call_id=1791488009062
+[2026-10-08T19:33:29Z INFO  hopp_core::audio::player] Player::start
+[2026-10-08T19:33:29Z INFO  hopp_core::audio::mixer] cpal output: 44100Hz 2ch
+[2026-10-08T19:33:29Z INFO  hopp_core::audio::device_monitor::macos] Device monitor started (output)
+[2026-10-08T19:33:29Z INFO  hopp_core::audio::capturer] Hardware doesn't support 16kHz mono, will resample
+[2026-10-08T19:33:29Z INFO  hopp_core::audio::capturer] Audio conversion: 44100Hz 1ch → 16000Hz 1ch
+[2026-10-08T19:33:29Z INFO  hopp_core::room_service] create_room
+[2026-10-08T19:33:29Z INFO  hopp_core::audio::capturer] Microphone capture thread priority set to maximum
+[2026-10-08T19:33:29Z INFO  hopp_core::room_service] create_room: command dispatched (non-blocking)
+[2026-10-08T19:33:29Z INFO  hopp_core::room_service] room_service_commands: CreateRoom call_id=1791488009062
+[2026-10-08T19:33:29Z INFO  hopp_core::room_service] room_service_commands: Cleared previous room state
+[2026-10-08T19:33:29Z INFO  hopp_core::room_service] room_service_commands: Connecting to room and video room in parallel (url=ws://localhost:7880, signal_timeout=20s, setup_timeout=90s)
+[2026-10-08T19:33:29Z INFO  hopp_core::room_service] room_service_commands: Room::connect (signal + ICE) took 35ms
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] DTLN denoiser initialized (tract) in 27ms
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] room_service_commands: video Room::connect (signal + ICE) took 54ms
+[2026-10-08T19:33:30Z INFO  hopp_core::livekit::audio] audio_publish: took 0
+[2026-10-08T19:33:30Z INFO  hopp_core::livekit::audio] AudioPublisher: audio track published (16000Hz)
+[2026-10-08T19:33:30Z INFO  hopp_core::livekit::audio] Starting audio processing (16000Hz, 160 samples per 10ms, max buffer 200ms)
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] room_service_commands: Screen share track published in 4ms
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] room_service_commands: Camera track published in 8ms
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] room_service_commands: Regular room connected in 72ms
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] room_service_commands: Connected to room
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] room_service_commands: Spawned stats task
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] room_service_commands: Got user identity and name
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] room_service_commands: Inserted local participant into participants map
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] room_service_commands: Video room connected in 72ms (total 72ms)
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] room_service_commands: Finished room setup in 72ms
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] camera quality: active=0, low_bandwidth=false, quality=High, updated_publications=0
+[2026-10-08T19:33:30Z INFO  hopp_core] user_event: CreateRoomResult: Ok([{ identity: "local", connected: true, muted: false, has_camera: false, is_screensharing: false }])
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] room_service_commands: Spawned handle_room_events
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] set_local_low_bandwidth: false
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] room_service_commands: Spawned video_room event drainer
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] send_bandwidth_mode_state: BandwidthModeState { active: false, local_requested: false, requested_by: [] }
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] handle_room_events: Participant connected: room:dev_room:profile-core:video
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] handle_room_events: Participant connected: room:dev_room:profile-sharer:audio
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] handle_room_events: Track published: microphone (Microphone) from room:dev_room:profile-sharer:audio
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] handle_room_events: Participant connected: room:dev_room:profile-sharer:video
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] handle_room_events: Track published: screen_share (Screenshare) from room:dev_room:profile-sharer:video
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] handle_room_events: Track published: camera (Camera) from room:dev_room:profile-sharer:audio
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] camera quality: active=1, low_bandwidth=false, quality=High, updated_publications=1
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] handle_room_events: Participant connected: room:dev_room:profile-camera:audio
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] handle_room_events: Track published: microphone (Microphone) from room:dev_room:profile-camera:audio
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] handle_room_events: Track subscribed from room:dev_room:profile-sharer:video: screen_share (Video) Video(RemoteVideoTrack { sid: TrackSid("TR_VSqDPVJMMBBNyu"), name: "screen_share", source: Screenshare }) RemoteTrackPublication { is_subscribed: true, is_allowed: true }
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] handle_room_events: Screen share track subscribed and already unmuted for room:dev_room:profile-sharer:video
+[2026-10-08T19:33:30Z INFO  hopp_core::livekit::video] process_video_stream: Starting screen share stream processing for participant: screenshare_room:dev_room:profile-sharer:video
+[2026-10-08T19:33:30Z INFO  hopp_core] user_event: OpenScreenShareWindow
+[2026-10-08T19:33:30Z INFO  hopp_core] stop_screenshare
+[2026-10-08T19:33:30Z INFO  hopp_core::capture::capturer] stop_capture
+[2026-10-08T19:33:30Z WARN  hopp_core::capture::capturer] stop_capture: no active stream
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] mute_screen_share_track
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] set_screen_capture_size: None
+[2026-10-08T19:33:30Z INFO  hopp_core] destroy_overlay_window
+[2026-10-08T19:33:30Z INFO  hopp_core::camera::capturer] CameraCapturer::set_screensharing_active: active=false, target=1280x720@30fps
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] room_service_commands: Screen share track muted
+[2026-10-08T19:33:30Z INFO  hopp_core] set_screensharing_active: false
+[2026-10-08T19:33:30Z INFO  hopp_core] close_drawing_window
+[2026-10-08T19:33:30Z INFO  hopp_core::window::screensharing_window] ScreensharingWindow::new
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] handle_room_events: Track subscribed from room:dev_room:profile-camera:audio: microphone (Audio) Audio(RemoteAudioTrack { sid: TrackSid("TR_AMCEByvGnde6fS"), name: "microphone", source: Microphone }) RemoteTrackPublication { is_subscribed: true, is_allowed: true }
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] handle_room_events: Setting up audio stream for participant: room:dev_room:profile-camera:audio
+[2026-10-08T19:33:30Z INFO  hopp_core::livekit::audio] Starting audio receive loop for room:dev_room:profile-camera:audio
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] handle_room_events: Track subscribed from room:dev_room:profile-sharer:audio: camera (Video) Video(RemoteVideoTrack { sid: TrackSid("TR_VCeMvjKowfHqU5"), name: "camera", source: Camera }) RemoteTrackPublication { is_subscribed: true, is_allowed: true }
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] camera quality: active=1, low_bandwidth=false, quality=High, updated_publications=1
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] handle_room_events: Camera track subscribed and already unmuted for room:dev_room:profile-sharer:audio
+[2026-10-08T19:33:30Z INFO  hopp_core::livekit::video] process_video_stream: Starting camera stream processing for participant: room:dev_room:profile-sharer:audio
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] handle_room_events: Track subscribed from room:dev_room:profile-sharer:audio: microphone (Audio) Audio(RemoteAudioTrack { sid: TrackSid("TR_AMxiKrqwPFAmmH"), name: "microphone", source: Microphone }) RemoteTrackPublication { is_subscribed: true, is_allowed: true }
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] handle_room_events: Setting up audio stream for participant: room:dev_room:profile-sharer:audio
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] handle_room_events: Track published: camera (Camera) from room:dev_room:profile-camera:audio
+[2026-10-08T19:33:30Z INFO  hopp_core::livekit::audio] Starting audio receive loop for room:dev_room:profile-sharer:audio
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] camera quality: active=2, low_bandwidth=false, quality=High, updated_publications=2
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] handle_room_events: Track subscribed from room:dev_room:profile-camera:audio: camera (Video) Video(RemoteVideoTrack { sid: TrackSid("TR_VCYxMqwQ4hEe5c"), name: "camera", source: Camera }) RemoteTrackPublication { is_subscribed: true, is_allowed: true }
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] camera quality: active=2, low_bandwidth=false, quality=High, updated_publications=2
+[2026-10-08T19:33:30Z INFO  hopp_core::room_service] handle_room_events: Camera track subscribed and already unmuted for room:dev_room:profile-camera:audio
+[2026-10-08T19:33:30Z INFO  hopp_core::livekit::video] process_video_stream: Starting camera stream processing for participant: room:dev_room:profile-camera:audio
+[2026-10-08T19:33:30Z WARN  hopp_core::window::screensharing_window] probe_available_screen_area: area ScreenArea { position: Position { x: 0.0, y: 0.0 }, extent: Extent { width: 3440.0, height: 1440.0 } } after 210.5ms
+[2026-10-08T19:33:30Z INFO  hopp_core::window::screensharing_window] probe_available_screen_area: applied 35px macOS menu bar offset
+[2026-10-08T19:33:30Z INFO  hopp_core::window::screensharing_window] ScreensharingWindow: selected alpha_mode: PostMultiplied
+[2026-10-08T19:33:30Z INFO  hopp_core::window::vibrancy] apply_macos_vibrancy: CAMetalLayer.isOpaque set to false
+2026-10-08 16:33:30.448 hopp_core-aarch64-apple-darwin[62751:2630657] NSWindow warning: adding an unknown subview: <NSVisualEffectView: 0x13a7c09b0>. Break on NSLog to debug.
+2026-10-08 16:33:30.453 hopp_core-aarch64-apple-darwin[62751:2630657] Call stack:
+(
+	0   AppKit                              0x000000019149ba70 -[NSThemeFrame addSubview:] + 116
+	1   AppKit                              0x000000019149b5d0 -[NSView addSubview:positioned:relativeTo:] + 360
+	2   AppKit                              0x000000019149b3e4 -[NSThemeFrame addSubview:positioned:relativeTo:] + 52
+	3   hopp_core-aarch64-apple-darwin      0x00000001011d5214 _RNvNtNtCs5ekGpolm0QZ_9hopp_core6window8vibrancy20apply_macos_vibrancy + 1160
+	4   hopp_core-aarch64-apple-darwin      0x00000001011cf4cc _RNvMs_Cs5ekGpolm0QZ_9hopp_coreNtB4_11Application25open_screensharing_window + 4876
+	5   hopp_core-aarch64-apple-darwin      0x00000001011b2934 _RNvXs1_Cs5ekGpolm0QZ_9hopp_coreNtB5_11ApplicationINtNtCsfionjdHsq7x_5winit11application18ApplicationHandlerNtB5_9UserEventE10user_event + 25140
+	6   hopp_core-aarch64-apple-darwin      0x00000001011a1ff8 _RNCINvNtNtNtCsfionjdHsq7x_5winit13platform_impl5macos10event_loop14map_user_eventNtCs5ekGpolm0QZ_9hopp_core9UserEventNCINvMs4_NtBa_10event_loopINtB20_9EventLoopB1h_E7run_appNtB1j_11ApplicationE0E0B1j_ + 2872
+	7   hopp_core-aarch64-apple-darwin      0x00000001022caa0c _RNvMNtNtNtCsfionjdHsq7x_5winit13platform_impl5macos9app_stateNtB2_19ApplicationDelegate12handle_event + 140
+	8   hopp_core-aarch64-apple-darwin      0x00000001022e15c0 _RNvNtNtNtCsfionjdHsq7x_5winit13platform_impl5macos8observer24control_flow_end_handler + 320
+	9   CoreFoundation                      0x000000018d559c98 __CFRUNLOOP_IS_CALLING_OUT_TO_AN_OBSERVER_CALLBACK_FUNCTION__ + 36
+	10  CoreFoundation                      0x000000018d559b80 __CFRunLoopDoObservers + 536
+	11  CoreFoundation                      0x000000018d559290 __CFRunLoopRun + 944
+	12  CoreFoundation                      0x000000018d558858 CFRunLoopRunSpecific + 572
+	13  HIToolbox                           0x000000019900027c RunCurrentEventLoopInMode + 324
+	14  HIToolbox                           0x00000001990034e8 ReceiveNextEventCommon + 676
+	15  HIToolbox                           0x000000019918e484 _BlockUntilNextEventMatchingListInModeWithFilter + 76
+	16  AppKit                              0x000000019147aa34 _DPSNextEvent + 684
+	17  AppKit                              0x0000000191e195cc -[NSApplication(NSEventRouting) _nextEventMatchingEventMask:untilDate:inMode:dequeue:] + 688
+	18  AppKit                              0x000000019146dbe4 -[NSApplication run] + 480
+	19  hopp_core-aarch64-apple-darwin      0x00000001011986f0 _RNvMs3_Cs5ekGpolm0QZ_9hopp_coreNtB5_15RenderEventLoop3run + 10412
+	20  hopp_core-aarch64-apple-darwin      0x0000000102d71ab4 _RNvCs780SGt2vQib_9hopp_core4main + 9076
+	21  hopp_core-aarch64-apple-darwin      0x0000000100df45ec _RINvNtNtCs1SSuMAdGM58_3std3sys9backtrace28___rust_begin_short_backtraceFEINtNtCsjIpoRzUjyHQ_4core6result6ResultuNtCs5ekGpolm0QZ_9hopp_core15RenderLoopErrorEB19_ECs780SGt2vQib_9hopp_core + 16
+	22  hopp_core-aarch64-apple-darwin      0x0000000100df6e20 main + 860
+	23  dyld                                0x000000018d0ceb98 start + 6076
+)
+[2026-10-08T19:33:30Z INFO  hopp_core::window::vibrancy] apply_macos_vibrancy: vibrancy applied successfully
+[2026-10-08T19:33:30Z INFO  hopp_core::window::aspect_ratio::platform] configure_macos_zoom_behavior: installed custom zoom delegate
+[2026-10-08T19:33:30Z INFO  hopp_core::graphics::graphics_context::participant] ParticipantsManager::add_participant: identity=room:dev_room:profile-camera:audio color=#615FFF auto_clear=false
+SVG size: 351x300
+SVG size: 343x296
+SVG size: 351x300
+[2026-10-08T19:33:30Z INFO  hopp_core::graphics::graphics_context::participant] ParticipantsManager::add_participant: identity=room:dev_room:profile-sharer:audio color=#009689 auto_clear=false
+SVG size: 399x300
+SVG size: 391x296
+SVG size: 399x300
+[2026-10-08T19:33:30Z WARN  hopp_core::livekit::video] process_video_stream: skipped 3 stale frames for room:dev_room:profile-camera:audio [camera]
+[2026-10-08T19:33:30Z INFO  hopp_core::graphics::graphics_context::participant] ParticipantsManager::add_participant: identity=local color=#7CCF00 auto_clear=true
+SVG size: 310x300
+SVG size: 302x296
+SVG size: 310x300
+[2026-10-08T19:33:30Z INFO  hopp_core::camera::capturer] CameraCapturer::set_screensharing_active: active=true, target=640x360@15fps
+[2026-10-08T19:33:30Z INFO  hopp_core] set_screensharing_active: true
+[2026-10-08T19:33:30Z INFO  hopp_core] user_event: OpenCamera
+[2026-10-08T19:33:30Z INFO  hopp_core::window::camera_window] CameraWindow::new
+[2026-10-08T19:33:30Z INFO  hopp_core::window::vibrancy] apply_macos_vibrancy: CAMetalLayer.isOpaque set to false
+[2026-10-08T19:33:30Z INFO  hopp_core::window::vibrancy] apply_macos_vibrancy: vibrancy applied successfully
+[2026-10-08T19:33:30Z INFO  hopp_core] user_event: OpenCamera
+[2026-10-08T19:33:30Z INFO  hopp_core::window::screensharing_window] ScreensharingWindow: creation-phase resize to 600.0x370.0 (ignored)
+[2026-10-08T19:33:31Z INFO  hopp_core::window::screensharing_window] ScreensharingWindow: stream dimensions changed to 3024x1964, aspect=1.540, window size=2116.5x1405.0
+[2026-10-08T19:33:31Z INFO  hopp_core::window::screensharing_window] ScreensharingWindow: programmatic resize landed at 2117.0x1405.0
+[2026-10-08T19:33:31Z WARN  hopp_core::livekit::video] process_video_stream: skipped 1 stale frames for room:dev_room:profile-camera:audio [camera]
+[2026-10-08T19:33:31Z WARN  hopp_core::livekit::video] process_video_stream: skipped 1 stale frames for room:dev_room:profile-sharer:audio [camera]
+[2026-10-08T19:33:31Z WARN  hopp_core::livekit::video] process_video_stream: skipped 1 stale frames for room:dev_room:profile-camera:audio [camera]
+[2026-10-08T19:33:31Z WARN  hopp_core::livekit::video] process_video_stream: skipped 1 stale frames for screenshare_room:dev_room:profile-sharer:video [screen share]
+[2026-10-08T19:33:31Z WARN  hopp_core::livekit::video] process_video_stream: skipped 1 stale frames for screenshare_room:dev_room:profile-sharer:video [screen share]
+[2026-10-08T19:33:31Z WARN  hopp_core::livekit::video] process_video_stream: skipped 6 stale frames for screenshare_room:dev_room:profile-sharer:video [screen share]
+[2026-10-08T19:33:31Z WARN  hopp_core::livekit::video] process_video_stream: skipped 2 stale frames for screenshare_room:dev_room:profile-sharer:video [screen share]
+[2026-10-08T19:33:32Z WARN  hopp_core::livekit::video] process_video_stream: skipped 1 stale frames for room:dev_room:profile-sharer:audio [camera]
+[2026-10-08T19:33:32Z WARN  hopp_core::livekit::video] process_video_stream: skipped 1 stale frames for room:dev_room:profile-sharer:audio [camera]
+[2026-10-08T19:33:32Z WARN  hopp_core::livekit::video] process_video_stream: skipped 1 stale frames for room:dev_room:profile-sharer:audio [camera]
+[2026-10-08T19:33:32Z WARN  hopp_core::livekit::video] process_video_stream: skipped 1 stale frames for room:dev_room:profile-sharer:audio [camera]
+[2026-10-08T19:33:32Z WARN  hopp_core::livekit::video] process_video_stream: skipped 1 stale frames for room:dev_room:profile-sharer:audio [camera]
+[2026-10-08T19:33:32Z WARN  hopp_core::livekit::video] process_video_stream: skipped 1 stale frames for room:dev_room:profile-sharer:audio [camera]
+[2026-10-08T19:33:32Z WARN  hopp_core::livekit::video] process_video_stream: skipped 1 stale frames for room:dev_room:profile-sharer:audio [camera]
+[2026-10-08T19:33:32Z WARN  hopp_core::livekit::video] process_video_stream: skipped 1 stale frames for room:dev_room:profile-sharer:audio [camera]
+[2026-10-08T19:33:34Z INFO  hopp_core::room_service] Connection quality changed: Excellent
+[2026-10-08T19:33:40Z INFO  hopp_core::window::frame_pacing] FramePacing screen share 10.0s: 3024x1964 presented=354 (35.3 fps) interval_ms p50=24.6 p95=30.6 p99=71.9 max=1080.7 render_ms p50=1.0 p95=1.8 p99=2.8 max=1007.7 age_ms p50=2.6 p95=4.3 p99=8.7 max=1011.8 idle_redraws=0 never_presented=0 stale_skipped=10
+[2026-10-08T19:33:50Z INFO  hopp_core::window::frame_pacing] FramePacing screen share 10.0s: 3024x1964 presented=399 (39.9 fps) interval_ms p50=24.3 p95=30.4 p99=38.2 max=73.4 render_ms p50=0.9 p95=1.5 p99=2.1 max=2.3 age_ms p50=2.2 p95=4.1 p99=5.6 max=8.1 idle_redraws=0 never_presented=0 stale_skipped=0
+[2026-10-08T19:34:00Z INFO  hopp_core::window::frame_pacing] FramePacing screen share 10.0s: 3024x1964 presented=401 (40.0 fps) interval_ms p50=24.4 p95=30.2 p99=32.2 max=33.5 render_ms p50=0.9 p95=1.7 p99=2.0 max=2.3 age_ms p50=2.0 p95=4.5 p99=5.5 max=6.2 idle_redraws=0 never_presented=0 stale_skipped=0
+[2026-10-08T19:34:10Z INFO  hopp_core::window::frame_pacing] FramePacing screen share 10.0s: 3024x1964 presented=401 (40.0 fps) interval_ms p50=24.6 p95=30.6 p99=33.5 max=34.9 render_ms p50=1.1 p95=1.8 p99=2.4 max=2.6 age_ms p50=2.8 p95=4.8 p99=5.8 max=7.6 idle_redraws=0 never_presented=0 stale_skipped=0
+[2026-10-08T19:34:11Z WARN  hopp_core::livekit::video] process_video_stream: skipped 1 stale frames for screenshare_room:dev_room:profile-sharer:video [screen share]
+[2026-10-08T19:34:20Z INFO  hopp_core::window::frame_pacing] FramePacing screen share 10.0s: 3024x1964 presented=398 (39.8 fps) interval_ms p50=24.7 p95=30.2 p99=37.6 max=72.8 render_ms p50=1.0 p95=1.8 p99=2.4 max=9.5 age_ms p50=2.4 p95=4.5 p99=6.6 max=14.1 idle_redraws=0 never_presented=0 stale_skipped=1
+[2026-10-08T19:34:30Z INFO  hopp_core::window::frame_pacing] FramePacing screen share 10.0s: 3024x1964 presented=401 (40.0 fps) interval_ms p50=24.6 p95=29.7 p99=32.4 max=71.2 render_ms p50=1.0 p95=1.6 p99=2.3 max=2.5 age_ms p50=2.5 p95=4.4 p99=5.6 max=7.8 idle_redraws=0 never_presented=0 stale_skipped=0
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] handle_room_events: Track unsubscribed from room:dev_room:profile-sharer:video: screen_share (Video)
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] handle_room_events: Screen share track unsubscribed from room:dev_room:profile-sharer:video
+[2026-10-08T19:34:32Z INFO  hopp_core] user_event: CloseScreenShareWindow
+[2026-10-08T19:34:32Z INFO  hopp_core] close_screensharing_window
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] handle_room_events: Track unpublished from room:dev_room:profile-sharer:video: screen_share (Video)
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] handle_room_events: Participant disconnected: room:dev_room:profile-sharer:video
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] camera quality: active=2, low_bandwidth=false, quality=High, updated_publications=2
+[2026-10-08T19:34:32Z INFO  hopp_core::livekit::video] process_video_stream: Received stop signal for screen share stream: screenshare_room:dev_room:profile-sharer:video
+[2026-10-08T19:34:32Z INFO  hopp_core::livekit::video] process_video_stream: screen share stream ended for participant: screenshare_room:dev_room:profile-sharer:video, frames=2463 stale_skipped=11
+[2026-10-08T19:34:32Z INFO  hopp_core::camera::capturer] CameraCapturer::set_screensharing_active: active=false, target=1280x720@30fps
+[2026-10-08T19:34:32Z INFO  hopp_core] set_screensharing_active: false
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] handle_room_events: Track unsubscribed from room:dev_room:profile-sharer:audio: camera (Video)
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] handle_room_events: Camera track unsubscribed from room:dev_room:profile-sharer:audio
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] handle_room_events: Track unpublished from room:dev_room:profile-sharer:audio: camera (Video)
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] camera quality: active=1, low_bandwidth=false, quality=High, updated_publications=1
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] handle_room_events: Track unsubscribed from room:dev_room:profile-sharer:audio: microphone (Audio)
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] handle_room_events: Stopping audio stream for participant: room:dev_room:profile-sharer:audio
+[2026-10-08T19:34:32Z INFO  hopp_core::livekit::audio] AudioTrackHandle dropped
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] handle_room_events: Track unpublished from room:dev_room:profile-sharer:audio: microphone (Audio)
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] handle_room_events: Participant disconnected: room:dev_room:profile-sharer:audio
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] camera quality: active=1, low_bandwidth=false, quality=High, updated_publications=1
+[2026-10-08T19:34:32Z INFO  hopp_core::livekit::video] process_video_stream: Received stop signal for camera stream: room:dev_room:profile-sharer:audio
+[2026-10-08T19:34:32Z INFO  hopp_core::livekit::video] process_video_stream: camera stream ended for participant: room:dev_room:profile-sharer:audio, frames=1843 stale_skipped=9
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] handle_room_events: Track unsubscribed from room:dev_room:profile-camera:audio: microphone (Audio)
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] handle_room_events: Stopping audio stream for participant: room:dev_room:profile-camera:audio
+[2026-10-08T19:34:32Z INFO  hopp_core::livekit::audio] AudioTrackHandle dropped
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] handle_room_events: Track unpublished from room:dev_room:profile-camera:audio: microphone (Audio)
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] handle_room_events: Track unsubscribed from room:dev_room:profile-camera:audio: camera (Video)
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] handle_room_events: Camera track unsubscribed from room:dev_room:profile-camera:audio
+[2026-10-08T19:34:32Z INFO  hopp_core] user_event: CloseCameraWindow
+[2026-10-08T19:34:32Z INFO  hopp_core] close_camera_window
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] handle_room_events: Track unpublished from room:dev_room:profile-camera:audio: camera (Video)
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] camera quality: active=0, low_bandwidth=false, quality=High, updated_publications=0
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] handle_room_events: Participant disconnected: room:dev_room:profile-camera:audio
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] camera quality: active=0, low_bandwidth=false, quality=High, updated_publications=0
+[2026-10-08T19:34:32Z INFO  hopp_core::livekit::video] process_video_stream: Received stop signal for camera stream: room:dev_room:profile-camera:audio
+[2026-10-08T19:34:32Z INFO  hopp_core::livekit::video] process_video_stream: camera stream ended for participant: room:dev_room:profile-camera:audio, frames=1859 stale_skipped=5
+[2026-10-08T19:34:32Z INFO  hopp_core] user_event: CloseCameraWindow
+[2026-10-08T19:34:32Z INFO  hopp_core] close_camera_window
+[2026-10-08T19:34:32Z INFO  hopp_core] user_event: CallEnd requested=Some(1791488009062) current=Some(1791488009062)
+[2026-10-08T19:34:32Z INFO  hopp_core] stop_mic
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] unpublish_audio_track
+[2026-10-08T19:34:32Z INFO  hopp_core::audio::player] Player::stop
+[2026-10-08T19:34:32Z INFO  hopp_core] stop_camera
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] mute_camera_track
+[2026-10-08T19:34:32Z INFO  hopp_core::livekit::audio] AudioPublisher: audio track unpublished
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] room_service_commands: Audio track unpublished
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] camera quality: active=0, low_bandwidth=false, quality=High, updated_publications=0
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] room_service_commands: Camera track muted
+[2026-10-08T19:34:32Z INFO  hopp_core] stop_screenshare
+[2026-10-08T19:34:32Z INFO  hopp_core::capture::capturer] stop_capture
+[2026-10-08T19:34:32Z WARN  hopp_core::capture::capturer] stop_capture: no active stream
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] mute_screen_share_track
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] set_screen_capture_size: None
+[2026-10-08T19:34:32Z INFO  hopp_core] destroy_overlay_window
+[2026-10-08T19:34:32Z INFO  hopp_core::camera::capturer] CameraCapturer::set_screensharing_active: active=false, target=1280x720@30fps
+[2026-10-08T19:34:32Z INFO  hopp_core] set_screensharing_active: false
+[2026-10-08T19:34:32Z INFO  hopp_core] close_drawing_window
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] destroy_room
+[2026-10-08T19:34:32Z INFO  hopp_core::livekit::stats] VideoHealthSummary Call: duration_s=62 alerts={} codecs={} implementations={}
+[2026-10-08T19:34:32Z INFO  hopp_core::livekit::stats] VideoHealthSummary Inbound: received=2438 decoded=2438 dropped=0 freeze_duration_s=0.0 max_stall_s=0
+[2026-10-08T19:34:32Z INFO  hopp_core] close_camera_window
+[2026-10-08T19:34:32Z INFO  hopp_core::room_service] room_service_commands: Screen share track muted
+[2026-10-08T19:34:32Z INFO  hopp_core] close_screensharing_window
+[2026-10-08T19:34:32Z INFO  hopp_core] close_drawing_window
+[2026-10-08T19:34:32Z WARN  hopp_core] window_event: remote control is none redraw requested
+[2026-10-08T19:34:32Z WARN  hopp_core::window::screensharing_window] redraw_inner: dropping redraw 2462 2462
+[2026-10-08T19:34:32Z ERROR hopp_core] RenderEventLoop::run Socket event channel closed, terminating.
+[2026-10-08T19:34:32Z INFO  hopp_core] user_event: Client disconnected, terminating.
+[2026-10-08T19:34:32Z INFO  hopp_core::capture::capturer] stop_capture
+[2026-10-08T19:34:32Z WARN  hopp_core::capture::capturer] stop_capture: no active stream
+[2026-10-08T19:34:32Z INFO  hopp_core::capture::capturer] poll_stream: stop message
+
+thread 'tokio-rt-worker' (2630962) panicked at /Users/martinmariano/.cargo/git/checkouts/rust-sdks-188db78d39b57006/2ce5cf0/livekit-runtime/src/tokio.rs:53:46:
+Tasks should not panic: JoinError::Cancelled(Id(83))
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[2026-10-08T19:34:32Z INFO  hopp_core::window::frame_pacing] FramePacing screen share 2.2s: 3024x1964 presented=83 (38.0 fps) interval_ms p50=24.9 p95=29.5 p99=36.8 max=36.8 render_ms p50=0.6 p95=0.7 p99=0.9 max=0.9 age_ms p50=1.3 p95=2.7 p99=3.6 max=3.6 idle_redraws=1 never_presented=0 stale_skipped=0

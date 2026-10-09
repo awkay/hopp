@@ -1,0 +1,80 @@
+hopp_core, sharer run 'baseline': 36% of one core (load generator 11%)
+11.1 CPU-seconds sampled over 30 s = 37% of one core
+
+CPU by thread
+   48.6%  hopp_core-aarch64-apple-darwin
+   15.2%  hopp-audio
+   11.2%  network_thread
+    9.3%  Main Thread
+    6.0%  worker_thread
+    5.1%  tokio-rt-worker
+    2.3%  com.apple.coremedia.sharedRootQueue.47
+    1.8%  com.apple.audio.IOThread.client
+    0.4%  signaling_thread
+
+Most self time (the function itself, not what it calls)
+   10.8%  CopyRow_NEON  [hopp_core-aarch64-apple-darwin]
+    7.7%  _platform_memmove  [libsystem_platform.dylib]
+    4.9%  mach_msg2_trap  [libsystem_kernel.dylib]
+    4.5%  SplitUVRow_NEON  [hopp_core-aarch64-apple-darwin]
+    3.9%  start_wqthread  [libsystem_pthread.dylib]
+    3.4%  .store_generic  [hopp_core-aarch64-apple-darwin]
+    2.8%  __sendto  [libsystem_kernel.dylib]
+    2.7%  .packed_packed_loop_16  [hopp_core-aarch64-apple-darwin]
+    2.6%  poll  [libsystem_kernel.dylib]
+    2.3%  madvise  [libsystem_kernel.dylib]
+    1.7%  __psynch_cvwait  [libsystem_kernel.dylib]
+    1.4%  kevent_id  [libsystem_kernel.dylib]
+    1.2%  MergeUVRow_NEON  [hopp_core-aarch64-apple-darwin]
+    1.1%  _platform_memset  [libsystem_platform.dylib]
+    1.0%  silk_noise_shape_quantizer_del_dec  [hopp_core-aarch64-apple-darwin]
+    0.8%  __psynch_cvbroad  [libsystem_kernel.dylib]
+    0.8%  mach_absolute_time  [libsystem_kernel.dylib]
+    0.8%  .return  [hopp_core-aarch64-apple-darwin]
+    0.7%  objc_msgSend  [libobjc.A.dylib]
+    0.6%  nanov2_malloc_type  [libsystem_malloc.dylib]
+    0.6%  iokit_user_client_trap  [IOKit]
+    0.6%  kevent  [libsystem_kernel.dylib]
+    0.5%  _nanov2_free  [libsystem_malloc.dylib]
+    0.5%  webrtc::aec3::MatchedFilterCore_NEON(unsigned long, float, float, webrtc::ArrayView<float const, -4711l>, webrtc::ArrayView<float const, -4711l>, webrtc::ArrayView<float, -4711l>, bool*, float*, bool, webrtc::ArrayView<float, -4711l>, webrtc::ArrayView<float, -4711l>)  [hopp_core-aarch64-apple-darwin]
+    0.5%  write  [libsystem_kernel.dylib]
+    0.5%  <tract_core::plan::SimplePlan<tract_core::model::fact::TypedFact, alloc::boxed::Box<dyn tract_core::ops::TypedOp>, tract_core::model::graph::Graph<tract_core::model::fact::TypedFact, alloc::boxed::Box<dyn tract_core::ops::TypedOp>>>>::run  [hopp_core-aarch64-apple-darwin]
+    0.4%  webrtc::SincResampler::Convolve_NEON(float const*, float const*, float const*, double)  [hopp_core-aarch64-apple-darwin]
+    0.3%  semaphore_wait_signal_trap  [libsystem_kernel.dylib]
+    0.3%  __vfprintf  [libsystem_c.dylib]
+    0.3%  __psynch_cvsignal  [libsystem_kernel.dylib]
+
+Most total time in hopp_core's own functions (including what they call)
+   14.7%  hopp_core::livekit::audio::process_audio_samples::{closure#0}
+    9.3%  <hopp_core::RenderEventLoop>::run
+    9.3%  hopp_core::main
+    7.8%  <hopp_core::Application as winit::application::ApplicationHandler<hopp_core::UserEvent>>::window_event
+    5.4%  <hopp_core::RemoteControl>::render_frame
+    5.4%  <hopp_core::graphics::graphics_context::GraphicsContext>::draw
+    2.6%  hopp_core::livekit::video::process_video_stream::{closure#0}
+    0.7%  <hopp_core::livekit::video::VideoBuffer>::copy_from_i420
+    0.3%  <hopp_core::graphics::graphics_context::participant::ParticipantsManager>::draw
+    0.3%  <hopp_core::graphics::graphics_context::participant::draw::Draw>::draw_shape
+    0.2%  hopp_core::room_service::handle_room_events::{closure#0}
+    0.1%  <hopp_core::Application as winit::application::ApplicationHandler<hopp_core::UserEvent>>::user_event
+    0.1%  <hopp_core::window::camera_window::CameraWindow>::view
+    0.1%  <hopp_core::components::call_controls::CallControlsState>::view
+    0.1%  <hopp_core::input::mouse::CursorController>::cursor_move_controller
+    0.1%  <hopp_core::input::mouse::CursorState>::set_position
+    0.1%  hopp_core::components::split_button::split_button_sized::<hopp_core::components::call_controls::CallControlsMessage>
+    0.0%  hopp_core::livekit::audio::play_remote_audio_track::{closure#0}
+    0.0%  <hopp_core::graphics::graphics_context::participant::ParticipantsManager>::draw_add_point
+    0.0%  hopp_core::window::camera_window::participant_card
+    0.0%  <hopp_core::graphics::graphics_context::participant::draw::Draw>::add_point
+    0.0%  <hopp_core::windows::colors::ColorToken>::to_color
+    0.0%  <hopp_core::window_manager::WindowManager>::is_active_window
+    0.0%  <hopp_core::overlay_window::OverlayWindow>::source_to_global
+    0.0%  hopp_core::room_service::drain_video_room_events::{closure#0}
+    0.0%  hopp_core::livekit::stats::collect_stats::{closure#0}
+    0.0%  hopp_core::livekit::stats::stats_loop::{closure#0}
+    0.0%  hopp_core::window::camera_window::name_label::{closure#0}
+
+energy: 38.1% of one core, 444 mW avg, 31 idle wake-ups/s, 701 interrupt wake-ups/s, footprint 400 MB, over 20.0 s
+
+FramePacing (core's screen-share window, one line per 10 s):
+  none (no remote share shown)

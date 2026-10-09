@@ -1,0 +1,84 @@
+hopp_core, viewer run 'after2': 29% of one core (load generator 32%)
+9.4 CPU-seconds sampled over 30 s = 31% of one core
+
+CPU by thread
+   27.9%  hopp_core-aarch64-apple-darwin
+   21.9%  tokio-rt-worker
+   17.1%  hopp-audio
+   15.9%  Main Thread
+    6.5%  network_thread
+    6.1%  worker_thread
+    2.4%  com.apple.audio.IOThread.client
+    1.9%  com.apple.coremedia.sharedRootQueue.47
+    0.2%  signaling_thread
+
+Most self time (the function itself, not what it calls)
+   15.8%  _platform_memmove  [libsystem_platform.dylib]
+    7.0%  CopyRow_NEON  [hopp_core-aarch64-apple-darwin]
+    4.7%  mach_msg2_trap  [libsystem_kernel.dylib]
+    4.5%  start_wqthread  [libsystem_pthread.dylib]
+    4.0%  .store_generic  [hopp_core-aarch64-apple-darwin]
+    3.4%  SplitUVRow_NEON  [hopp_core-aarch64-apple-darwin]
+    2.4%  poll  [libsystem_kernel.dylib]
+    2.1%  silk_noise_shape_quantizer_del_dec  [hopp_core-aarch64-apple-darwin]
+    1.8%  .packed_packed_loop_16  [hopp_core-aarch64-apple-darwin]
+    1.5%  __psynch_cvwait  [libsystem_kernel.dylib]
+    1.4%  kevent_id  [libsystem_kernel.dylib]
+    1.4%  _platform_memset  [libsystem_platform.dylib]
+    1.2%  .return  [hopp_core-aarch64-apple-darwin]
+    1.0%  mach_absolute_time  [libsystem_kernel.dylib]
+    1.0%  kevent  [libsystem_kernel.dylib]
+    0.9%  webrtc::SincResampler::Convolve_NEON(float const*, float const*, float const*, double)  [hopp_core-aarch64-apple-darwin]
+    0.7%  __psynch_cvbroad  [libsystem_kernel.dylib]
+    0.6%  __sendto  [libsystem_kernel.dylib]
+    0.6%  webrtc::aec3::MatchedFilterCore_NEON(unsigned long, float, float, webrtc::ArrayView<float const, -4711l>, webrtc::ArrayView<float const, -4711l>, webrtc::ArrayView<float, -4711l>, bool*, float*, bool, webrtc::ArrayView<float, -4711l>, webrtc::ArrayView<float, -4711l>)  [hopp_core-aarch64-apple-darwin]
+    0.5%  objc_msgSend  [libobjc.A.dylib]
+    0.5%  deemphasis  [hopp_core-aarch64-apple-darwin]
+    0.5%  opus_fft_impl  [hopp_core-aarch64-apple-darwin]
+    0.4%  _nanov2_free  [libsystem_malloc.dylib]
+    0.4%  nanov2_malloc_type  [libsystem_malloc.dylib]
+    0.4%  silk_decode_core  [hopp_core-aarch64-apple-darwin]
+    0.4%  <tract_core::plan::SimplePlan<tract_core::model::fact::TypedFact, alloc::boxed::Box<dyn tract_core::ops::TypedOp>, tract_core::model::graph::Graph<tract_core::model::fact::TypedFact, alloc::boxed::Box<dyn tract_core::ops::TypedOp>>>>::run  [hopp_core-aarch64-apple-darwin]
+    0.4%  semaphore_wait_signal_trap  [libsystem_kernel.dylib]
+    0.4%  __psynch_cvsignal  [libsystem_kernel.dylib]
+    0.3%  CopyRow_Any_NEON  [hopp_core-aarch64-apple-darwin]
+    0.3%  iokit_user_client_trap  [IOKit]
+
+Most total time in hopp_core's own functions (including what they call)
+   21.1%  hopp_core::livekit::video::process_video_stream::{closure#0}
+   15.9%  hopp_core::main
+   15.9%  <hopp_core::RenderEventLoop>::run
+   15.4%  hopp_core::livekit::audio::process_audio_samples::{closure#0}
+   14.5%  <hopp_core::Application as winit::application::ApplicationHandler<hopp_core::UserEvent>>::window_event
+   11.3%  <hopp_core::window::screensharing_window::ScreensharingWindow>::handle_window_event
+    8.9%  <hopp_core::livekit::video::VideoBuffer>::copy_from_i420
+    0.2%  <hopp_core::window::screensharing_window::ScreensharingWindow>::view
+    0.1%  hopp_core::livekit::audio::play_remote_audio_track::{closure#0}
+    0.1%  <hopp_core::components::call_controls::CallControlsState>::view
+    0.1%  hopp_core::livekit::stats::stats_loop::{closure#0}
+    0.1%  hopp_core::components::split_button::split_button_sized::<hopp_core::components::call_controls::CallControlsMessage>
+    0.1%  hopp_core::livekit::stats::collect_stats::{closure#0}
+    0.1%  <hopp_core::window::camera_window::CameraWindow>::view
+    0.0%  hopp_core::window::camera_window::participant_card
+    0.0%  <hopp_core::graphics::graphics_context::click_animation::ClickAnimationRenderer>::update
+    0.0%  hopp_core::window::screensharing_window::effects_trigger_button::{closure#1}
+    0.0%  <hopp_core::graphics::graphics_context::click_animation::ClickAnimationRenderer>::draw
+    0.0%  <hopp_core::graphics::yuv_renderer::YuvPipeline as core::any::Any>::type_id
+    0.0%  <hopp_core::window::frame_pacing::FramePacing>::log
+    0.0%  hopp_core::room_service::room_service_commands::{closure#0}
+    0.0%  hopp_core::components::segmented_control::segmented_control::<hopp_core::window::screensharing_window::ScreensharingMessage, hopp_core::window::screensharing_window::ScreensharingMessage::TabSelected>::{closure#2}
+    0.0%  <hopp_core::window::screensharing_window::ScreensharingWindow>::view::{closure#3}
+    0.0%  hopp_core::components::split_button::split_button_with_icon::<hopp_core::components::call_controls::CallControlsMessage>::{closure#0}
+    0.0%  <hopp_core::graphics::graphics_context::participant::ParticipantsManager>::draw
+    0.0%  hopp_core::window::camera_window::participant_card::{closure#0}
+
+energy: 29.6% of one core, 367 mW avg, 11 idle wake-ups/s, 719 interrupt wake-ups/s, footprint 404 MB, over 20.0 s
+
+FramePacing (core's screen-share window, one line per 10 s):
+FramePacing screen share 10.0s: 3024x1964 presented=376 (37.6 fps) interval_ms p50=25.0 p95=29.1 p99=103.8 max=121.0 render_ms p50=0.8 p95=1.1 p99=1.7 max=40.0 age_ms p50=2.2 p95=2.8 p99=4.1 max=12.1 idle_redraws=2 never_presented=1 stale_skipped=12
+FramePacing screen share 10.0s: 3024x1964 presented=401 (40.0 fps) interval_ms p50=25.0 p95=27.5 p99=28.4 max=68.1 render_ms p50=0.9 p95=1.2 p99=1.3 max=1.7 age_ms p50=2.3 p95=2.9 p99=3.4 max=3.9 idle_redraws=0 never_presented=0 stale_skipped=0
+FramePacing screen share 10.0s: 3024x1964 presented=400 (40.0 fps) interval_ms p50=25.0 p95=27.1 p99=29.1 max=66.7 render_ms p50=0.8 p95=1.2 p99=1.3 max=3.3 age_ms p50=2.1 p95=2.7 p99=4.1 max=37.5 idle_redraws=0 never_presented=0 stale_skipped=0
+FramePacing screen share 10.0s: 3024x1964 presented=400 (39.9 fps) interval_ms p50=24.9 p95=27.2 p99=27.8 max=70.7 render_ms p50=0.9 p95=1.2 p99=1.4 max=1.6 age_ms p50=2.2 p95=2.7 p99=3.1 max=3.5 idle_redraws=0 never_presented=0 stale_skipped=1
+FramePacing screen share 10.0s: 3024x1964 presented=400 (39.9 fps) interval_ms p50=24.9 p95=27.2 p99=28.3 max=68.9 render_ms p50=0.9 p95=1.1 p99=1.3 max=1.5 age_ms p50=2.1 p95=2.7 p99=3.3 max=4.2 idle_redraws=0 never_presented=0 stale_skipped=1
+FramePacing screen share 10.0s: 3024x1964 presented=399 (39.9 fps) interval_ms p50=25.0 p95=27.7 p99=28.3 max=72.1 render_ms p50=0.8 p95=1.1 p99=1.2 max=1.3 age_ms p50=2.2 p95=2.8 p99=3.2 max=5.2 idle_redraws=0 never_presented=0 stale_skipped=1
+FramePacing screen share 1.3s: 3024x1964 presented=49 (37.0 fps) interval_ms p50=25.1 p95=27.2 p99=32.0 max=32.0 render_ms p50=0.6 p95=0.7 p99=0.9 max=0.9 age_ms p50=1.3 p95=2.0 p99=4.7 max=4.7 idle_redraws=1 never_presented=0 stale_skipped=0
