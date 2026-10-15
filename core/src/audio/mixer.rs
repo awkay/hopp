@@ -25,7 +25,16 @@ const MIXER_FRAME_SAMPLES: usize = (MIXER_SAMPLE_RATE / 100 * MIXER_NUM_CHANNELS
 /// to us when it's CPU-starved. We absorb bursts with headroom; if we blow
 /// past this cap we crash back by dropping from the front.
 const HARD_CAP_FRAMES: usize = 80; // 800ms
-const TARGET_DELAY: usize = 20;
+/// Two clocks meet in a participant's queue: LiveKit decodes a frame every 10 ms of the system
+/// clock, and the device pulls frames on its own clock, sometimes two at a time. So the queue
+/// can slowly fill (or run dry) as they drift, and it keeps whatever a burst left in it. Each
+/// queue tracks its lowest level over a window: frames it held at its lowest point were never
+/// needed, only delay, so it drops them down to `KEEP_FRAMES`, the frame being mixed plus one
+/// spare. Running dry plays one frame of silence, which leaves the queue a frame fuller.
+const KEEP_FRAMES: usize = 2;
+const WINDOW_MIXES: u32 = 300; // 3 s
+/// Plain mixes between two dropped frames, so catching up plays at most 20% faster.
+const DROP_SPACING: u32 = 4;
 /// Only the reading end of a ring can drop its oldest audio, so the mixer enforces
 /// `HARD_CAP_FRAMES` and each source's ring has room for a burst on top of it.
 const SOURCE_QUEUE_FRAMES: usize = 2 * HARD_CAP_FRAMES;
@@ -128,10 +137,19 @@ impl std::fmt::Debug for MixerHandle {
     }
 }
 
+/// What the mixer did to a participant's queue on the real-time thread, where it can't log. The
+/// receive task logs it.
+#[derive(Default)]
+struct QueueEvents {
+    stale_gap_ms: AtomicU32,
+    trimmed_frames: AtomicU32,
+    underruns: AtomicU32,
+}
+
 /// The receive task's end of a remote participant's audio queue.
 pub struct AudioSource {
     queue: Producer<i16>,
-    stale_gap_ms: Arc<AtomicU32>,
+    events: Arc<QueueEvents>,
 }
 
 impl AudioSource {
@@ -140,11 +158,19 @@ impl AudioSource {
     /// everything queued when it resumes anyway.
     pub fn push_samples(&mut self, samples: &[i16]) {
         let _ = self.queue.push_entire_slice(samples);
-        // The mixer flushes on the real-time thread, where it can't log.
-        let gap_ms = self.stale_gap_ms.swap(0, Ordering::Relaxed);
+        let gap_ms = self.events.stale_gap_ms.swap(0, Ordering::Relaxed);
         if gap_ms > 0 {
             log::warn!("AudioSource: {gap_ms}ms gap, flushed stale frames");
         }
+    }
+
+    /// Frames the mixer dropped as needless delay, and how often the queue ran dry, since the
+    /// last call.
+    pub fn take_playout_events(&self) -> (u32, u32) {
+        (
+            self.events.trimmed_frames.swap(0, Ordering::Relaxed),
+            self.events.underruns.swap(0, Ordering::Relaxed),
+        )
     }
 }
 
@@ -153,21 +179,34 @@ struct SourceQueue {
     samples: Consumer<i16>,
     frame_samples: usize,
     last_mix: Option<Instant>,
-    stale_gap_ms: Arc<AtomicU32>,
+    /// A frame was played, so running dry from now on is an underrun.
+    playing: bool,
+    /// The fewest frames queued at a mix in the current window (see `KEEP_FRAMES`).
+    window_low: usize,
+    window_mixes: u32,
+    /// Frames still to drop, one at a time, before measuring again.
+    to_drop: usize,
+    mixes_since_drop: u32,
+    events: Arc<QueueEvents>,
 }
 
 fn source_queue(frame_samples: usize) -> (AudioSource, SourceQueue) {
     let (producer, consumer) = RingBuffer::new(SOURCE_QUEUE_FRAMES * frame_samples);
-    let stale_gap_ms = Arc::new(AtomicU32::new(0));
+    let events = Arc::new(QueueEvents::default());
     let source = AudioSource {
         queue: producer,
-        stale_gap_ms: stale_gap_ms.clone(),
+        events: events.clone(),
     };
     let queue = SourceQueue {
         samples: consumer,
         frame_samples,
         last_mix: None,
-        stale_gap_ms,
+        playing: false,
+        window_low: usize::MAX,
+        window_mixes: 0,
+        to_drop: 0,
+        mixes_since_drop: DROP_SPACING,
+        events,
     };
     (source, queue)
 }
@@ -180,26 +219,94 @@ impl SourceQueue {
             let gap = now.duration_since(prev);
             if gap.as_millis() > 100 {
                 discard_oldest(&mut self.samples, usize::MAX);
-                self.stale_gap_ms
+                self.events
+                    .stale_gap_ms
                     .store(gap.as_millis() as u32, Ordering::Relaxed);
+                self.to_drop = 0;
+                self.restart_window();
             }
         }
         self.last_mix = Some(now);
 
-        let queued = self.samples.slots() / frame_samples;
+        let mut queued = self.samples.slots() / frame_samples;
         if queued > HARD_CAP_FRAMES {
-            discard_oldest(
-                &mut self.samples,
-                (queued - HARD_CAP_FRAMES) * frame_samples,
-            );
+            let excess = queued - HARD_CAP_FRAMES;
+            discard_oldest(&mut self.samples, excess * frame_samples);
+            self.count_trimmed(excess);
+            queued = HARD_CAP_FRAMES;
         }
-        if queued.min(HARD_CAP_FRAMES) > TARGET_DELAY {
-            discard_oldest(&mut self.samples, frame_samples);
+        self.measure(queued);
+
+        if self.to_drop > 0 && queued <= KEEP_FRAMES {
+            // Already down to what the output needs.
+            self.to_drop = 0;
         }
+        if self.to_drop > 0 && self.mixes_since_drop >= DROP_SPACING {
+            self.to_drop -= 1;
+            self.mixes_since_drop = 0;
+            self.count_trimmed(1);
+            return self.crossfade_next_two();
+        }
+        self.mixes_since_drop = self.mixes_since_drop.saturating_add(1);
+
+        let Ok(chunk) = self.samples.read_chunk(frame_samples) else {
+            if self.playing {
+                self.events.underruns.fetch_add(1, Ordering::Relaxed);
+            }
+            return None;
+        };
+        self.playing = true;
         // A frame can wrap around the ring's end, so it comes out in two slices.
-        let chunk = self.samples.read_chunk(frame_samples).ok()?;
         let (first, second) = chunk.as_slices();
         let frame = [first, second].concat();
+        chunk.commit_all();
+        Some(frame)
+    }
+
+    /// Records the queue's level at this mix and, at the end of a window, how many frames it
+    /// held that were never needed. Waits while those are being dropped.
+    fn measure(&mut self, queued: usize) {
+        if self.to_drop > 0 {
+            return;
+        }
+        self.window_low = self.window_low.min(queued);
+        self.window_mixes += 1;
+        if self.window_mixes == WINDOW_MIXES {
+            self.to_drop = self.window_low.saturating_sub(KEEP_FRAMES);
+            self.restart_window();
+        }
+    }
+
+    fn restart_window(&mut self) {
+        self.window_low = usize::MAX;
+        self.window_mixes = 0;
+    }
+
+    fn count_trimmed(&self, frames: usize) {
+        self.events
+            .trimmed_frames
+            .fetch_add(frames as u32, Ordering::Relaxed);
+    }
+
+    /// Plays the next two frames as one, the first fading out as the second fades in, so a
+    /// dropped frame leaves no click. Only called with more than `KEEP_FRAMES` queued.
+    fn crossfade_next_two(&mut self) -> Option<Vec<i16>> {
+        let frame_samples = self.frame_samples;
+        let chunk = self.samples.read_chunk(2 * frame_samples).ok()?;
+        let (first, second) = chunk.as_slices();
+        let at = |n: usize| match n.checked_sub(first.len()) {
+            None => first[n],
+            Some(n) => second[n],
+        };
+        let length = frame_samples as i32;
+        let frame = (0..frame_samples)
+            .map(|n| {
+                let weight = n as i32;
+                let fading_out = at(n) as i32 * (length - weight);
+                let fading_in = at(frame_samples + n) as i32 * weight;
+                ((fading_out + fading_in) / length) as i16
+            })
+            .collect();
         chunk.commit_all();
         Some(frame)
     }
@@ -517,18 +624,100 @@ mod tests {
         assert_eq!(queue.next_frame(now), None);
     }
 
+    /// Mixes `mixes` times, pushing `pushed(mix)` one-sample frames before each, and returns
+    /// what played (`None` for silence).
+    fn run(
+        source: &mut AudioSource,
+        queue: &mut SourceQueue,
+        mixes: usize,
+        pushed: impl Fn(usize) -> usize,
+    ) -> Vec<Option<i16>> {
+        let start = Instant::now();
+        let mut next = 0;
+        (0..mixes)
+            .map(|mix| {
+                for _ in 0..pushed(mix) {
+                    source.push_samples(&[next]);
+                    next = next.wrapping_add(1);
+                }
+                let now = start + Duration::from_millis(10 * mix as u64);
+                queue.next_frame(now).map(|frame| frame[0])
+            })
+            .collect()
+    }
+
     #[test]
-    fn drops_one_extra_frame_per_mix_above_the_target_delay() {
+    fn trims_delay_the_output_never_needed_down_to_one_spare_frame() {
         let (mut source, mut queue) = source_queue(1);
-        for value in 0..TARGET_DELAY as i16 + 2 {
+        // A burst left 30 frames queued; then one frame arrives per mix.
+        for _ in 0..30 {
+            source.push_samples(&[0]);
+        }
+        let windows = 2 * WINDOW_MIXES as usize;
+        let played = run(&mut source, &mut queue, windows, |_| 1);
+        assert!(played.iter().all(Option::is_some), "never ran dry");
+        assert_eq!(queue.samples.slots(), KEEP_FRAMES - 1);
+        assert_eq!(source.take_playout_events(), (31 - KEEP_FRAMES as u32, 0));
+        // Nothing before the first window ended, then spaced out.
+        let dropped_at: Vec<usize> = played
+            .windows(2)
+            .enumerate()
+            .filter(|(_, pair)| pair[1].unwrap() > pair[0].unwrap() + 1)
+            .map(|(mix, _)| mix + 1)
+            .collect();
+        assert_eq!(dropped_at[0], WINDOW_MIXES as usize);
+        assert!(dropped_at
+            .windows(2)
+            .all(|pair| pair[1] - pair[0] == DROP_SPACING as usize + 1));
+    }
+
+    #[test]
+    fn keeps_what_a_bursty_producer_and_output_need() {
+        let (mut source, mut queue) = source_queue(1);
+        // Frames arrive in pairs every other mix, and one is queued ahead.
+        source.push_samples(&[0]);
+        let mixes = 3 * WINDOW_MIXES as usize;
+        let played = run(&mut source, &mut queue, mixes, |mix| 2 * (mix % 2));
+        assert!(played.iter().all(Option::is_some));
+        assert_eq!(source.take_playout_events(), (0, 0));
+    }
+
+    #[test]
+    fn a_slower_producer_runs_dry_now_and_then_and_counts_it() {
+        let (mut source, mut queue) = source_queue(1);
+        assert_eq!(queue.next_frame(Instant::now()), None);
+        assert_eq!(source.take_playout_events(), (0, 0), "not playing yet");
+        // One frame missing every 100 mixes, as with a device clock 1% faster.
+        let played = run(&mut source, &mut queue, 1000, |mix| {
+            usize::from(mix % 100 != 99)
+        });
+        let silent = played.iter().filter(|frame| frame.is_none()).count();
+        assert_eq!(silent, 10);
+        assert_eq!(source.take_playout_events(), (0, 10));
+    }
+
+    #[test]
+    fn crossfades_a_dropped_frame_into_the_next() {
+        let (mut source, mut queue) = source_queue(4);
+        source.push_samples(&[1000; 4]);
+        source.push_samples(&[2000; 4]);
+        source.push_samples(&[3000; 4]);
+        queue.to_drop = 1;
+        let now = Instant::now();
+        assert_eq!(queue.next_frame(now), Some(vec![1000, 1250, 1500, 1750]));
+        assert_eq!(queue.next_frame(now), Some(vec![3000; 4]));
+        assert_eq!(source.take_playout_events(), (1, 0));
+    }
+
+    #[test]
+    fn stops_dropping_once_down_to_what_the_output_needs() {
+        let (mut source, mut queue) = source_queue(1);
+        for value in 0..KEEP_FRAMES as i16 {
             source.push_samples(&[value]);
         }
-        let now = Instant::now();
-        let mut played = Vec::new();
-        while let Some(frame) = queue.next_frame(now) {
-            played.push(frame[0]);
-        }
-        assert_eq!(played, (1..=TARGET_DELAY as i16 + 1).collect::<Vec<_>>());
+        queue.to_drop = 5;
+        assert_eq!(queue.next_frame(Instant::now()), Some(vec![0]));
+        assert_eq!(queue.to_drop, 0);
     }
 
     #[test]
@@ -537,9 +726,9 @@ mod tests {
         for value in 0..HARD_CAP_FRAMES as i16 + 20 {
             source.push_samples(&[value]);
         }
-        // 20 frames over the cap, then one more to catch up towards the target delay.
-        assert_eq!(queue.next_frame(Instant::now()), Some(vec![21]));
-        assert_eq!(queue.samples.slots(), HARD_CAP_FRAMES - 2);
+        assert_eq!(queue.next_frame(Instant::now()), Some(vec![20]));
+        assert_eq!(queue.samples.slots(), HARD_CAP_FRAMES - 1);
+        assert_eq!(source.take_playout_events(), (20, 0));
     }
 
     #[test]
@@ -550,7 +739,7 @@ mod tests {
         }
         assert_eq!(queue.samples.slots(), SOURCE_QUEUE_FRAMES);
         let newest_kept = SOURCE_QUEUE_FRAMES as i16 - 1;
-        let first_played = newest_kept - HARD_CAP_FRAMES as i16 + 2;
+        let first_played = newest_kept - HARD_CAP_FRAMES as i16 + 1;
         assert_eq!(queue.next_frame(Instant::now()), Some(vec![first_played]));
     }
 
@@ -562,10 +751,10 @@ mod tests {
         let start = Instant::now();
         assert_eq!(queue.next_frame(start), Some(vec![1]));
         assert_eq!(queue.next_frame(start + Duration::from_millis(150)), None);
-        assert_eq!(source.stale_gap_ms.load(Ordering::Relaxed), 150);
+        assert_eq!(source.events.stale_gap_ms.load(Ordering::Relaxed), 150);
 
         source.push_samples(&[3]);
-        assert_eq!(source.stale_gap_ms.load(Ordering::Relaxed), 0);
+        assert_eq!(source.events.stale_gap_ms.load(Ordering::Relaxed), 0);
         assert_eq!(
             queue.next_frame(start + Duration::from_millis(160)),
             Some(vec![3])
@@ -685,7 +874,10 @@ mod tests {
                     source.push_samples(&frame(value));
                 }
             }
-            // Covers the hard cap and catching up. Each source's frame is allocated for the
+            for (_source, guard) in &sources {
+                guard._queue.lock().to_drop = 3;
+            }
+            // Covers the hard cap and dropped frames. Each source's frame is allocated for the
             // mixer and freed by it, and nothing else touches the heap. Only this thread's Rust
             // allocations are counted, not libwebrtc's C++ ones.
             const MIXES: usize = 20;

@@ -227,6 +227,15 @@ pub fn play_remote_audio_track(
                         elapsed,
                     );
                 }
+                let (trimmed, underruns) = source.take_playout_events();
+                if trimmed > 0 || underruns > 0 {
+                    log::info!(
+                        "Audio playout [{}]: trimmed {}ms of delay, ran dry {} times",
+                        stream_key,
+                        trimmed * 10,
+                        underruns,
+                    );
+                }
                 last_log = now;
             }
         }
