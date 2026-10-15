@@ -7,7 +7,7 @@ LiveKit `--dev`).
   published as H.265 through our SDK fork is encoded by VideoToolbox; core decodes it with
   VideoToolbox (`VideoHealthSummary codecs={"H265"} implementations={"VideoToolbox"}`) and its
   window presents ~40 fps with 0 dropped frames and no freezes. No SDK change was needed for this
-  direction. Core encoding HEVC (the sharer direction) is still untested.
+  direction. (The sharer direction was tested next; see below.)
 - Spike numbers, two runs per codec (core only; trace CPU / energy-phase power):
   H.264 34–38% of a core, 323 and 436 mW; HEVC 33% and 33%, 467 and 481 mW. CPU is the same or
   lower with HEVC; power was higher in both pairs but H.264 alone varied by 113 mW, so B7 needs
@@ -70,4 +70,59 @@ LiveKit `--dev`).
   ffmpeg's settings are not WebRTC's, and our binary carries extra H.264 screen-share tuning, so
   these numbers need confirming in a real call.
 
-No bugs have been resolved yet.
+## Implementation (2026-10-09)
+
+- **Joins arrive before announcements.** The LiveKit server batches the participant updates of
+  participants that publish nothing and sends them every 3 s (`subscriberUpdateInterval`), but
+  sends attribute and metadata changes, and publishers' updates, at once (`pkg/rtc/room.go`). So
+  `set_attributes` after connecting is not delivered "with the join info", as the spec's first
+  draft assumed. Core waits `HEVC_ANNOUNCEMENT_GRACE` (750 ms) for an unannounced watcher before
+  counting it as H.264-only (`ScreenShareCodecChoice::watcher_unannounced` /
+  `announcement_overdue`); a watcher that publishes a track without announcing counts at once.
+- **Only the audio token may set attributes.** The backend's audio token has
+  `CanUpdateOwnMetadata`, the video and camera tokens don't, so the announcement goes on the
+  `:audio` participant. The web app's Room page joins with the audio token too, so browser
+  viewers are `:audio` identities without the attribute. The harness tokens mirror this
+  (`livekit_utils::generate_participant_token`).
+- **The sharer's own main participant is a remote one** on the `:video` connection that publishes
+  the screen track. It is left out of the watchers and follows the local setting; counting it
+  would make a setting change round-trip through the server.
+- **A full reconnect drops our attributes.** The SDK's "restart" joins as a new server session and
+  republishes every local track (new sids) before `Reconnected`, when core announces again. A
+  sharer sees the reconnecting watcher's tracks first and switches to H.264 until its next share.
+  Viewers see a sharer's restart as a track replacement, which keeps their window open.
+- **Unpublish first, then publish.** Master LiveKit's `AddTrack` has no duplicate-source check
+  (keyed by cid; read in the source, not tried), so publishing the new track first would be
+  allowed, but an older Hopp viewer closes its window on the old track's unsubscribe and reopens
+  it only for a track that arrives after that.
+- **Hardware isn't required by WebRTC.** `RTCVideoEncoderH265.mm` only *prefers* VideoToolbox's
+  hardware encoder (`EnableHardwareAcceleratedVideoEncoder`), so VideoToolbox may silently use
+  its software HEVC encoder. libwebrtc has no software HEVC encoder of its own, so the encoder
+  factory can't fall back to one; session creation failure returns `WEBRTC_VIDEO_CODEC_ERROR`.
+  The only proof of hardware is the log line "Compression session created with hw accl
+  enabled" (the H.264 encoder logs the same text; the file name tells them apart). All WebRTC
+  logs reach Rust as `log::debug!(target: "libwebrtc")` from a sink registered at LS_VERBOSE,
+  visible only when the global max level is Debug, so core's logger (`webrtc_log.rs`) raises it.
+  If a WebRTC update changes that text, every HEVC share falls back to H.264 (logged).
+- **Static screens send nothing.** ScreenCaptureKit sends no frames while the screen doesn't
+  change, so a newly published track had nothing to encode and a viewer got no key frame until
+  the screen changed. Core resends the capture's last frame while a new track warms up
+  (`check_screen_share_encoder`, `Capturer::resend_last_frame`).
+- **Viewer frame ids continue across streams** (`process_video_stream`), so a replacement
+  stream's first frames count as new at once; the window's "stream restart" path needed a drop
+  of more than 40 ids.
+- Session tooling: the `svg_renderer` unit tests write `*_badge.png` files into `core/`; delete
+  them after `cargo test --workspace --lib`.
+
+## Resolved bugs
+
+- Core's `VideoHealthSummary` logged empty inbound `codecs` and `implementations` (above).
+- `profile.sh` printed its `set -uo pipefail` line as part of the usage text (range off by one).
+
+## Remaining limitations
+
+- B3's 2 s can only be measured from when the sharer learns of a join: a browser viewer, which
+  publishes nothing, can reach the sharer up to 3 s after it joined.
+- After a full reconnect of a watcher, a sharer may fall back to H.264 for the rest of its share.
+- B7 isn't measured yet; HEVC drew more power in every pair of runs so far, and the binary's
+  minQP 23 may cap text sharpness (above).

@@ -104,8 +104,8 @@ not a staging area for upstream `gethopp/hopp` PRs.
 - **Record divergence.** When a change alters upstream behavior or architecture, add a line to the
   "What differs from upstream" section of `DATAICO.md` so the next person knows it's intentional.
 - **Current fork-only work** (details in `DATAICO.md`): typing text while drawing, low-bandwidth mode,
-  screen effects (see `core/CLAUDE.md`), the ordered request-id IPC (see `docs/ipc.md`), and the
-  call-end CPU fix.
+  screen effects (see `core/CLAUDE.md`), the ordered request-id IPC (see `docs/ipc.md`), HEVC
+  screen sharing (see `docs/screen-share-codec.md`), and the call-end CPU fix.
 - **We only ship macOS on Apple Silicon.** CI and release builds cover `aarch64-apple-darwin` only;
   the Windows and Linux code is upstream's and nothing here compiles it.
 

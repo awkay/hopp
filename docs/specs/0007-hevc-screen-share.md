@@ -39,12 +39,15 @@ beyond today's caps.
 
 ## Design
 
-**Announcing support.** Core sets a participant attribute (e.g. `hopp_hevc=1`) on its main
-participant, the one that subscribes to screen shares, with `LocalParticipant::set_attributes` when
-it connects, unless the user turned HEVC off. Attributes arrive with the participant's join info, so
-there is no race. Changes come through `RoomEvent::ParticipantAttributesChanged`. Our SDK pin
-already has both. Each user also has a `:video` participant that never subscribes to shares; it
-doesn't count as a watcher.
+**Announcing support.** Core sets the participant attribute `hopp_hevc` (`1` on, `0` off) on its
+main participant, the one that subscribes to screen shares, with `LocalParticipant::set_attributes`
+right after it connects, after every `Reconnected` and when the setting changes. Changes come
+through `RoomEvent::ParticipantAttributesChanged`. Our SDK pin already has both. Each user also has
+a `:video` participant that never subscribes to shares; it doesn't count as a watcher. Attributes
+set after connecting do *not* arrive with the join: the server batches the joins of participants
+that publish nothing (every 3 s) but sends attribute changes at once, so a sharer can see a Hopp
+client join before its announcement. An unannounced watcher therefore counts as H.264-only only
+after `HEVC_ANNOUNCEMENT_GRACE` (750 ms) or once it publishes a track.
 
 **Choosing the codec.** A new pure module, like `BandwidthNegotiation` in `bandwidth_mode.rs`,
 decides from: the sharer's chip (M3 or newer, else H.264), the sharer's setting, and the HEVC
@@ -81,8 +84,10 @@ harness at our LiveKit fork. Spec 0006 (SDK bump) isn't needed: the current SDK 
 `VideoCodec::H265`, and the shipped WebRTC binary has Apple's H.265 encoder and decoder
 (`RTCVideoEncoderH265`, `RTCVideoDecoderH265`).
 
-**Upstream files changed:** `core/src/room_service.rs`, `core/src/bandwidth_mode.rs`, Tauri
-settings and app state, `core/tests` harness. Record the divergence in `DATAICO.md`.
+**Upstream files changed:** `core/src/room_service.rs`, `core/src/lib.rs`, `core/src/main.rs`
+(logger), `core/src/capture/` (resend the last frame), `core/src/livekit/`, `core/socket_lib`
+(`SetScreenShareHevc`), Tauri settings and app state, `core/tests` harness. The divergence is
+recorded in `DATAICO.md`; what stays true is in [docs/screen-share-codec.md](../screen-share-codec.md).
 
 Alternatives rejected:
 - LiveKit's backup codec, which sends an extra H.264 copy only to viewers who need it: our Rust
@@ -97,15 +102,19 @@ Alternatives rejected:
       2026-10-09).
 - [x] Spike: the harness shares in HEVC to core with `profile.sh`; core receives, decodes and shows
       it; record codec, encoder implementation and CPU. (2026-10-09, results in the notes.)
-- [x] Codec decision module with unit tests (`core/src/screen_share_codec.rs`; not wired yet).
-- [ ] Announce support with the participant attribute; react to joins, leaves and attribute changes.
-- [ ] Publish with the chosen codec; republish on a change; re-apply low-bandwidth settings.
-- [ ] Viewer handling of a replaced screen track.
-- [ ] Setting in Tauri and its IPC to core (`docs/ipc.md`).
-- [ ] B6: require hardware HEVC; fall back to H.264 with a log line.
-- [ ] Harness: selectable codec for the fake share; smoke scenario with a watcher without HEVC.
-- [ ] `DATAICO.md` divergence row; anything that stays true after shipping moved into a `docs/`
+- [x] Codec decision module with unit tests (`core/src/screen_share_codec.rs`).
+- [x] Announce support with the participant attribute; react to joins, leaves and attribute changes.
+- [x] Publish with the chosen codec; republish on a change; re-apply low-bandwidth settings.
+- [x] Viewer handling of a replaced screen track.
+- [x] Setting in Tauri and its IPC to core (`docs/ipc.md`).
+- [x] B6: require hardware HEVC; fall back to H.264 with a log line.
+- [x] Harness: selectable codec for the fake share; smoke scenario with a watcher without HEVC.
+- [x] `DATAICO.md` divergence row; anything that stays true after shipping moved into a `docs/`
       topic doc.
+- [ ] B7: compare HEVC and H.264 on controlled content (typing, scrolling, low-bandwidth mode):
+      CPU, energy, latency, delivered frame rate, text clarity; several runs each.
+- [ ] User runs `smoke.sh hevc-fallback track-replace`, the manual checks below, and the
+      §TILING-WM check of the viewer window through a codec switch under AeroSpace.
 - [ ] Preserve discoveries from `workingcontext.md` in `docs/specs/0007-hevc-screen-share/notes.md`
       and link below before marking complete, merging or removing the worktree. Include notes,
       quirks, awkward behavior, gotchas and bugs (resolved vs. remaining); explicitly say if none
