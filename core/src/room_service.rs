@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 use livekit::options::{
     DegradationPreference, TrackPublishOptions, VideoCodec, VideoEncoding, VideoEncodingUpdate,
 };
-use livekit::participant::{ConnectionQuality, LocalParticipant};
+use livekit::participant::{ConnectionQuality, LocalParticipant, Participant};
+use livekit::prelude::TrackSid;
 use livekit::track::{LocalTrack, LocalVideoTrack, TrackSource, VideoQuality};
 use livekit::webrtc::prelude::{RtcVideoSource, VideoResolution};
 use livekit::webrtc::video_frame::{I420Buffer, VideoFrame, VideoRotation};
@@ -23,6 +24,11 @@ use crate::bandwidth_mode::{
 use crate::livekit::audio::AudioPublisher;
 use crate::livekit::participant::ParticipantInfo;
 use crate::livekit::video::{process_video_stream, VideoBufferManager};
+use crate::screen_share_codec::{
+    this_mac_may_share_hevc, ScreenShareCodec, ScreenShareCodecChoice,
+};
+use crate::webrtc_log::HevcSession;
+use crate::window::screensharing_window::RedrawCommand;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot, Mutex};
@@ -31,6 +37,7 @@ use winit::event_loop::EventLoopProxy;
 use crate::effects::wire::{encode_effect_packet, parse_effect_packet, TOPIC_EFFECT};
 use crate::snapshot_sender::SnapshotSender;
 use crate::{audio, ParticipantData, UserEvent};
+use socket_lib::screen_share_hevc;
 
 // Constants for magic values
 const TOPIC_SHARER_LOCATION: &str = "participant_location";
@@ -42,8 +49,29 @@ const TOPIC_DRAW: &str = "draw";
 const TOPIC_APP_VEIL: &str = "app_veil";
 const TOPIC_BANDWIDTH_MODE: &str = "bandwidth_mode";
 const CAMERA_TRACK_NAME: &str = "camera";
-/// Dev override of the screen share's codec. See `screen_share_codec`.
+/// Dev override of the screen share's codec. See `screen_share_codec_override`.
 const SCREEN_SHARE_CODEC_ENV: &str = "HOPP_SCREEN_SHARE_CODEC";
+/// How long a watcher that joined without announcing its HEVC support has to announce it before
+/// it counts as without (spec 0007). A Hopp client announces right after it connects, which can
+/// reach us after its join; older clients and browsers never announce, and B3 allows 2 s from
+/// their join to the end of the switch to H.264. One that publishes a track first counts as
+/// without at once: a Hopp client announces before it publishes.
+const HEVC_ANNOUNCEMENT_GRACE: Duration = Duration::from_millis(750);
+/// Upper bound on waiting for the server to confirm our HEVC announcement. The command task
+/// waits for it after a setting change or a reconnect, and a server that never answers mustn't
+/// hold up the commands behind it. The announcement is sent either way.
+const HEVC_ANNOUNCE_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long a new screen track, or one just unmuted, has to start encoding before it counts as
+/// broken (spec 0007 B6 for HEVC), and how often that is checked.
+const SCREEN_SHARE_ENCODER_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+const SCREEN_SHARE_ENCODER_CHECK_INTERVAL: Duration = Duration::from_millis(250);
+/// How long a screen track published during a share keeps getting the last captured frame
+/// resent, so viewers subscribing to it get a picture on a static screen. See
+/// `check_screen_share_encoder`.
+const SCREEN_SHARE_TRACK_WARMUP: Duration = Duration::from_secs(3);
+/// How long a viewer keeps the screen-share window open after the shown track was unpublished
+/// while live, waiting for the sharer's replacement track (a codec switch, spec 0007).
+const SCREEN_SHARE_REPLACEMENT_GRACE: Duration = Duration::from_secs(5);
 const CAMERA_MAX_BITRATE: u64 = 1_700_000;
 const CAMERA_MAX_FRAMERATE: f64 = 30.0;
 /// How long a muted camera or screen track keeps sending keepalive frames after it is
@@ -210,6 +238,32 @@ pub struct CreateRoomParams {
     pub noise_cancellation_enabled: Arc<AtomicBool>,
     pub start_mic_on_call: bool,
     pub start_camera_on_call: bool,
+    /// The "Use HEVC for screen sharing" setting (spec 0007).
+    pub screen_share_hevc: bool,
+}
+
+/// A change in who can watch our screen share, seen on the video room (spec 0007).
+#[derive(Debug)]
+enum ScreenShareWatcherEvent {
+    /// A watcher joined or changed its announcement: `announced` is its HEVC support, `None`
+    /// when it announced nothing.
+    Seen {
+        identity: String,
+        announced: Option<bool>,
+    },
+    /// A watcher that hasn't announced anything published a track. A Hopp client announces
+    /// before it publishes, so this is an older client or a browser.
+    PublishedUnannounced {
+        identity: String,
+    },
+    Left {
+        identity: String,
+    },
+    /// A watcher that joined without announcing had its `HEVC_ANNOUNCEMENT_GRACE`.
+    AnnouncementOverdue {
+        identity: String,
+        token: u64,
+    },
 }
 
 enum RoomServiceCommand {
@@ -249,6 +303,17 @@ enum RoomServiceCommand {
     /// Re-publishes our low-bandwidth request (if any) for late joiners.
     RepublishBandwidthModeRequest,
     SetScreenCaptureSize(Option<(u32, u32)>),
+    /// The "Use HEVC for screen sharing" setting changed.
+    SetScreenShareHevc(bool),
+    /// Announces our HEVC support again (the call room reconnected, maybe as a new session).
+    AnnounceHevcSupport,
+    /// A screen share watcher event from the video room of connect generation `u64`.
+    ScreenShareWatcher(ScreenShareWatcherEvent, u64),
+    /// The screen track `track_sid` didn't start encoding HEVC (spec 0007 B6).
+    HevcEncodingFailed {
+        track_sid: TrackSid,
+        reason: String,
+    },
 }
 
 impl std::fmt::Debug for RoomServiceCommand {
@@ -292,6 +357,14 @@ impl std::fmt::Debug for RoomServiceCommand {
             Self::SetLocalLowBandwidth(v) => write!(f, "SetLocalLowBandwidth({v})"),
             Self::RepublishBandwidthModeRequest => write!(f, "RepublishBandwidthModeRequest"),
             Self::SetScreenCaptureSize(v) => write!(f, "SetScreenCaptureSize({v:?})"),
+            Self::SetScreenShareHevc(v) => write!(f, "SetScreenShareHevc({v})"),
+            Self::AnnounceHevcSupport => write!(f, "AnnounceHevcSupport"),
+            Self::ScreenShareWatcher(event, generation) => {
+                write!(f, "ScreenShareWatcher({event:?}, {generation})")
+            }
+            Self::HevcEncodingFailed { track_sid, reason } => {
+                write!(f, "HevcEncodingFailed({track_sid}, {reason})")
+            }
         }
     }
 }
@@ -302,12 +375,34 @@ pub enum RoomServiceError {
     CreateRoom(String),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct RemoteScreenShare {
     buffer: Arc<std::sync::Mutex<Option<Arc<VideoBufferManager>>>>,
     stop_tx: Arc<std::sync::Mutex<Option<mpsc::UnboundedSender<()>>>>,
     publisher_identity: Arc<std::sync::Mutex<Option<String>>>,
     app_veil_snapshot: Arc<std::sync::Mutex<Option<(String, AppVeilSnapshot)>>>,
+    shown: Arc<std::sync::Mutex<ShownScreenShareTrack>>,
+}
+
+/// The remote screen track a viewer shows, so a sharer replacing its track (a codec switch,
+/// spec 0007) keeps the window open and only swaps the stream.
+#[derive(Debug, Default)]
+struct ShownScreenShareTrack {
+    sid: Option<TrackSid>,
+    /// Redraw channel of the window showing the share; a replacement stream reuses it.
+    redraw_tx: Option<std::sync::mpsc::Sender<RedrawCommand>>,
+    /// The shown track was unpublished while live: the id of the wait for its replacement.
+    awaiting_replacement: Option<u64>,
+    next_wait: u64,
+}
+
+impl ShownScreenShareTrack {
+    /// No track is shown anymore.
+    fn forget(&mut self) {
+        self.sid = None;
+        self.redraw_tx = None;
+        self.awaiting_replacement = None;
+    }
 }
 
 /*
@@ -337,6 +432,9 @@ pub(crate) struct RoomServiceInner {
     bandwidth: std::sync::Mutex<BandwidthNegotiation>,
     /// Output size of the active screen capture, `None` when not sharing.
     capture_size: std::sync::Mutex<Option<(u32, u32)>>,
+    /// Codec of our screen track (spec 0007). Used on the command task, which also republishes
+    /// the track, and while connecting.
+    screen_share_codec: std::sync::Mutex<ScreenShareCodecChoice>,
 }
 
 impl RoomServiceInner {
@@ -390,11 +488,13 @@ impl RoomServiceInner {
                 .lock()
                 .unwrap()
                 .take();
+            self.remote_screen_share.shown.lock().unwrap().forget();
         }
         self.published_app_veil_snapshot.lock().unwrap().take();
         self.app_veil_snapshot.lock().unwrap().take();
         self.bandwidth.lock().unwrap().clear();
         self.capture_size.lock().unwrap().take();
+        self.screen_share_codec.lock().unwrap().clear();
     }
 }
 
@@ -497,6 +597,7 @@ impl RoomService {
                 stop_tx: Arc::new(std::sync::Mutex::new(None)),
                 publisher_identity: Arc::new(std::sync::Mutex::new(None)),
                 app_veil_snapshot: Arc::new(std::sync::Mutex::new(None)),
+                shown: Arc::new(std::sync::Mutex::new(ShownScreenShareTrack::default())),
             },
             stats: std::sync::RwLock::new(crate::livekit::stats::RoomStats::default()),
             video_health_summary: std::sync::Mutex::new(Default::default()),
@@ -508,6 +609,7 @@ impl RoomService {
             published_app_veil_snapshot: std::sync::Mutex::new(None),
             bandwidth: std::sync::Mutex::new(BandwidthNegotiation::default()),
             capture_size: std::sync::Mutex::new(None),
+            screen_share_codec: std::sync::Mutex::new(new_screen_share_codec_choice()),
         });
         let audio_runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -751,6 +853,18 @@ impl RoomService {
             .send(RoomServiceCommand::SetLocalLowBandwidth(enabled));
         if let Err(e) = res {
             log::error!("set_local_low_bandwidth: Error sending command: {e:?}");
+        }
+    }
+
+    /// The "Use HEVC for screen sharing" setting changed (spec 0007): announces it, and turning
+    /// it off switches a share in progress to H.264.
+    pub fn set_screen_share_hevc(&self, enabled: bool) {
+        log::info!("set_screen_share_hevc: {enabled}");
+        let res = self
+            .service_command_tx
+            .send(RoomServiceCommand::SetScreenShareHevc(enabled));
+        if let Err(e) = res {
+            log::error!("set_screen_share_hevc: Error sending command: {e:?}");
         }
     }
 
@@ -1098,6 +1212,7 @@ async fn room_service_commands(
                     noise_cancellation_enabled,
                     start_mic_on_call,
                     start_camera_on_call,
+                    screen_share_hevc,
                 },
                 generation,
             ) => {
@@ -1122,6 +1237,12 @@ async fn room_service_commands(
 
                 inner.clear().await;
                 log::info!("room_service_commands: Cleared previous room state");
+                // Nobody shares after `clear`, so this can't ask for a republish.
+                let _ = inner
+                    .screen_share_codec
+                    .lock()
+                    .unwrap()
+                    .set_setting(screen_share_hevc);
 
                 log::info!(
                     "room_service_commands: Connecting to room and video room in parallel (url={livekit_server_url}, signal_timeout={}s, setup_timeout={}s)",
@@ -1151,6 +1272,12 @@ async fn room_service_commands(
                         "room_service_commands: Room::connect (signal + ICE) took {}ms",
                         phase_start.elapsed().as_millis()
                     );
+                    // As early as possible: a sharer waits only `HEVC_ANNOUNCEMENT_GRACE` for
+                    // it after seeing us join. Not awaited, so it doesn't delay the call.
+                    tokio::spawn(announce_hevc_support(
+                        room.local_participant(),
+                        screen_share_hevc,
+                    ));
                     let phase_start = Instant::now();
                     let denoiser =
                         match crate::audio::denoiser::Denoiser::new(noise_cancellation_enabled) {
@@ -1268,46 +1395,55 @@ async fn room_service_commands(
                         },
                         true,
                     );
-                    let screen_track = LocalVideoTrack::create_video_track(
-                        VIDEO_TRACK_NAME,
-                        RtcVideoSource::Native(screen_source.clone()),
-                    );
-                    screen_track.mute();
-                    let max_bitrate = default_screen_bitrate();
-                    let video_codec = screen_share_codec();
-                    let screen_result = video_room
-                        .local_participant()
-                        .publish_track(
-                            LocalTrack::Video(screen_track.clone()),
-                            TrackPublishOptions {
-                                source: TrackSource::Screenshare,
-                                video_codec,
-                                video_encoding: Some(VideoEncoding {
-                                    max_bitrate,
-                                    max_framerate: MAX_FRAMERATE,
-                                }),
-                                simulcast: false,
-                                ..Default::default()
-                            },
-                        )
-                        .await;
-                    if let Err(e) = screen_result {
-                        log::error!(
-                            "room_service_commands: Failed to publish screen share track after {}ms: {e:?}",
-                            phase_start.elapsed().as_millis()
-                        );
-                    } else {
-                        log::info!(
-                            "room_service_commands: Screen share track published in {}ms",
-                            phase_start.elapsed().as_millis()
-                        );
-                        end_video_keepalive(
-                            screen_source.clone(),
-                            screen_track.clone(),
-                            "screen share",
-                        );
-                        *inner_clone_video.buffer_source.lock().unwrap() = Some(screen_source);
-                        *inner_clone_video.screen_share_track.lock().unwrap() = Some(screen_track);
+                    // The codec for the watchers already here (spec 0007); a share starting
+                    // later republishes the track if the pick changed by then.
+                    let video_codec = {
+                        let own_identity = video_room.local_participant().identity();
+                        let mut codec_choice = inner_clone_video.screen_share_codec.lock().unwrap();
+                        for participant in video_room.remote_participants().values() {
+                            let identity = participant.identity();
+                            if is_screen_share_watcher(identity.as_str(), own_identity.as_str()) {
+                                let supports_hevc =
+                                    screen_share_hevc::supports_hevc(&participant.attributes());
+                                // Nobody shares yet, so this can't ask for a republish.
+                                let _ = codec_choice.set_watcher(identity.as_str(), supports_hevc);
+                            }
+                        }
+                        codec_choice.connected()
+                    };
+                    let screen_result = publish_screen_share_track(
+                        &video_room.local_participant(),
+                        &screen_source,
+                        video_codec,
+                        true,
+                    )
+                    .await;
+                    match screen_result {
+                        Err(e) => {
+                            log::error!(
+                                "room_service_commands: Failed to publish screen share track after {}ms: {e:?}",
+                                phase_start.elapsed().as_millis()
+                            );
+                            inner_clone_video
+                                .screen_share_codec
+                                .lock()
+                                .unwrap()
+                                .track_lost();
+                        }
+                        Ok(screen_track) => {
+                            log::info!(
+                                "room_service_commands: Screen share track published as {video_codec:?} in {}ms",
+                                phase_start.elapsed().as_millis()
+                            );
+                            end_video_keepalive(
+                                screen_source.clone(),
+                                screen_track.clone(),
+                                "screen share",
+                            );
+                            *inner_clone_video.buffer_source.lock().unwrap() = Some(screen_source);
+                            *inner_clone_video.screen_share_track.lock().unwrap() =
+                                Some(screen_track);
+                        }
                     }
 
                     Ok::<_, String>((video_room, video_rx))
@@ -1509,16 +1645,11 @@ async fn room_service_commands(
                     receiver: rx,
                     event_loop_proxy,
                     user_identity,
-                    video_participant_identity,
+                    video_participant_identity: video_participant_identity.clone(),
                     participants: inner.participants.clone(),
                     snapshot_sender: inner.snapshot_sender.clone(),
                     mixer,
-                    remote_screen_share: RemoteScreenShare {
-                        buffer: inner.remote_screen_share.buffer.clone(),
-                        stop_tx: inner.remote_screen_share.stop_tx.clone(),
-                        publisher_identity: inner.remote_screen_share.publisher_identity.clone(),
-                        app_veil_snapshot: inner.remote_screen_share.app_veil_snapshot.clone(),
-                    },
+                    remote_screen_share: inner.remote_screen_share.clone(),
                     connection_quality: inner.connection_quality.clone(),
                     audio_handle: audio_handle.clone(),
                     inner: inner.clone(),
@@ -1526,8 +1657,13 @@ async fn room_service_commands(
                 }));
                 log::info!("room_service_commands: Spawned handle_room_events");
                 if let Some(video_rx) = video_rx_opt {
-                    tokio::spawn(drain_video_room_events(video_rx));
-                    log::info!("room_service_commands: Spawned video_room event drainer");
+                    tokio::spawn(handle_video_room_events(
+                        video_rx,
+                        video_participant_identity,
+                        service_command_tx.clone(),
+                        generation,
+                    ));
+                    log::info!("room_service_commands: Spawned handle_video_room_events");
                 }
             }
             RoomServiceCommand::DestroyRoom => {
@@ -1896,16 +2032,160 @@ async fn room_service_commands(
                 log::info!("room_service_commands: Camera track unmuted");
             }
             RoomServiceCommand::MuteScreenShareTrack => {
+                inner.screen_share_codec.lock().unwrap().share_ended();
                 if let Some(track) = inner.screen_share_track.lock().unwrap().as_ref() {
                     track.mute();
                 }
                 log::info!("room_service_commands: Screen share track muted");
             }
             RoomServiceCommand::UnmuteScreenShareTrack => {
-                if let Some(track) = inner.screen_share_track.lock().unwrap().as_ref() {
+                let republish = inner.screen_share_codec.lock().unwrap().share_started();
+                let track = inner.screen_share_track.lock().unwrap().clone();
+                if republish.is_some() {
+                    // The new track is published unmuted.
+                    republish_if_needed(&inner, republish, "share started", &service_command_tx)
+                        .await;
+                } else if let Some(track) = track {
                     track.unmute();
+                    let codec = inner.screen_share_codec.lock().unwrap().published();
+                    if let Some(codec) = codec {
+                        spawn_screen_share_encoder_check(
+                            &inner,
+                            track,
+                            codec,
+                            Duration::ZERO,
+                            &service_command_tx,
+                        );
+                    }
+                } else {
+                    // An earlier republish failed.
+                    let codec = inner.screen_share_codec.lock().unwrap().connected();
+                    republish_screen_share_track(
+                        &inner,
+                        codec,
+                        "share started without a screen track",
+                        &service_command_tx,
+                    )
+                    .await;
                 }
                 log::info!("room_service_commands: Screen share track unmuted");
+            }
+            RoomServiceCommand::SetScreenShareHevc(enabled) => {
+                let republish = inner
+                    .screen_share_codec
+                    .lock()
+                    .unwrap()
+                    .set_setting(enabled);
+                if let Some(local_participant) = room_local_participant(&inner).await {
+                    announce_hevc_support(local_participant, enabled).await;
+                }
+                republish_if_needed(&inner, republish, "HEVC turned off", &service_command_tx)
+                    .await;
+            }
+            RoomServiceCommand::AnnounceHevcSupport => {
+                let supported = inner.screen_share_codec.lock().unwrap().setting();
+                if let Some(local_participant) = room_local_participant(&inner).await {
+                    announce_hevc_support(local_participant, supported).await;
+                }
+            }
+            RoomServiceCommand::ScreenShareWatcher(event, generation) => {
+                if !inner.connect_gate.lock().unwrap().is_current(generation) {
+                    log::debug!(
+                        "room_service_commands: stale screen share watcher event {event:?}"
+                    );
+                    continue;
+                }
+                let (republish, reason) = {
+                    let mut codec_choice = inner.screen_share_codec.lock().unwrap();
+                    match event {
+                        ScreenShareWatcherEvent::Seen {
+                            identity,
+                            announced: Some(supports_hevc),
+                        } => {
+                            log::info!(
+                                "room_service_commands: screen share watcher {identity} announces HEVC support: {supports_hevc}"
+                            );
+                            (
+                                codec_choice.set_watcher(&identity, supports_hevc),
+                                format!("{identity} can't watch HEVC"),
+                            )
+                        }
+                        ScreenShareWatcherEvent::Seen {
+                            identity,
+                            announced: None,
+                        } => {
+                            if let Some(token) = codec_choice.watcher_unannounced(&identity) {
+                                log::info!(
+                                    "room_service_commands: screen share watcher {identity} joined without announcing HEVC support"
+                                );
+                                let service_command_tx = service_command_tx.clone();
+                                tokio::spawn(async move {
+                                    tokio::time::sleep(HEVC_ANNOUNCEMENT_GRACE).await;
+                                    let _ = service_command_tx.send(
+                                        RoomServiceCommand::ScreenShareWatcher(
+                                            ScreenShareWatcherEvent::AnnouncementOverdue {
+                                                identity,
+                                                token,
+                                            },
+                                            generation,
+                                        ),
+                                    );
+                                });
+                            }
+                            (None, String::new())
+                        }
+                        ScreenShareWatcherEvent::PublishedUnannounced { identity } => {
+                            log::info!(
+                                "room_service_commands: screen share watcher {identity} publishes without announcing HEVC support"
+                            );
+                            (
+                                codec_choice.set_watcher(&identity, false),
+                                format!("{identity} publishes without announcing HEVC support"),
+                            )
+                        }
+                        ScreenShareWatcherEvent::Left { identity } => {
+                            codec_choice.remove_watcher(&identity);
+                            (None, String::new())
+                        }
+                        ScreenShareWatcherEvent::AnnouncementOverdue { identity, token } => (
+                            codec_choice.announcement_overdue(&identity, token),
+                            format!(
+                                "{identity} announced no HEVC support within {}ms",
+                                HEVC_ANNOUNCEMENT_GRACE.as_millis()
+                            ),
+                        ),
+                    }
+                };
+                republish_if_needed(&inner, republish, &reason, &service_command_tx).await;
+            }
+            RoomServiceCommand::HevcEncodingFailed { track_sid, reason } => {
+                let current = inner
+                    .screen_share_track
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .map(LocalVideoTrack::sid);
+                if current.as_ref() != Some(&track_sid) {
+                    log::info!(
+                        "room_service_commands: ignoring the HEVC check of replaced track {track_sid}: {reason}"
+                    );
+                    continue;
+                }
+                log::error!(
+                    "room_service_commands: HEVC encoding didn't start ({reason}); sharing H.264 for the rest of the call"
+                );
+                let republish = inner
+                    .screen_share_codec
+                    .lock()
+                    .unwrap()
+                    .hevc_encoding_failed();
+                republish_if_needed(
+                    &inner,
+                    republish,
+                    "HEVC encoding failed",
+                    &service_command_tx,
+                )
+                .await;
             }
             RoomServiceCommand::PublishMouseClick(data) => {
                 let Some(local_participant) = room_local_participant(&inner).await else {
@@ -2374,12 +2654,21 @@ fn start_remote_camera_stream(
 
 fn start_remote_screen_share_stream(
     video_track: livekit::track::RemoteVideoTrack,
+    track_sid: TrackSid,
     remote_screen_share: &RemoteScreenShare,
     participants: &Arc<std::sync::RwLock<HashMap<String, ParticipantInfo>>>,
     participant_identity: &str,
     event_loop_proxy: &EventLoopProxy<UserEvent>,
     snapshot_sender: &SnapshotSender,
 ) {
+    if replace_remote_screen_share_stream(
+        &video_track,
+        &track_sid,
+        remote_screen_share,
+        participant_identity,
+    ) {
+        return;
+    }
     {
         let mut stop_tx_guard = remote_screen_share.stop_tx.lock().unwrap();
         if let Some(tx) = stop_tx_guard.take() {
@@ -2451,6 +2740,13 @@ fn start_remote_screen_share_stream(
 
     snapshot_sender.send_participants_snapshot();
 
+    {
+        let mut shown = remote_screen_share.shown.lock().unwrap();
+        shown.sid = Some(track_sid);
+        shown.redraw_tx = Some(redraw_tx.clone());
+        shown.awaiting_replacement = None;
+    }
+
     if let Err(e) = event_loop_proxy.send_event(UserEvent::OpenScreenShareWindow {
         participants: participants.clone(),
         sharer_identity: Some(sharer_identity),
@@ -2459,6 +2755,170 @@ fn start_remote_screen_share_stream(
     }) {
         log::error!("handle_room_events: Failed to send OpenScreenShareWindow event: {e:?}");
     }
+}
+
+/// The sharer we show published a new screen track in place of the shown one (a codec switch,
+/// spec 0007): feeds it into the same buffer and window. The window isn't reopened, focused or
+/// reset, so its drawings and mode stay, and the last frame stays up until the new track's
+/// first one. Returns false, changing nothing, when this isn't a replacement.
+fn replace_remote_screen_share_stream(
+    video_track: &livekit::track::RemoteVideoTrack,
+    track_sid: &TrackSid,
+    remote_screen_share: &RemoteScreenShare,
+    participant_identity: &str,
+) -> bool {
+    let same_sharer = remote_screen_share
+        .publisher_identity
+        .lock()
+        .unwrap()
+        .as_deref()
+        == Some(participant_identity);
+    if !same_sharer {
+        return false;
+    }
+    let mut shown = remote_screen_share.shown.lock().unwrap();
+    let replaced = shown.awaiting_replacement.is_some()
+        || shown.sid.as_ref().is_some_and(|sid| sid != track_sid);
+    let Some(redraw_tx) = shown.redraw_tx.clone().filter(|_| replaced) else {
+        return false;
+    };
+    let Some(manager) = remote_screen_share.buffer.lock().unwrap().clone() else {
+        return false;
+    };
+    log::info!(
+        "handle_room_events: {participant_identity} replaced screen track {:?} with {track_sid}",
+        shown.sid
+    );
+    shown.sid = Some(track_sid.clone());
+    shown.awaiting_replacement = None;
+    drop(shown);
+
+    if let Some(tx) = remote_screen_share.stop_tx.lock().unwrap().take() {
+        let _ = tx.send(());
+    }
+    let (stop_tx, stop_rx) = mpsc::unbounded_channel();
+    *remote_screen_share.stop_tx.lock().unwrap() = Some(stop_tx);
+    tokio::spawn(process_video_stream(
+        video_track.clone(),
+        manager,
+        stop_rx,
+        format!("screenshare_{participant_identity}"),
+        false,
+        Some(redraw_tx),
+    ));
+    true
+}
+
+/// Whether `sid` from `identity` is the screen track we show (or, before its sid is known,
+/// comes from the sharer we show).
+fn is_shown_screen_share(
+    remote_screen_share: &RemoteScreenShare,
+    identity: &str,
+    sid: &TrackSid,
+) -> bool {
+    let from_sharer = remote_screen_share
+        .publisher_identity
+        .lock()
+        .unwrap()
+        .as_deref()
+        == Some(identity);
+    from_sharer
+        && remote_screen_share
+            .shown
+            .lock()
+            .unwrap()
+            .sid
+            .as_ref()
+            .is_none_or(|shown| shown == sid)
+}
+
+/// The share we show ended: stops its stream, closes its window and updates the participant
+/// list.
+fn end_remote_screen_share(
+    remote_screen_share: &RemoteScreenShare,
+    participants: &std::sync::RwLock<HashMap<String, ParticipantInfo>>,
+    sharer_video_identity: &str,
+    snapshot_sender: &SnapshotSender,
+    event_loop_proxy: &EventLoopProxy<UserEvent>,
+) {
+    if let Some(tx) = remote_screen_share.stop_tx.lock().unwrap().take() {
+        let _ = tx.send(());
+    }
+    // Keep the buffer for reuse.
+    remote_screen_share
+        .publisher_identity
+        .lock()
+        .unwrap()
+        .take();
+    remote_screen_share.app_veil_snapshot.lock().unwrap().take();
+    remote_screen_share.shown.lock().unwrap().forget();
+
+    // Derive the audio participant identity to clear is_screensharing
+    let audio_identity = sharer_video_identity
+        .strip_suffix(":video")
+        .map(|prefix| format!("{prefix}:audio"));
+    if let Some(audio_id) = audio_identity {
+        let mut participants_guard = participants.write().unwrap();
+        if let Some(info) = participants_guard.get_mut(&audio_id) {
+            info.set_is_screensharing(false);
+        }
+    }
+
+    snapshot_sender.send_participants_snapshot();
+
+    if let Err(e) = event_loop_proxy.send_event(UserEvent::CloseScreenShareWindow) {
+        log::error!("handle_room_events: Failed to send CloseScreenShareWindow event: {e:?}");
+    }
+}
+
+/// The screen track we show was unpublished while live. A sharer switching codec publishes the
+/// new track right after (spec 0007), so the window stays open on the last frame while the
+/// replacement is awaited; without one within `SCREEN_SHARE_REPLACEMENT_GRACE`, the share ends.
+fn await_screen_share_replacement(
+    remote_screen_share: &RemoteScreenShare,
+    participants: &Arc<std::sync::RwLock<HashMap<String, ParticipantInfo>>>,
+    sharer_video_identity: &str,
+    snapshot_sender: &SnapshotSender,
+    event_loop_proxy: &EventLoopProxy<UserEvent>,
+) {
+    if let Some(tx) = remote_screen_share.stop_tx.lock().unwrap().take() {
+        let _ = tx.send(());
+    }
+    let wait = {
+        let mut shown = remote_screen_share.shown.lock().unwrap();
+        shown.next_wait += 1;
+        shown.awaiting_replacement = Some(shown.next_wait);
+        shown.next_wait
+    };
+    log::info!(
+        "handle_room_events: live screen track of {sharer_video_identity} unpublished, waiting up to {}s for its replacement",
+        SCREEN_SHARE_REPLACEMENT_GRACE.as_secs()
+    );
+    let remote_screen_share = remote_screen_share.clone();
+    let participants = participants.clone();
+    let sharer_video_identity = sharer_video_identity.to_string();
+    let snapshot_sender = snapshot_sender.clone();
+    let event_loop_proxy = event_loop_proxy.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(SCREEN_SHARE_REPLACEMENT_GRACE).await;
+        {
+            let mut shown = remote_screen_share.shown.lock().unwrap();
+            if shown.awaiting_replacement != Some(wait) {
+                return;
+            }
+            shown.forget();
+        }
+        log::warn!(
+            "handle_room_events: no replacement for the screen track of {sharer_video_identity}, ending the share"
+        );
+        end_remote_screen_share(
+            &remote_screen_share,
+            &participants,
+            &sharer_video_identity,
+            &snapshot_sender,
+            &event_loop_proxy,
+        );
+    });
 }
 
 struct RoomEventContext {
@@ -2476,24 +2936,291 @@ struct RoomEventContext {
     service_command_tx: mpsc::UnboundedSender<RoomServiceCommand>,
 }
 
-/// The codec the screen share track is published with: AV1 on Windows, H.264 elsewhere.
-///
-/// `HOPP_SCREEN_SHARE_CODEC=h264` or `h265` overrides it, for comparing codecs with
-/// `core/tests/profile.sh sharer --codec`; unset or any other value keeps the default. A dev
-/// override only, until the codec is negotiated per call (spec 0007).
-fn screen_share_codec() -> VideoCodec {
-    let requested = std::env::var(SCREEN_SHARE_CODEC_ENV).ok();
-    let codec = match requested.as_deref() {
-        Some("h264") => VideoCodec::H264,
-        Some("h265") => VideoCodec::H265,
-        _ if SCREEN_SHARE_USES_AV1 => VideoCodec::AV1,
-        _ => VideoCodec::H264,
+/// The screen share codec choice for this process: HEVC allowed on an M3 or newer, the setting
+/// on until core is told otherwise, and the dev override applied.
+fn new_screen_share_codec_choice() -> ScreenShareCodecChoice {
+    let mut choice = ScreenShareCodecChoice::new(this_mac_may_share_hevc(), true);
+    if let Some(codec) = screen_share_codec_override() {
+        choice.force(codec);
+    }
+    choice
+}
+
+/// `HOPP_SCREEN_SHARE_CODEC=h264` or `h265` forces the screen share's codec whatever the
+/// watchers, the chip and the setting, for comparing codecs with
+/// `core/tests/profile.sh sharer --codec`. A dev override only.
+fn screen_share_codec_override() -> Option<ScreenShareCodec> {
+    let requested = std::env::var(SCREEN_SHARE_CODEC_ENV).ok()?;
+    let codec = match requested.as_str() {
+        "h264" => ScreenShareCodec::H264,
+        "h265" => ScreenShareCodec::H265,
+        _ => {
+            log::warn!("screen_share_codec_override: ignoring {SCREEN_SHARE_CODEC_ENV}={requested:?}, expected h264 or h265");
+            return None;
+        }
     };
-    log::info!(
-        "screen_share_codec: publishing the screen share as {} ({SCREEN_SHARE_CODEC_ENV}={requested:?})",
-        codec.as_str()
+    log::warn!(
+        "screen_share_codec_override: {SCREEN_SHARE_CODEC_ENV}={requested}: every screen share is {codec:?}, whoever watches (dev override)"
     );
-    codec
+    Some(codec)
+}
+
+/// LiveKit's codec for `codec`. Windows shares AV1 where macOS shares H.264, and never picks
+/// HEVC (`this_mac_may_share_hevc` is false there).
+fn livekit_video_codec(codec: ScreenShareCodec) -> VideoCodec {
+    match codec {
+        ScreenShareCodec::H264 if SCREEN_SHARE_USES_AV1 => VideoCodec::AV1,
+        ScreenShareCodec::H264 => VideoCodec::H264,
+        ScreenShareCodec::H265 => VideoCodec::H265,
+    }
+}
+
+/// Whether a participant on our video room can watch our screen share: another user's main
+/// participant or a browser viewer. Never a `:video` participant (they don't subscribe to
+/// shares), nor our own main participant, which shows up there as remote and announces our own
+/// setting.
+fn is_screen_share_watcher(identity: &str, own_identity: &str) -> bool {
+    !identity.ends_with(":video") && !participant_identities_match(identity, own_identity)
+}
+
+/// Announces with our main participant's attribute whether we can watch HEVC shares.
+async fn announce_hevc_support(local_participant: LocalParticipant, supported: bool) {
+    let started = Instant::now();
+    let announcement = local_participant.set_attributes(screen_share_hevc::announcement(supported));
+    match tokio::time::timeout(HEVC_ANNOUNCE_TIMEOUT, announcement).await {
+        Ok(Ok(())) => log::info!(
+            "announce_hevc_support: {}={} in {}ms",
+            screen_share_hevc::ATTRIBUTE,
+            screen_share_hevc::attribute_value(supported),
+            started.elapsed().as_millis()
+        ),
+        Ok(Err(e)) => log::error!("announce_hevc_support: failed: {e:?}"),
+        Err(_) => log::warn!(
+            "announce_hevc_support: no answer from the server in {}ms",
+            HEVC_ANNOUNCE_TIMEOUT.as_millis()
+        ),
+    }
+}
+
+/// Publishes a screen track from `source` with `codec`.
+async fn publish_screen_share_track(
+    local_participant: &LocalParticipant,
+    source: &NativeVideoSource,
+    codec: ScreenShareCodec,
+    muted: bool,
+) -> livekit::RoomResult<LocalVideoTrack> {
+    let track = LocalVideoTrack::create_video_track(
+        VIDEO_TRACK_NAME,
+        RtcVideoSource::Native(source.clone()),
+    );
+    if muted {
+        track.mute();
+    }
+    local_participant
+        .publish_track(
+            LocalTrack::Video(track.clone()),
+            TrackPublishOptions {
+                source: TrackSource::Screenshare,
+                video_codec: livekit_video_codec(codec),
+                video_encoding: Some(VideoEncoding {
+                    max_bitrate: default_screen_bitrate(),
+                    max_framerate: MAX_FRAMERATE,
+                }),
+                simulcast: false,
+                ..Default::default()
+            },
+        )
+        .await?;
+    Ok(track)
+}
+
+/// The video room's local participant, or `None` outside a call (or when it failed to connect).
+async fn video_room_local_participant(inner: &RoomServiceInner) -> Option<LocalParticipant> {
+    inner
+        .video_room
+        .lock()
+        .await
+        .as_ref()
+        .map(Room::local_participant)
+}
+
+/// Publishes our screen track again, unmuted, with `codec` (a published track can't change
+/// codec), from the same source, so the capture carries on unchanged. Runs when a share starts
+/// or during one.
+///
+/// The old track goes first. A viewer on an older Hopp closes its window when the track it
+/// shows is unsubscribed, and opens it again for the new track; publishing the new one first,
+/// it would close the window for good. Viewers on this version keep their window open either
+/// way (`start_remote_screen_share_stream`).
+async fn republish_screen_share_track(
+    inner: &RoomServiceInner,
+    codec: ScreenShareCodec,
+    reason: &str,
+    service_command_tx: &mpsc::UnboundedSender<RoomServiceCommand>,
+) {
+    let started = Instant::now();
+    let local_participant = video_room_local_participant(inner).await;
+    let source = inner.buffer_source.lock().unwrap().clone();
+    let (Some(local_participant), Some(source)) = (local_participant, source) else {
+        log::warn!("republish_screen_share_track: {reason}: no video room or screen source");
+        inner.screen_share_codec.lock().unwrap().track_lost();
+        return;
+    };
+    let old_track = inner.screen_share_track.lock().unwrap().take();
+    let old_sid = old_track.as_ref().map(LocalVideoTrack::sid);
+    if let Some(old_sid) = &old_sid {
+        if let Err(e) = local_participant.unpublish_track(old_sid).await {
+            log::warn!("republish_screen_share_track: unpublishing {old_sid} failed: {e:?}");
+        }
+    }
+    match publish_screen_share_track(&local_participant, &source, codec, false).await {
+        Ok(track) => {
+            log::info!(
+                "republish_screen_share_track: {reason}: {codec:?} track {} replaced {old_sid:?} in {}ms",
+                track.sid(),
+                started.elapsed().as_millis()
+            );
+            *inner.screen_share_track.lock().unwrap() = Some(track.clone());
+            // A new track starts with the publish defaults: low-bandwidth mode needs its
+            // encoding again (spec 0007 B5).
+            apply_screen_share_encoding(inner);
+            spawn_screen_share_encoder_check(
+                inner,
+                track,
+                codec,
+                SCREEN_SHARE_TRACK_WARMUP,
+                service_command_tx,
+            );
+        }
+        Err(e) => {
+            log::error!(
+                "republish_screen_share_track: {reason}: publishing the {codec:?} track failed after {}ms; no screen track until the next share starts: {e:?}",
+                started.elapsed().as_millis()
+            );
+            inner.screen_share_codec.lock().unwrap().track_lost();
+        }
+    }
+}
+
+/// Republishes the screen track when the codec choice asked for it.
+async fn republish_if_needed(
+    inner: &RoomServiceInner,
+    republish: Option<ScreenShareCodec>,
+    reason: &str,
+    service_command_tx: &mpsc::UnboundedSender<RoomServiceCommand>,
+) {
+    if let Some(codec) = republish {
+        republish_screen_share_track(inner, codec, reason, service_command_tx).await;
+    }
+}
+
+/// Checks in the background that `track`, just published or unmuted for a share, encodes
+/// `codec`. A failed HEVC check makes the share fall back to H.264 (spec 0007 B6). A new track
+/// gets its last frame resent for `warmup` (see `check_screen_share_encoder`).
+fn spawn_screen_share_encoder_check(
+    inner: &RoomServiceInner,
+    track: LocalVideoTrack,
+    codec: ScreenShareCodec,
+    warmup: Duration,
+    service_command_tx: &mpsc::UnboundedSender<RoomServiceCommand>,
+) {
+    let event_loop_proxy = inner.event_loop_proxy.clone();
+    let service_command_tx = service_command_tx.clone();
+    tokio::spawn(async move {
+        let Err(reason) =
+            check_screen_share_encoder(&track, codec, warmup, &event_loop_proxy).await
+        else {
+            return;
+        };
+        if codec == ScreenShareCodec::H265 {
+            let _ = service_command_tx.send(RoomServiceCommand::HevcEncodingFailed {
+                track_sid: track.sid(),
+                reason,
+            });
+        } else {
+            log::warn!(
+                "check_screen_share_encoder: {codec:?} track {}: {reason}",
+                track.sid()
+            );
+        }
+    });
+}
+
+/// Waits until `track` has encoded a frame as `codec`. Fails when it encodes another codec, or
+/// nothing within `SCREEN_SHARE_ENCODER_CHECK_TIMEOUT`. Ends quietly once the track is muted or
+/// unpublished.
+///
+/// ScreenCaptureKit sends no frames while the screen is static, so a track could wait for its
+/// first frame until something moves. Until a new frame is encoded, and on a new track for
+/// `warmup` after the check started, the capture is asked to resend its last frame every
+/// `SCREEN_SHARE_ENCODER_CHECK_INTERVAL`: a viewer subscribing to a new track gets its first
+/// frame from the next key frame, which needs a frame to encode.
+///
+/// For HEVC it also fails unless WebRTC logged the encoder's compression session as hardware
+/// accelerated (`webrtc_log`): VideoToolbox may use its software encoder, and the stats report
+/// `VideoToolbox` either way. Besides that, it catches an HEVC encoder that never starts, and
+/// WebRTC switching the track to another codec after the encoder failed to initialize.
+async fn check_screen_share_encoder(
+    track: &LocalVideoTrack,
+    codec: ScreenShareCodec,
+    warmup: Duration,
+    event_loop_proxy: &EventLoopProxy<UserEvent>,
+) -> Result<(), String> {
+    let expected = livekit_video_codec(codec).as_str().to_ascii_uppercase();
+    let started = Instant::now();
+    let mut baseline = None;
+    let mut encoding = false;
+    loop {
+        tokio::time::sleep(SCREEN_SHARE_ENCODER_CHECK_INTERVAL).await;
+        if track.is_muted() {
+            return Ok(());
+        }
+        let Ok(progress) = crate::livekit::stats::encoder_progress(track).await else {
+            return Ok(());
+        };
+        if !encoding {
+            let frames_encoded = progress.as_ref().map_or(0, |p| p.frames_encoded);
+            match (baseline, &progress) {
+                (None, _) => baseline = Some(frames_encoded),
+                (Some(before), Some(progress))
+                    if frames_encoded > before && !progress.codec.is_empty() =>
+                {
+                    if progress.codec != expected {
+                        return Err(format!(
+                            "encoding {} instead of {expected} ({})",
+                            progress.codec, progress.implementation
+                        ));
+                    }
+                    // Never a software HEVC encoder (B6): only WebRTC's log tells.
+                    let session = crate::webrtc_log::last_hevc_session();
+                    if codec == ScreenShareCodec::H265 && session != HevcSession::Hardware {
+                        return Err(format!(
+                            "VideoToolbox's HEVC session isn't confirmed as hardware: {session:?}"
+                        ));
+                    }
+                    log::info!(
+                        "check_screen_share_encoder: track {} encoding {} with {} after {}ms",
+                        track.sid(),
+                        progress.codec,
+                        progress.implementation,
+                        started.elapsed().as_millis()
+                    );
+                    encoding = true;
+                }
+                _ => {}
+            }
+            if !encoding && started.elapsed() >= SCREEN_SHARE_ENCODER_CHECK_TIMEOUT {
+                return Err(format!(
+                    "no {expected} frame encoded in {}s: {progress:?}",
+                    SCREEN_SHARE_ENCODER_CHECK_TIMEOUT.as_secs()
+                ));
+            }
+        }
+        if encoding && started.elapsed() >= warmup {
+            return Ok(());
+        }
+        let _ = event_loop_proxy.send_event(UserEvent::ResendScreenShareFrame);
+    }
 }
 
 /// Stops the black keepalive frames of a track published muted, once the SFU has seen it.
@@ -2703,20 +3430,67 @@ async fn update_camera_quality(inner: &RoomServiceInner) {
     );
 }
 
-async fn drain_video_room_events(mut receiver: mpsc::UnboundedReceiver<RoomEvent>) {
+/// Events of our video room, where our screen track is published: they tell who can watch our
+/// share (spec 0007). `generation` is the connect it belongs to, so a late event from an old
+/// call's room changes nothing.
+async fn handle_video_room_events(
+    mut receiver: mpsc::UnboundedReceiver<RoomEvent>,
+    own_identity: String,
+    service_command_tx: mpsc::UnboundedSender<RoomServiceCommand>,
+    generation: u64,
+) {
+    let send = |event: ScreenShareWatcherEvent| {
+        let _ = service_command_tx.send(RoomServiceCommand::ScreenShareWatcher(event, generation));
+    };
     while let Some(event) = receiver.recv().await {
         match event {
-            RoomEvent::Reconnecting => {
-                log::warn!("drain_video_room_events: video room connection lost, reconnecting")
+            RoomEvent::ParticipantConnected(participant)
+                if is_screen_share_watcher(participant.identity().as_str(), &own_identity) =>
+            {
+                send(ScreenShareWatcherEvent::Seen {
+                    identity: participant.identity().to_string(),
+                    announced: screen_share_hevc::announced(&participant.attributes()),
+                });
             }
-            RoomEvent::Reconnected => log::info!("drain_video_room_events: video room reconnected"),
+            RoomEvent::ParticipantAttributesChanged {
+                participant: Participant::Remote(participant),
+                changed_attributes,
+            } if changed_attributes.contains_key(screen_share_hevc::ATTRIBUTE)
+                && is_screen_share_watcher(participant.identity().as_str(), &own_identity) =>
+            {
+                send(ScreenShareWatcherEvent::Seen {
+                    identity: participant.identity().to_string(),
+                    announced: screen_share_hevc::announced(&participant.attributes()),
+                });
+            }
+            RoomEvent::TrackPublished { participant, .. }
+                if is_screen_share_watcher(participant.identity().as_str(), &own_identity)
+                    && screen_share_hevc::announced(&participant.attributes()).is_none() =>
+            {
+                send(ScreenShareWatcherEvent::PublishedUnannounced {
+                    identity: participant.identity().to_string(),
+                });
+            }
+            RoomEvent::ParticipantDisconnected(participant)
+                if is_screen_share_watcher(participant.identity().as_str(), &own_identity) =>
+            {
+                send(ScreenShareWatcherEvent::Left {
+                    identity: participant.identity().to_string(),
+                });
+            }
+            RoomEvent::Reconnecting => {
+                log::warn!("handle_video_room_events: video room connection lost, reconnecting")
+            }
+            RoomEvent::Reconnected => {
+                log::info!("handle_video_room_events: video room reconnected")
+            }
             RoomEvent::Disconnected { reason } => {
-                log::warn!("drain_video_room_events: video room disconnected: {reason:?}")
+                log::warn!("handle_video_room_events: video room disconnected: {reason:?}")
             }
             _ => {}
         }
     }
-    log::info!("drain_video_room_events: video_room event channel closed");
+    log::info!("handle_video_room_events: video_room event channel closed");
 }
 
 async fn handle_room_events(ctx: RoomEventContext) {
@@ -3040,6 +3814,7 @@ async fn handle_room_events(ctx: RoomEventContext) {
                         .unwrap()
                         .take();
                     remote_screen_share.app_veil_snapshot.lock().unwrap().take();
+                    remote_screen_share.shown.lock().unwrap().forget();
                     if let Err(error) =
                         event_loop_proxy.send_event(UserEvent::CloseScreenShareWindow)
                     {
@@ -3183,14 +3958,12 @@ async fn handle_room_events(ctx: RoomEventContext) {
                     (livekit::track::TrackKind::Video, TrackSource::Screenshare) => {
                         log::info!("handle_room_events: Screen share muted from {}", identity);
 
-                        // Only clean up if this is the current publisher
-                        let is_current = {
-                            let publisher_guard =
-                                remote_screen_share.publisher_identity.lock().unwrap();
-                            publisher_guard.as_deref() == Some(identity.as_str())
-                        };
-
-                        if !is_current {
+                        // Only clean up if this is the track we show
+                        if !is_shown_screen_share(
+                            &remote_screen_share,
+                            &identity,
+                            &publication.sid(),
+                        ) {
                             log::info!(
                                 "handle_room_events: Ignoring mute from non-current publisher {}",
                                 identity,
@@ -3198,46 +3971,13 @@ async fn handle_room_events(ctx: RoomEventContext) {
                             continue;
                         }
 
-                        // Send stop signal
-                        {
-                            let mut stop_tx_guard = remote_screen_share.stop_tx.lock().unwrap();
-                            if let Some(tx) = stop_tx_guard.take() {
-                                let _ = tx.send(());
-                            }
-                        }
-
-                        // Clear publisher identity (keep the buffer for reuse)
-                        {
-                            remote_screen_share
-                                .publisher_identity
-                                .lock()
-                                .unwrap()
-                                .take();
-                            remote_screen_share.app_veil_snapshot.lock().unwrap().take();
-                        }
-
-                        // Derive the audio participant identity to clear is_screensharing
-                        let audio_identity = {
-                            let video_identity = participant.identity().as_str().to_string();
-                            video_identity
-                                .strip_suffix(":video")
-                                .map(|prefix| format!("{prefix}:audio"))
-                        };
-                        if let Some(audio_id) = audio_identity {
-                            let mut participants_guard = participants.write().unwrap();
-                            if let Some(info) = participants_guard.get_mut(&audio_id) {
-                                info.set_is_screensharing(false);
-                            }
-                        }
-
-                        snapshot_sender.send_participants_snapshot();
-
-                        // Close the screen share window
-                        if let Err(e) =
-                            event_loop_proxy.send_event(UserEvent::CloseScreenShareWindow)
-                        {
-                            log::error!("handle_room_events: Failed to send CloseScreenShareWindow event: {e:?}");
-                        }
+                        end_remote_screen_share(
+                            &remote_screen_share,
+                            &participants,
+                            &identity,
+                            &snapshot_sender,
+                            &event_loop_proxy,
+                        );
                     }
                     _ => {}
                 }
@@ -3301,6 +4041,7 @@ async fn handle_room_events(ctx: RoomEventContext) {
                         };
                         start_remote_screen_share_stream(
                             video_track,
+                            publication.sid(),
                             &remote_screen_share,
                             &participants,
                             &identity,
@@ -3368,6 +4109,7 @@ async fn handle_room_events(ctx: RoomEventContext) {
                                 );
                                 start_remote_screen_share_stream(
                                     video_track,
+                                    publication.sid(),
                                     &remote_screen_share,
                                     &participants,
                                     &participant_identity,
@@ -3461,48 +4203,33 @@ async fn handle_room_events(ctx: RoomEventContext) {
                                     participant_identity
                                 );
 
-                                let is_current = {
-                                    let publisher_guard =
-                                        remote_screen_share.publisher_identity.lock().unwrap();
-                                    publisher_guard.as_deref()
-                                        == Some(participant_identity.as_str())
-                                };
-
-                                if is_current {
-                                    {
-                                        let mut stop_tx_guard =
-                                            remote_screen_share.stop_tx.lock().unwrap();
-                                        if let Some(tx) = stop_tx_guard.take() {
-                                            let _ = tx.send(());
-                                        }
-                                    }
-                                    remote_screen_share
-                                        .publisher_identity
-                                        .lock()
-                                        .unwrap()
-                                        .take();
-                                    remote_screen_share.app_veil_snapshot.lock().unwrap().take();
-
-                                    // Derive audio identity to clear is_screensharing
-                                    let audio_identity = participant_identity
-                                        .strip_suffix(":video")
-                                        .map(|prefix| format!("{prefix}:audio"));
-                                    if let Some(audio_id) = audio_identity {
-                                        let mut participants_guard = participants.write().unwrap();
-                                        if let Some(info) = participants_guard.get_mut(&audio_id) {
-                                            info.set_is_screensharing(false);
-                                        }
-                                    }
-
-                                    snapshot_sender.send_participants_snapshot();
-
-                                    if let Err(e) = event_loop_proxy
-                                        .send_event(UserEvent::CloseScreenShareWindow)
-                                    {
-                                        log::error!(
-                                            "handle_room_events: Failed to send CloseScreenShareWindow event: {e:?}"
-                                        );
-                                    }
+                                if !is_shown_screen_share(
+                                    &remote_screen_share,
+                                    &participant_identity,
+                                    &publication.sid(),
+                                ) {
+                                    continue;
+                                }
+                                // A live track's unpublish from a Hopp sharer (its `:video`
+                                // participant) is a codec switch; its share ends with a mute.
+                                if !publication.is_muted()
+                                    && participant_identity.ends_with(":video")
+                                {
+                                    await_screen_share_replacement(
+                                        &remote_screen_share,
+                                        &participants,
+                                        &participant_identity,
+                                        &snapshot_sender,
+                                        &event_loop_proxy,
+                                    );
+                                } else {
+                                    end_remote_screen_share(
+                                        &remote_screen_share,
+                                        &participants,
+                                        &participant_identity,
+                                        &snapshot_sender,
+                                        &event_loop_proxy,
+                                    );
                                 }
                             }
                             source => {
@@ -3558,6 +4285,8 @@ async fn handle_room_events(ctx: RoomEventContext) {
                 log::info!("handle_room_events: reconnected");
                 let _ = service_command_tx
                     .send(RoomServiceCommand::PublishAppVeilSnapshot { force: true });
+                // A full reconnect joins as a new session, which lost our announcement.
+                let _ = service_command_tx.send(RoomServiceCommand::AnnounceHevcSupport);
             }
             _ => {}
         }
@@ -3769,5 +4498,40 @@ mod effect_packet_tests {
         ] {
             assert_ne!(topic, TOPIC_EFFECT);
         }
+    }
+}
+
+#[cfg(test)]
+mod screen_share_codec_tests {
+    use super::*;
+
+    const OWN_VIDEO: &str = "room:r:me:video";
+
+    #[test]
+    fn watchers_are_other_users_main_participants_and_browsers() {
+        assert!(is_screen_share_watcher("room:r:alice:audio", OWN_VIDEO));
+        // A browser viewer on the web app's Room page joins with the audio token too.
+        assert!(is_screen_share_watcher("room:r:bob:audio", OWN_VIDEO));
+        assert!(is_screen_share_watcher("someone-else", OWN_VIDEO));
+    }
+
+    #[test]
+    fn video_participants_and_our_own_main_participant_are_not_watchers() {
+        assert!(!is_screen_share_watcher("room:r:alice:video", OWN_VIDEO));
+        assert!(!is_screen_share_watcher(OWN_VIDEO, OWN_VIDEO));
+        assert!(!is_screen_share_watcher("room:r:me:audio", OWN_VIDEO));
+    }
+
+    #[test]
+    fn livekit_codecs() {
+        assert_eq!(
+            livekit_video_codec(ScreenShareCodec::H265),
+            VideoCodec::H265
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            livekit_video_codec(ScreenShareCodec::H264),
+            VideoCodec::H264
+        );
     }
 }

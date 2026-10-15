@@ -52,6 +52,8 @@ pub enum StreamRuntimeMessage {
 struct StreamBuffer {
     /// The video frame containing NV12-formatted pixel data.
     video_frame: VideoFrame<NV12Buffer>,
+    /// `video_frame` holds a captured frame, not just the buffer's initial contents.
+    captured: bool,
 }
 
 impl StreamBuffer {
@@ -71,7 +73,10 @@ impl StreamBuffer {
             timestamp_us: 0,
             frame_metadata: None,
         };
-        StreamBuffer { video_frame }
+        StreamBuffer {
+            video_frame,
+            captured: false,
+        }
     }
 }
 
@@ -220,6 +225,7 @@ fn create_capture_callback(
             dst_uv.copy_from_slice(data_uv);
         }
         stream_buffer.video_frame.timestamp_us = capture_start.elapsed().as_micros() as i64;
+        stream_buffer.captured = true;
 
         buffer_source.capture_frame(&stream_buffer.video_frame);
     }
@@ -503,6 +509,14 @@ impl Stream {
     /// restarted or when the process should exit due to persistent failures.
     /// When this count reaches MAX_STREAM_FAILURES_BEFORE_EXIT, the application
     /// will terminate to trigger a restart.
+    /// Sends the last captured frame to the source again, if there is one.
+    pub fn resend_last_frame(&self) {
+        let stream_buffer = self.stream_buffer.lock().unwrap();
+        if stream_buffer.captured {
+            self.buffer_source.capture_frame(&stream_buffer.video_frame);
+        }
+    }
+
     pub fn get_failures_count(&self) -> u64 {
         *self.failures_count.lock().unwrap()
     }

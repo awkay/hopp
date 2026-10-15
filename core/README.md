@@ -94,6 +94,7 @@ generation, and the `RoomService` which handles asynchronous `LiveKit` operation
 During a screen sharing session the following happens:
 * `RoomService` connects to the `LiveKit` room and creates the video stream infrastructure.
 * `Capturer` begins capturing the selected display and sends frames to `LiveKit`'s `NativeVideoSource` buffer for real-time streaming.
+* The screen track is HEVC when this Mac (M3 or newer), the user's setting and every watcher allow it, H.264 otherwise; a watcher without HEVC joining mid-share switches it to H.264 by republishing the track. See [docs/screen-share-codec.md](../docs/screen-share-codec.md).
 * An overlay window is created for rendering the virtual cursors.
 * Remote control is handled via the cursor and keyboard controllers.
 * Controller input events arrive as `LiveKit` `DataPackets` through the room service, get converted to `UserEvents` in the event loop, and are forwarded to the appropriate input controllers for processing.

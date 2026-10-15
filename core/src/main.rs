@@ -18,7 +18,7 @@ struct Args {
 fn main() -> Result<(), impl std::error::Error> {
     let args = Args::parse();
 
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+    hopp_core::webrtc_log::init_logger();
 
     let _guard = init_sentry("Core crashed".to_string(), args.sentry_dsn);
 

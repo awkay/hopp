@@ -226,9 +226,11 @@ pub async fn process_video_stream(
                             guard.received_at = Some(received_at);
                         }
                         manager.advance_write();
-                        // Ids start at 1, so a window can tell frame 1 from "no frame yet".
+                        // Ids start at 1, so a window can tell frame 1 from "no frame yet". They
+                        // go on from the buffer's last frame, so a stream that takes over a buffer
+                        // (a sharer replacing its track, spec 0007) delivers new frames at once.
                         frame_counter += 1;
-                        manager.set_frame_id(frame_counter);
+                        manager.set_frame_id(manager.current_frame_id() + 1);
 
                         if let Some(tx) = &redraw_tx {
                             if let Err(e) = tx.send(crate::window::screensharing_window::RedrawCommand::ForceRedraw) {

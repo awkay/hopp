@@ -42,6 +42,8 @@ pub enum StreamRuntimeMessage {
 
 struct StreamBuffer {
     video_frame: VideoFrame<NV12Buffer>,
+    /// `video_frame` holds a captured frame, not just the buffer's initial contents.
+    captured: bool,
 }
 
 impl StreamBuffer {
@@ -52,7 +54,10 @@ impl StreamBuffer {
             timestamp_us: 0,
             frame_metadata: None,
         };
-        StreamBuffer { video_frame }
+        StreamBuffer {
+            video_frame,
+            captured: false,
+        }
     }
 }
 
@@ -502,6 +507,7 @@ impl Stream {
             }
 
             sb.video_frame.timestamp_us = capture_start.elapsed().as_micros() as i64;
+            sb.captured = true;
             buffer_source.capture_frame(&sb.video_frame);
         };
 
@@ -580,6 +586,14 @@ impl Stream {
             framerate: AtomicU32::new(self.framerate.load(Ordering::Relaxed)),
             configured_size: Mutex::new(*self.configured_size.lock().unwrap()),
         })
+    }
+
+    /// Sends the last captured frame to the source again, if there is one.
+    pub fn resend_last_frame(&self) {
+        let sb = self.stream_buffer.lock().unwrap();
+        if sb.captured {
+            self.buffer_source.capture_frame(&sb.video_frame);
+        }
     }
 
     pub fn get_failures_count(&self) -> u64 {

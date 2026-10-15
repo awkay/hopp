@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 
 pub mod call;
 pub mod client;
+pub mod screen_share_hevc;
 
 /// Identifies a request sent by Tauri; core echoes it on the matching response.
 pub type RequestId = u64;
@@ -315,6 +316,9 @@ pub enum Message {
     SetLowBandwidthDefault(bool),
     /// Request (or withdraw the request for) low-bandwidth mode in the current call.
     SetCallLowBandwidth(bool),
+    /// Persisted "Use HEVC for screen sharing" setting (spec 0007): when off, this user's
+    /// shares use H.264 and they count as a watcher without HEVC support.
+    SetScreenShareHevc(bool),
     BandwidthModeState(BandwidthModeState),
 }
 

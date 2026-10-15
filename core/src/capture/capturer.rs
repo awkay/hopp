@@ -307,6 +307,15 @@ impl Capturer {
         Ok(())
     }
 
+    /// Sends the last captured frame to the screen track's source again. A screen track
+    /// published during a share (spec 0007) otherwise has nothing to encode until the screen
+    /// changes: ScreenCaptureKit sends no frames for a static screen.
+    pub fn resend_last_frame(&self) {
+        if let Some(stream) = self.active_stream.as_ref() {
+            stream.resend_last_frame();
+        }
+    }
+
     /// Signals the capture thread to stop and releases the active stream.
     /// The thread is detached and will exit on its own.
     /// Safe to call when no stream is active (no-op).

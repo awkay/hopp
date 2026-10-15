@@ -1,9 +1,5 @@
 //! Screen share codec: HEVC (H.265) when this Mac and every watcher can use it, H.264 otherwise
 //! (spec 0007). Kept free of LiveKit types so it can be unit tested.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "wired into room_service in spec 0007's next step")
-)]
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -22,38 +18,53 @@ pub(crate) enum ScreenShareCodec {
 /// handled like any other join.
 ///
 /// Once a share has started, its codec only goes from HEVC to H.264 (a watcher without HEVC
-/// joins, a watcher turns HEVC off, or the user turns the setting off), never back: each switch
-/// freezes the viewers for a moment, so the share returns to HEVC only when the next one starts.
-/// Between shares the muted track keeps its codec, and changes are applied when a share starts.
+/// joins, a watcher turns HEVC off, the user turns the setting off, or hardware HEVC encoding
+/// didn't start), never back: each switch freezes the viewers for a moment, so the share returns
+/// to HEVC only when the next one starts. Between shares the muted track keeps its codec, and
+/// changes are applied when a share starts.
 ///
 /// The caller reports:
 /// - Call connected: [`Self::set_watcher`] for the watchers present, then publish the muted
-///   screen track with [`Self::connected`]'s codec.
-/// - A watcher joins, or its HEVC support changes: [`Self::set_watcher`]. It leaves:
+///   screen track with [`Self::connected`]'s codec. Also when a new track has to be published
+///   after the last one was lost ([`Self::track_lost`]).
+/// - A watcher joins, or its HEVC support changes: [`Self::set_watcher`], or
+///   [`Self::watcher_unannounced`] when it joined without announcing anything. It leaves:
 ///   [`Self::remove_watcher`].
 /// - The setting changes: [`Self::set_setting`].
 /// - A share starts: [`Self::share_started`], before unmuting the track. It ends:
 ///   [`Self::share_ended`].
+/// - Hardware HEVC encoding didn't start: [`Self::hevc_encoding_failed`].
 /// - The call ends: [`Self::clear`].
 ///
 /// A method returning `Some(codec)` means the track must be republished with `codec` now: a
 /// published track can't change codec, so unpublish it and publish a new one from the same
-/// source. The codec counts as published from then on.
+/// source. The codec counts as published from then on; if that fails, report
+/// [`Self::track_lost`].
 ///
 /// Watchers are the participants that can subscribe to the share, keyed by identity: the other
 /// users' main participants, and browser viewers. The caller leaves out every `:video`
 /// participant, which never subscribes to shares; it may also leave out its own main participant,
 /// whose announcement follows the same setting. A watcher supports HEVC only if it announces it
-/// with its participant attribute. Older clients and browser viewers don't, so the caller passes
-/// `false` when the attribute is missing.
+/// with its participant attribute. Older clients and browser viewers never do, so a watcher that
+/// hasn't announced anything by the time [`Self::announcement_overdue`] is called counts as
+/// without HEVC.
 #[derive(Debug)]
 pub(crate) struct ScreenShareCodecChoice {
     /// This Mac may share HEVC: M3 or newer.
     chip_allows_hevc: bool,
     /// The user's "Use HEVC for screen sharing" setting.
     setting_allows_hevc: bool,
+    /// Dev override (`HOPP_SCREEN_SHARE_CODEC`): this codec whatever the watchers and the
+    /// setting, unless HEVC encoding failed.
+    forced: Option<ScreenShareCodec>,
     /// Whether each watcher supports HEVC, keyed by participant identity.
     watchers: HashMap<String, bool>,
+    /// Watchers that joined without announcing anything yet, with their
+    /// [`Self::watcher_unannounced`] token. They don't count until they announce.
+    unannounced: HashMap<String, u64>,
+    next_token: u64,
+    /// Hardware HEVC encoding didn't start in this call: H.264 until the call ends.
+    hevc_failed: bool,
     /// Codec of the published screen track, `None` while none is published.
     published: Option<ScreenShareCodec>,
     sharing: bool,
@@ -64,24 +75,45 @@ impl ScreenShareCodecChoice {
         Self {
             chip_allows_hevc,
             setting_allows_hevc,
+            forced: None,
             watchers: HashMap::new(),
+            unannounced: HashMap::new(),
+            next_token: 0,
+            hevc_failed: false,
             published: None,
             sharing: false,
         }
     }
 
+    /// Picks `codec` from now on, whatever the watchers, the chip and the setting (a dev
+    /// override for profiling). A failed HEVC encoder still falls back to H.264.
+    pub fn force(&mut self, codec: ScreenShareCodec) {
+        self.forced = Some(codec);
+    }
+
     /// Codec of the published screen track, `None` before [`Self::connected`] and after
-    /// [`Self::clear`].
+    /// [`Self::clear`] or [`Self::track_lost`].
     pub fn published(&self) -> Option<ScreenShareCodec> {
         self.published
     }
 
-    /// The call connected: the codec to publish the muted screen track with.
+    /// The user's "Use HEVC for screen sharing" setting, which this client also announces.
+    pub fn setting(&self) -> bool {
+        self.setting_allows_hevc
+    }
+
+    /// The call connected, or the screen track has to be published anew: the codec to publish
+    /// it with.
     #[must_use]
     pub fn connected(&mut self) -> ScreenShareCodec {
         let codec = self.pick();
         self.published = Some(codec);
         codec
+    }
+
+    /// The screen track couldn't be (re)published: none is published now.
+    pub fn track_lost(&mut self) {
+        self.published = None;
     }
 
     /// A share starts. Returns the codec to republish the track with before unmuting it, when
@@ -105,12 +137,42 @@ impl ScreenShareCodecChoice {
     /// this downgrades the share in progress.
     #[must_use = "the screen track must be republished with the returned codec"]
     pub fn set_watcher(&mut self, identity: &str, supports_hevc: bool) -> Option<ScreenShareCodec> {
+        self.unannounced.remove(identity);
         self.watchers.insert(identity.to_string(), supports_hevc);
         self.downgrade_if_needed()
     }
 
+    /// A watcher joined without announcing whether it supports HEVC. A Hopp client announces
+    /// right after it connects, which can reach us after its join, so the watcher doesn't count
+    /// until it announces ([`Self::set_watcher`]) or [`Self::announcement_overdue`] gives up on
+    /// it. Returns the token for that call, `None` when the watcher already counts or is
+    /// already waited for.
+    #[must_use = "call announcement_overdue with the token when the wait is over"]
+    pub fn watcher_unannounced(&mut self, identity: &str) -> Option<u64> {
+        if self.watchers.contains_key(identity) || self.unannounced.contains_key(identity) {
+            return None;
+        }
+        self.next_token += 1;
+        self.unannounced
+            .insert(identity.to_string(), self.next_token);
+        Some(self.next_token)
+    }
+
+    /// The wait for a watcher's announcement is over: if it still hasn't announced, it counts
+    /// as without HEVC (an older client or a browser). `token` comes from
+    /// [`Self::watcher_unannounced`], so the wait of a watcher that left and joined again ends
+    /// only its own wait. Returns `Some(H264)` when this downgrades the share in progress.
+    #[must_use = "the screen track must be republished with the returned codec"]
+    pub fn announcement_overdue(&mut self, identity: &str, token: u64) -> Option<ScreenShareCodec> {
+        if self.unannounced.get(identity) != Some(&token) {
+            return None;
+        }
+        self.set_watcher(identity, false)
+    }
+
     /// A watcher left. Never switches codec: a share that fell back to H.264 stays there.
     pub fn remove_watcher(&mut self, identity: &str) {
+        self.unannounced.remove(identity);
         self.watchers.remove(identity);
     }
 
@@ -122,16 +184,32 @@ impl ScreenShareCodecChoice {
         self.downgrade_if_needed()
     }
 
-    /// The call ended: forgets the watchers, the published track and the share, but keeps the
-    /// chip and the setting.
+    /// Hardware HEVC encoding didn't start (spec 0007 B6): H.264 until the call ends. Returns
+    /// `Some(H264)` when the share in progress is HEVC.
+    #[must_use = "the screen track must be republished with the returned codec"]
+    pub fn hevc_encoding_failed(&mut self) -> Option<ScreenShareCodec> {
+        self.hevc_failed = true;
+        self.downgrade_if_needed()
+    }
+
+    /// The call ended: forgets the watchers, the published track, the share and an HEVC
+    /// failure, but keeps the chip, the setting and a forced codec.
     pub fn clear(&mut self) {
         self.watchers.clear();
+        self.unannounced.clear();
+        self.hevc_failed = false;
         self.published = None;
         self.sharing = false;
     }
 
     /// The codec the current inputs call for, whatever is published.
     fn pick(&self) -> ScreenShareCodec {
+        if self.hevc_failed {
+            return ScreenShareCodec::H264;
+        }
+        if let Some(forced) = self.forced {
+            return forced;
+        }
         let watchers_allow_hevc = self.watchers.values().all(|supports_hevc| *supports_hevc);
         if self.chip_allows_hevc && self.setting_allows_hevc && watchers_allow_hevc {
             ScreenShareCodec::H265
@@ -388,6 +466,123 @@ mod tests {
         assert_eq!(choice.connected(), H265);
         // The share is forgotten too: no downgrade until a share starts.
         assert_eq!(choice.set_watcher(BROWSER, false), None);
+    }
+
+    #[test]
+    fn an_unannounced_watcher_does_not_count_until_its_wait_is_over() {
+        let mut choice = sharing_hevc();
+        let token = choice.watcher_unannounced(BROWSER).unwrap();
+        // Joining again while waited for, or a share starting meanwhile, changes nothing.
+        assert_eq!(choice.watcher_unannounced(BROWSER), None);
+        choice.share_ended();
+        assert_eq!(choice.share_started(), None);
+        assert_eq!(choice.published(), Some(H265));
+        assert_eq!(choice.announcement_overdue(BROWSER, token), Some(H264));
+        // Only once.
+        assert_eq!(choice.announcement_overdue(BROWSER, token), None);
+        assert_eq!(choice.published(), Some(H264));
+    }
+
+    #[test]
+    fn a_watcher_announcing_during_the_wait_keeps_hevc() {
+        let mut choice = sharing_hevc();
+        let token = choice.watcher_unannounced(BOB).unwrap();
+        assert_eq!(choice.set_watcher(BOB, true), None);
+        assert_eq!(choice.announcement_overdue(BOB, token), None);
+        assert_eq!(choice.published(), Some(H265));
+        // A known watcher isn't waited for again.
+        assert_eq!(choice.watcher_unannounced(BOB), None);
+    }
+
+    #[test]
+    fn a_stale_wait_does_not_end_a_new_one() {
+        let mut choice = sharing_hevc();
+        let first = choice.watcher_unannounced(BOB).unwrap();
+        choice.remove_watcher(BOB);
+        assert_eq!(choice.announcement_overdue(BOB, first), None);
+        let second = choice.watcher_unannounced(BOB).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(choice.announcement_overdue(BOB, first), None);
+        assert_eq!(choice.published(), Some(H265));
+        assert_eq!(choice.announcement_overdue(BOB, second), Some(H264));
+    }
+
+    #[test]
+    fn clear_forgets_unannounced_watchers() {
+        let mut choice = ScreenShareCodecChoice::new(true, true);
+        let token = choice.watcher_unannounced(BROWSER).unwrap();
+        choice.clear();
+        assert_eq!(choice.connected(), H265);
+        assert_eq!(choice.share_started(), None);
+        assert_eq!(choice.announcement_overdue(BROWSER, token), None);
+        assert_eq!(choice.published(), Some(H265));
+    }
+
+    #[test]
+    fn failed_hevc_encoding_falls_back_for_the_rest_of_the_call() {
+        let mut choice = sharing_hevc();
+        assert_eq!(choice.hevc_encoding_failed(), Some(H264));
+        assert_eq!(choice.hevc_encoding_failed(), None);
+        choice.share_ended();
+        // The next share in this call stays H.264.
+        assert_eq!(choice.share_started(), None);
+        assert_eq!(choice.published(), Some(H264));
+        choice.share_ended();
+        // A new call tries HEVC again.
+        choice.clear();
+        assert_eq!(choice.connected(), H265);
+    }
+
+    #[test]
+    fn failed_hevc_encoding_between_shares_applies_at_the_next_share() {
+        let mut choice = ScreenShareCodecChoice::new(true, true);
+        assert_eq!(choice.connected(), H265);
+        assert_eq!(choice.hevc_encoding_failed(), None);
+        assert_eq!(choice.share_started(), Some(H264));
+    }
+
+    #[test]
+    fn a_forced_codec_ignores_watchers_chip_and_setting() {
+        let mut choice = ScreenShareCodecChoice::new(false, false);
+        choice.force(H265);
+        assert_eq!(choice.set_watcher(BROWSER, false), None);
+        assert_eq!(choice.connected(), H265);
+        assert_eq!(choice.share_started(), None);
+        assert_eq!(choice.set_watcher(BOB, false), None);
+        assert_eq!(choice.published(), Some(H265));
+        // A failed encoder still falls back.
+        assert_eq!(choice.hevc_encoding_failed(), Some(H264));
+
+        let mut choice = ScreenShareCodecChoice::new(true, true);
+        choice.force(H264);
+        assert_eq!(choice.connected(), H264);
+        assert_eq!(choice.share_started(), None);
+        // Survives the end of a call.
+        choice.clear();
+        assert_eq!(choice.connected(), H264);
+    }
+
+    #[test]
+    fn a_lost_track_is_published_anew() {
+        let mut choice = sharing_hevc();
+        assert_eq!(choice.set_watcher(BROWSER, false), Some(H264));
+        // The republish failed.
+        choice.track_lost();
+        assert_eq!(choice.published(), None);
+        assert_eq!(choice.set_setting(false), None);
+        choice.share_ended();
+        assert_eq!(choice.share_started(), None);
+        assert_eq!(choice.connected(), H264);
+    }
+
+    #[test]
+    fn the_setting_is_remembered() {
+        let mut choice = ScreenShareCodecChoice::new(true, true);
+        assert!(choice.setting());
+        assert_eq!(choice.set_setting(false), None);
+        assert!(!choice.setting());
+        choice.clear();
+        assert!(!choice.setting());
     }
 
     #[test]

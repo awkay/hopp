@@ -18,6 +18,7 @@ pub(crate) mod effects;
 pub mod room_service;
 mod screen_share_codec;
 mod snapshot_sender;
+pub mod webrtc_log;
 
 #[cfg(target_os = "macos")]
 #[path = "app_veil/macos.rs"]
@@ -444,6 +445,8 @@ pub struct Application<'a> {
     screen_share_picker_mode: ScreenSharePickerMode,
     /// Persisted setting: request low-bandwidth mode in every call joined.
     low_bandwidth_default: bool,
+    /// Persisted "Use HEVC for screen sharing" setting (spec 0007).
+    screen_share_hevc: bool,
     remote_control_enabled: bool,
     clipboard_controller: Option<ClipboardController>,
     screen_selection: Option<ScreenSelectionState>,
@@ -540,6 +543,7 @@ impl<'a> Application<'a> {
             screen_share_resolution: ScreenShareResolution::P4K,
             screen_share_picker_mode: ScreenSharePickerMode::Screen,
             low_bandwidth_default: false,
+            screen_share_hevc: true,
             remote_control_enabled: true,
             clipboard_controller,
             screen_selection: None,
@@ -1549,6 +1553,7 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                         noise_cancellation_enabled: self.noise_cancellation_enabled.clone(),
                         start_mic_on_call,
                         start_camera_on_call,
+                        screen_share_hevc: self.screen_share_hevc,
                         call_id,
                     }) {
                         Ok(_) => {
@@ -1804,6 +1809,11 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
             UserEvent::ScreenShareEncoderFramerate(fps) => {
                 if let Ok(mut capturer) = self.screen_capturer.lock() {
                     capturer.set_encoder_framerate(fps);
+                }
+            }
+            UserEvent::ResendScreenShareFrame => {
+                if let Ok(capturer) = self.screen_capturer.lock() {
+                    capturer.resend_last_frame();
                 }
             }
             UserEvent::CaptureFrameChanged => {
@@ -2344,6 +2354,13 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
             UserEvent::SetLowBandwidthDefault(enabled) => {
                 log::info!("user_event: SetLowBandwidthDefault({enabled})");
                 self.low_bandwidth_default = enabled;
+            }
+            UserEvent::SetScreenShareHevc(enabled) => {
+                log::info!("user_event: SetScreenShareHevc({enabled})");
+                self.screen_share_hevc = enabled;
+                if let Some(room_service) = self.room_service.as_ref() {
+                    room_service.set_screen_share_hevc(enabled);
+                }
             }
             UserEvent::SetCallLowBandwidth(enabled) => {
                 log::info!("user_event: SetCallLowBandwidth({enabled})");
@@ -3363,6 +3380,8 @@ pub enum UserEvent {
     CaptureFrameChanged,
     /// The screen share encoder's frame rate changed; the capture follows it.
     ScreenShareEncoderFramerate(f64),
+    /// A new screen track waits for a frame to encode: the capture sends its last one again.
+    ResendScreenShareFrame,
     SetAppVeilBundleIds(Vec<String>),
     RefreshAppVeilFilter,
     #[cfg(target_os = "macos")]
@@ -3444,6 +3463,7 @@ pub enum UserEvent {
     SetScreenShareResolution(ScreenShareResolution),
     SetLowBandwidthDefault(bool),
     SetCallLowBandwidth(bool),
+    SetScreenShareHevc(bool),
     /// Low-bandwidth mode state changed; pushed from the room service to the native windows.
     BandwidthModeStateChanged(socket_lib::BandwidthModeState),
     SetScreenSharePickerMode(ScreenSharePickerMode),
@@ -3607,6 +3627,7 @@ impl RenderEventLoop {
                     Message::SetCallLowBandwidth(enabled) => {
                         UserEvent::SetCallLowBandwidth(enabled)
                     }
+                    Message::SetScreenShareHevc(enabled) => UserEvent::SetScreenShareHevc(enabled),
                     Message::SetTelemetryEnabled(enabled) => {
                         UserEvent::SetTelemetryEnabled(enabled)
                     }

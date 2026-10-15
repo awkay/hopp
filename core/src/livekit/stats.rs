@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 
 use livekit::id::ParticipantIdentity;
 use livekit::participant::{LocalParticipant, RemoteParticipant};
-use livekit::track::{LocalTrack, TrackSource};
+use livekit::track::{LocalTrack, LocalVideoTrack, TrackSource};
 use livekit::webrtc::stats::RtcStats;
 
 use crate::room_service::RoomServiceInner;
@@ -492,6 +492,37 @@ fn codec_map(stats: &[RtcStats]) -> HashMap<String, String> {
             _ => None,
         })
         .collect()
+}
+
+/// What a local video track's encoder has done so far, from its outbound stats.
+#[derive(Debug, Clone)]
+pub(crate) struct EncoderProgress {
+    /// `H264`, `H265`, ...; empty until libwebrtc reports it.
+    pub codec: String,
+    pub implementation: String,
+    pub frames_encoded: u64,
+}
+
+/// `Ok(None)` while the track has no outbound video stats yet; an error once it isn't
+/// published.
+pub(crate) async fn encoder_progress(
+    track: &LocalVideoTrack,
+) -> livekit::RoomResult<Option<EncoderProgress>> {
+    let stats = track.get_stats().await?;
+    let codecs = codec_map(&stats);
+    Ok(stats.iter().find_map(|stat| match stat {
+        RtcStats::OutboundRtp(outbound) if outbound.stream.kind == "video" => {
+            Some(EncoderProgress {
+                codec: codecs
+                    .get(&outbound.stream.codec_id)
+                    .cloned()
+                    .unwrap_or_default(),
+                implementation: outbound.outbound.encoder_implementation.clone(),
+                frames_encoded: outbound.outbound.frames_encoded as u64,
+            })
+        }
+        _ => None,
+    }))
 }
 
 pub(crate) async fn stats_loop(inner: Arc<RoomServiceInner>) {
