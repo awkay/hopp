@@ -7,18 +7,21 @@
 
 use crate::ipc::{CoreConn, Step, REQUEST_TIMEOUT};
 use crate::livekit_utils::{generate_participant_token, participant_identity};
+use crate::profile::publish_audio;
 use crate::screenshare_client;
 use clap::ValueEnum;
 use futures::StreamExt;
 use livekit::options::{TrackPublishOptions, VideoCodec, VideoEncoding};
 use livekit::prelude::*;
 use livekit::webrtc::prelude::VideoResolution as WebrtcVideoResolution;
+use livekit::webrtc::stats::RtcStats;
 use livekit::webrtc::video_frame::{I420Buffer, VideoFrame, VideoRotation};
 use livekit::webrtc::video_source::native::NativeVideoSource;
 use livekit::webrtc::video_source::RtcVideoSource;
 use livekit::webrtc::video_stream::native::NativeVideoStream;
 use socket_lib::{
-    BandwidthModeState, CallId, CoreParticipantState, Message, RoomConnectionFailedMessage,
+    screen_share_hevc, BandwidthModeState, CallId, CoreParticipantState, Message,
+    RoomConnectionFailedMessage,
 };
 use std::io;
 use std::process::Command;
@@ -31,6 +34,8 @@ const CORE_USER: &str = "Smoke Core";
 const OBSERVER: &str = "Smoke Observer";
 const REMOTE: &str = "Smoke Remote";
 const FAKE_SHARER: &str = "Smoke Fake Sharer";
+/// A watcher that doesn't announce HEVC support, like an older Hopp or a browser viewer.
+const OLD_CLIENT: &str = "Smoke Old Client";
 
 /// Data topic and payload core uses to negotiate low-bandwidth mode (`room_service.rs`).
 const TOPIC_BANDWIDTH_MODE: &str = "bandwidth_mode";
@@ -55,6 +60,12 @@ pub enum Scenario {
     ViewerHang,
     /// Core shares the screen and another participant receives frames (needs Screen Recording)
     Screenshare,
+    /// Core shares in HEVC; a watcher without HEVC joins and within 2 s the share is H.264 and
+    /// the viewer receives it (needs Screen Recording and an M3 or newer)
+    HevcFallback,
+    /// A fake sharer replaces its HEVC screen track with an H.264 one, as core does on a codec
+    /// switch: core keeps the share open and takes the new track
+    TrackReplace,
     /// LiveKit traffic cut for 10 s mid-call; the call must recover (needs sudo, see netem.sh)
     NetworkDrop,
 }
@@ -87,6 +98,8 @@ async fn run_scenario(scenario: Scenario, core_pid: Option<u32>) -> io::Result<(
         Scenario::Bandwidth => bandwidth(&conn).await,
         Scenario::ViewerHang => viewer_hang(&conn, core_pid).await,
         Scenario::Screenshare => screenshare(&conn, core_pid).await,
+        Scenario::HevcFallback => hevc_fallback(&conn, core_pid).await,
+        Scenario::TrackReplace => track_replace(&conn, core_pid).await,
         Scenario::NetworkDrop => network_drop(&conn).await,
     }
 }
@@ -431,6 +444,180 @@ async fn screenshare(conn: &CoreConn, core_pid: Option<u32>) -> io::Result<()> {
     Ok(())
 }
 
+async fn hevc_fallback(conn: &CoreConn, core_pid: Option<u32>) -> io::Result<()> {
+    /// Spec 0007 B3: once a watcher without HEVC joins, the share is H.264 within 2 s.
+    const SWITCH_BUDGET: Duration = Duration::from_secs(2);
+
+    let mut observer = Participant::join(OBSERVER).await?;
+    let call_id = conn.join_call(CORE_USER)?;
+
+    step("start screen share");
+    conn.start_screenshare(screenshare_client::screen_id(), 1920.0, 1080.0)?;
+
+    step("observer receives the share in HEVC");
+    let (track, sid) = wait_screen_share_track(&mut observer, None).await?;
+    let frames = count_frames(track.clone(), Duration::from_secs(2)).await;
+    check(frames.count > 0, "the observer received no frames")?;
+    let codec = received_codec(&track).await;
+    check(
+        codec.eq_ignore_ascii_case("video/H265"),
+        format!("core shared {codec:?}, expected video/H265 (is this Mac older than M3?)"),
+    )?;
+
+    step("a watcher without HEVC joins, with its microphone on");
+    let watcher = Participant::join_without_hevc(OLD_CLIENT).await?;
+    let joined = Instant::now();
+    // LiveKit tells the others about a participant that publishes nothing only every few
+    // seconds (it batches those updates); a client's microphone track makes it immediate.
+    let microphone = publish_audio(&watcher).await?;
+
+    step("observer receives the share again, in H.264");
+    let (track, _) = wait_screen_share_track(&mut observer, Some(&sid)).await?;
+    let counting_since = Instant::now();
+    let frames = count_frames(track.clone(), Duration::from_secs(3)).await;
+    check(
+        frames.count > 0,
+        "the observer received no frames after the switch",
+    )?;
+    let codec = received_codec(&track).await;
+    check(
+        codec.eq_ignore_ascii_case("video/H264"),
+        format!("after the switch core shares {codec:?}, expected video/H264"),
+    )?;
+    let switched_after =
+        counting_since.duration_since(joined) + frames.first_after.unwrap_or_default();
+    step(&format!(
+        "first H.264 frame {switched_after:?} after the watcher joined, {} frames, {}x{}",
+        frames.count, frames.width, frames.height
+    ));
+    check(
+        switched_after <= SWITCH_BUDGET,
+        format!("the switch took {switched_after:?}, more than {SWITCH_BUDGET:?}"),
+    )?;
+    conn.expect_none(
+        Duration::from_millis(500),
+        "the share to stay on",
+        |message| matches!(message, Message::ParticipantsSnapshot(participants) if !local_sharing(participants)),
+    )?;
+
+    microphone.abort();
+    watcher.leave().await;
+    conn.send(Message::StopScreenshare)?;
+    conn.wait_for(
+        REQUEST_TIMEOUT,
+        "participant list without the local share",
+        |message| match message {
+            Message::ParticipantsSnapshot(participants) if !local_sharing(&participants) => {
+                Step::Done(())
+            }
+            _ => Step::Skip,
+        },
+    )?;
+    conn.end_call(call_id)?;
+    check_idle_cpu(core_pid)?;
+    Ok(())
+}
+
+async fn track_replace(conn: &CoreConn, core_pid: Option<u32>) -> io::Result<()> {
+    /// Longer than core waits for a replaced track before it ends the share.
+    const STAYS_OPEN: Duration = Duration::from_secs(7);
+    const SUBSCRIBE_BUDGET: Duration = Duration::from_secs(2);
+    let options = |video_codec| TrackPublishOptions {
+        source: TrackSource::Screenshare,
+        video_codec,
+        video_encoding: Some(VideoEncoding {
+            max_bitrate: 2_000_000,
+            max_framerate: 15.0,
+        }),
+        simulcast: false,
+        ..Default::default()
+    };
+
+    let call_id = conn.join_call(CORE_USER)?;
+
+    step("fake sharer shares in HEVC");
+    // Core resolves a sharer's name through its audio identity, so join with both, like a client.
+    let sharer_audio = Participant::join(FAKE_SHARER).await?;
+    let mut sharer = Participant::join_track(FAKE_SHARER, "video").await?;
+    let source = NativeVideoSource::new(
+        WebrtcVideoResolution {
+            width: 1280,
+            height: 720,
+        },
+        true,
+    );
+    let pusher = tokio::spawn(push_frames(source.clone()));
+    let local_participant = sharer.room.local_participant();
+    let track =
+        publish_screen_track(&local_participant, &source, options(VideoCodec::H265)).await?;
+    conn.wait_for(
+        ROOM_EVENT_TIMEOUT,
+        "core seeing the remote share",
+        |message| match message {
+            Message::ParticipantsSnapshot(participants) if remote_sharing(&participants) => {
+                Step::Done(())
+            }
+            _ => Step::Skip,
+        },
+    )?;
+    sharer
+        .wait_event("core subscribing to the HEVC track", |event| match event {
+            RoomEvent::LocalTrackSubscribed { track: subscribed }
+                if subscribed.sid() == track.sid() =>
+            {
+                Some(())
+            }
+            _ => None,
+        })
+        .await?;
+    // Let core's window show the share for a moment.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    step("fake sharer replaces it with an H.264 track, as core does");
+    sharer.drain();
+    let replacing_since = Instant::now();
+    let new_track = replace_screen_track(
+        &local_participant,
+        &track,
+        &source,
+        options(VideoCodec::H264),
+    )
+    .await?;
+    sharer
+        .wait_event("core subscribing to the H.264 track", |event| match event {
+            RoomEvent::LocalTrackSubscribed { track: subscribed }
+                if subscribed.sid() == new_track.sid() =>
+            {
+                Some(())
+            }
+            _ => None,
+        })
+        .await?;
+    let subscribed_after = replacing_since.elapsed();
+    step(&format!(
+        "core subscribed to the new track after {subscribed_after:?}"
+    ));
+    check(
+        subscribed_after <= SUBSCRIBE_BUDGET,
+        format!("core took {subscribed_after:?} to subscribe, more than {SUBSCRIBE_BUDGET:?}"),
+    )?;
+
+    step(&format!("core keeps the share open for {STAYS_OPEN:?}"));
+    conn.expect_none(
+        STAYS_OPEN,
+        "the remote share to stay open",
+        |message| matches!(message, Message::ParticipantsSnapshot(participants) if !remote_sharing(participants)),
+    )?;
+    conn.probe(REQUEST_TIMEOUT)?;
+
+    pusher.abort();
+    sharer.leave().await;
+    sharer_audio.leave().await;
+    conn.end_call(call_id)?;
+    check_idle_cpu(core_pid)?;
+    Ok(())
+}
+
 async fn network_drop(conn: &CoreConn) -> io::Result<()> {
     const OUTAGE_SECONDS: &str = "10";
     const RECOVERY: Duration = Duration::from_secs(20);
@@ -464,11 +651,20 @@ async fn network_drop(conn: &CoreConn) -> io::Result<()> {
 /// Another participant in the room, joined over LiveKit directly.
 pub(crate) struct Participant {
     pub(crate) room: Room,
-    events: UnboundedReceiver<RoomEvent>,
+    pub(crate) events: UnboundedReceiver<RoomEvent>,
 }
 
 impl Participant {
+    /// Joins as `user`'s main participant and announces HEVC support, as core does.
     pub(crate) async fn join(user: &str) -> io::Result<Self> {
+        let participant = Self::join_without_hevc(user).await?;
+        participant.announce_hevc(true).await?;
+        Ok(participant)
+    }
+
+    /// Joins as `user`'s main participant without announcing HEVC support, like an older Hopp
+    /// or a browser viewer: a sharer then falls back to H.264.
+    pub(crate) async fn join_without_hevc(user: &str) -> io::Result<Self> {
         Self::join_track(user, "audio").await
     }
 
@@ -479,6 +675,15 @@ impl Participant {
             .await
             .map_err(|e| io::Error::other(format!("{user} could not join the room: {e}")))?;
         Ok(Self { room, events })
+    }
+
+    /// Announces whether this participant can watch HEVC screen shares, as core does.
+    pub(crate) async fn announce_hevc(&self, supported: bool) -> io::Result<()> {
+        self.room
+            .local_participant()
+            .set_attributes(screen_share_hevc::announcement(supported))
+            .await
+            .map_err(|e| io::Error::other(format!("announcing HEVC support failed: {e}")))
     }
 
     pub(crate) async fn wait_event<T>(
@@ -508,7 +713,7 @@ impl Participant {
     }
 
     /// Drops the events received so far.
-    fn drain(&mut self) {
+    pub(crate) fn drain(&mut self) {
         while self.events.try_recv().is_ok() {}
     }
 
@@ -560,6 +765,87 @@ impl Participant {
     pub(crate) async fn leave(self) {
         let _ = self.room.close().await;
     }
+}
+
+/// Waits for a screen share track to be subscribed, other than `except`.
+async fn wait_screen_share_track(
+    participant: &mut Participant,
+    except: Option<&TrackSid>,
+) -> io::Result<(RemoteVideoTrack, TrackSid)> {
+    participant
+        .wait_event("screen share track", |event| match event {
+            RoomEvent::TrackSubscribed {
+                track: RemoteTrack::Video(track),
+                publication,
+                ..
+            } if publication.source() == TrackSource::Screenshare
+                && except != Some(&publication.sid()) =>
+            {
+                Some((track, publication.sid()))
+            }
+            _ => None,
+        })
+        .await
+}
+
+/// Publishes a screen share track from `source`, unmuted.
+pub(crate) async fn publish_screen_track(
+    local_participant: &LocalParticipant,
+    source: &NativeVideoSource,
+    options: TrackPublishOptions,
+) -> io::Result<LocalVideoTrack> {
+    let track =
+        LocalVideoTrack::create_video_track("screen_share", RtcVideoSource::Native(source.clone()));
+    local_participant
+        .publish_track(LocalTrack::Video(track.clone()), options)
+        .await
+        .map_err(|e| io::Error::other(format!("publishing a fake screen share failed: {e:?}")))?;
+    Ok(track)
+}
+
+/// Replaces screen track `old` with a new one from the same source, the way core switches a
+/// share's codec (spec 0007): unpublish the old track, then publish the new one.
+pub(crate) async fn replace_screen_track(
+    local_participant: &LocalParticipant,
+    old: &LocalVideoTrack,
+    source: &NativeVideoSource,
+    options: TrackPublishOptions,
+) -> io::Result<LocalVideoTrack> {
+    local_participant
+        .unpublish_track(&old.sid())
+        .await
+        .map_err(|e| {
+            io::Error::other(format!("unpublishing the fake screen share failed: {e:?}"))
+        })?;
+    publish_screen_track(local_participant, source, options).await
+}
+
+/// The MIME type of the codec a track is received in (e.g. `video/H265`), from WebRTC's
+/// inbound stats; empty when unknown.
+pub(crate) async fn received_codec(track: &RemoteVideoTrack) -> String {
+    let Ok(stats) = track.get_stats().await else {
+        return String::new();
+    };
+    stats
+        .iter()
+        .find_map(|stat| match stat {
+            RtcStats::InboundRtp(inbound) if inbound.stream.kind == "video" => {
+                Some(codec_of(&stats, &inbound.stream.codec_id))
+            }
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+/// The MIME type of codec stat `id` (e.g. `video/H265`), or empty when it isn't there.
+pub(crate) fn codec_of(stats: &[RtcStats], id: &str) -> String {
+    stats
+        .iter()
+        .find_map(|stat| match stat {
+            RtcStats::Codec(codec) if codec.rtc.id == id => Some(codec.codec.mime_type.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 #[derive(Default)]

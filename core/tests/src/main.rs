@@ -127,6 +127,10 @@ enum Commands {
         /// to core)
         #[arg(long, value_enum, default_value = "h264")]
         codec: profile::Codec,
+        /// Switch the share's codec this many seconds after the load started: the fake sharer
+        /// replaces its track (viewer run), or a watcher without HEVC joins (sharer run)
+        #[arg(long)]
+        switch_after: Option<u64>,
         /// Created once the load is running
         #[arg(long)]
         ready_file: PathBuf,
@@ -508,10 +512,12 @@ async fn main() -> io::Result<()> {
         Commands::Profile {
             role,
             codec,
+            switch_after,
             ready_file,
             stop_file,
         } => {
-            profile::run(role, codec, &ready_file, &stop_file).await?;
+            let switch_after = switch_after.map(std::time::Duration::from_secs);
+            profile::run(role, codec, switch_after, &ready_file, &stop_file).await?;
         }
         Commands::Demangle => {
             use std::io::{BufRead, Write};

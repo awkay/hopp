@@ -17,7 +17,7 @@ set -uo pipefail
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CORE_DIR="$(dirname "$TESTS_DIR")"
 OUT_DIR="$TESTS_DIR/out"
-ALL_SCENARIOS=(call-lifecycle call-restart call-end-race stale-call-end bandwidth viewer-hang screenshare)
+ALL_SCENARIOS=(call-lifecycle call-restart call-end-race stale-call-end bandwidth viewer-hang screenshare hevc-fallback track-replace)
 
 export LIVEKIT_URL="${LIVEKIT_URL:-ws://localhost:7880}"
 export LIVEKIT_API_KEY="${LIVEKIT_API_KEY:-devkey}"

@@ -5,7 +5,10 @@
 #   core/tests/profile.sh sharer                  # core shares this screen; a fake viewer draws
 #   core/tests/profile.sh viewer --seconds 30 --net bad --label before-fix
 #   core/tests/profile.sh viewer --codec h265         # the fake share sends HEVC (default h264)
-#   core/tests/profile.sh sharer --codec h265         # core shares in HEVC (HOPP_SCREEN_SHARE_CODEC)
+#   core/tests/profile.sh sharer                      # core picks the codec (HEVC: the viewer supports it)
+#   core/tests/profile.sh sharer --codec h264         # core must share H.264 (HOPP_SCREEN_SHARE_CODEC)
+#   core/tests/profile.sh sharer --switch-after 30    # a watcher without HEVC joins 30 s into the load
+#   core/tests/profile.sh viewer --switch-after 30    # the fake sharer replaces its track, other codec
 #   core/tests/profile.sh viewer --energy-seconds 0   # skip the energy phase
 #
 # Builds the release core (as shipped, symbols kept) and the harness, starts
@@ -14,8 +17,8 @@
 # it with Instruments' Time Profiler and writes out/profile/<label>-<role>.{trace,folded,svg,txt}.
 # The .txt ends with the energy line, core's FramePacing lines (what the screen-share window
 # presented), the fake share's encoder (viewer run) or what the fake viewer received and its
-# decoder (sharer run), and core's VideoHealthSummary (codecs and encoder/decoder
-# implementations). Compare two labels' .txt for before/after.
+# decoder (sharer run), any codec switch, and core's VideoHealthSummary (codecs and
+# encoder/decoder implementations). Compare two labels' .txt for before/after.
 #
 # The sharer run measures whatever changes on screen: ScreenCaptureKit sends no frames for a
 # static screen, so play a video or scroll something during it. Its fake viewer only moves a
@@ -33,13 +36,14 @@ export LIVEKIT_API_KEY="${LIVEKIT_API_KEY:-devkey}"
 export LIVEKIT_API_SECRET="${LIVEKIT_API_SECRET:-secret}"
 export RUST_LOG="${RUST_LOG:-hopp_core=info}"
 
-usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; }
 
 role=""
 seconds=60
 energy_seconds=20
 network_profile=""
-codec="h264"
+codec=""
+switch_after=""
 label="$(date +%Y%m%d-%H%M%S)"
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -49,6 +53,7 @@ while [ $# -gt 0 ]; do
     --net) network_profile="$2"; shift 2 ;;
     --label) label="$2"; shift 2 ;;
     --codec) codec="$2"; shift 2 ;;
+    --switch-after) switch_after="$2"; shift 2 ;;
     viewer|sharer) role="$1"; shift ;;
     *) usage >&2; exit 1 ;;
   esac
@@ -134,8 +139,8 @@ fi
 # ── Load ─────────────────────────────────────────────────────────────────────
 echo "Starting core and the $role load (logs: $OUT_DIR/$name.log, .core.log)"
 rm -f "$socket" "$ready_file" "$stop_file"
-# The sharer run's share is core's own: have core publish it with the requested codec.
-if [ "$role" = sharer ]; then
+# The sharer run's share is core's own: a requested codec overrides core's choice.
+if [ "$role" = sharer ] && [ -n "$codec" ]; then
   export HOPP_SCREEN_SHARE_CODEC="$codec"
 fi
 "$CORE_BIN" --socket-path "$socket" > "$OUT_DIR/$name.core.log" 2>&1 &
@@ -143,7 +148,8 @@ core_pid=$!
 for _ in $(seq 100); do [ -S "$socket" ] && break; sleep 0.1; done
 [ -S "$socket" ] || { echo "core did not open its socket" >&2; exit 1; }
 
-"$HARNESS_BIN" --socket-path "$socket" profile "$role" --codec "$codec" \
+"$HARNESS_BIN" --socket-path "$socket" profile "$role" --codec "${codec:-h264}" \
+  ${switch_after:+--switch-after "$switch_after"} \
   --ready-file "$ready_file" --stop-file "$stop_file" > "$OUT_DIR/$name.log" 2>&1 &
 harness_pid=$!
 for _ in $(seq 1200); do
@@ -204,8 +210,8 @@ rm -f "$OUT_DIR/$name.xml"
   echo "FramePacing (core's screen-share window, one line per 10 s):"
   grep -o 'FramePacing .*' "$OUT_DIR/$name.core.log" || echo "  none (no remote share shown)"
   echo
-  grep -o 'fake share encoder: .*' "$OUT_DIR/$name.log"
-  grep -oE 'fake viewer (received|decoder:) .*' "$OUT_DIR/$name.log"
+  grep -oE 'fake (share encoder:|sharer replaced|sharer could not) .*' "$OUT_DIR/$name.log"
+  grep -oE 'fake viewer (received|switched|decoder:) .*' "$OUT_DIR/$name.log"
   grep -o 'VideoHealthSummary .*' "$OUT_DIR/$name.core.log" || echo "VideoHealthSummary: none logged"
 } | tee -a "$OUT_DIR/$name.txt"
 echo

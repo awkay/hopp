@@ -34,6 +34,8 @@ prints `PASS` or `FAIL` with the reason. Nobody has to watch the screen.
 | `bandwidth` | Low-bandwidth mode: local toggle, request sent to others, remote request, requester leaving |
 | `viewer-hang` | Core views a fake sharer through a mute/unmute storm, keeps answering, goes idle after the call |
 | `screenshare` | Core shares the screen, another participant receives frames, the share stops cleanly |
+| `hevc-fallback` | Core shares in HEVC; a watcher without HEVC joins and within 2 s the share is H.264 and the viewer receives it (needs an M3 or newer) |
+| `track-replace` | A fake sharer replaces its HEVC screen track with an H.264 one, as core does on a codec switch; core subscribes to it and keeps the share open |
 | `network-drop` | The call survives a 10 s outage of all LiveKit traffic (opt-in, needs sudo) |
 
 One-time setup:
@@ -42,7 +44,12 @@ One-time setup:
   `LIVEKIT_URL` (default `ws://localhost:7880`, key `devkey` / `secret`).
 - Stable Rust (`CARGO_TOOLCHAIN=<name> ./smoke.sh` builds with another rustup toolchain).
 - The terminal running the script needs Microphone access (every call starts the mic) and, for
-  `screenshare`, Screen Recording. macOS asks on the first run; re-run after granting.
+  `screenshare` and `hevc-fallback`, Screen Recording. macOS asks on the first run; re-run after
+  granting.
+
+The fake participants announce HEVC support the way core does (the `hopp_hevc` attribute, spec
+0007), so core shares HEVC to them; `Participant::join_without_hevc` joins like an older client or
+a browser viewer. Like the backend's, the harness's audio tokens may set their own attributes.
 
 ### Network conditions
 
@@ -78,12 +85,15 @@ work can be compared before and after a change without a second person.
 ./profile.sh viewer                         # core watches a fake share and two fake cameras
 ./profile.sh sharer                         # core shares this screen; a fake viewer draws on it
 ./profile.sh viewer --seconds 30 --label before-fix --net bad
+./profile.sh sharer --codec h264                # force core's codec (default: core picks)
+./profile.sh sharer --switch-after 30           # a watcher without HEVC joins 30 s into the load
+./profile.sh viewer --codec h265 --switch-after 30  # the fake sharer switches to H.264 mid-run
 ```
 
 | Role | Load |
 | --- | --- |
-| `viewer` | A fake participant shares a scrolling text page at 3024x1964 and 40 fps (H.264, 12 Mbps, core's own maximums), as a screencast source that keeps its resolution, like core's own share. It and a second fake participant send 720p cameras at 30 fps and quiet audio. Core opens its screen-share and camera windows. |
-| `sharer` | Core joins, waits 7 s (past the 5 s after which it stops its muted tracks' keepalive frames), then shares the main display (or `HOPP_TEST_SCREEN_ID`) at the app's default 4K setting. A fake viewer watches it, reports the size, frame intervals and time to first frame it received, and sends camera and audio. It alternates 4 s of cursor movement and 4 s of drawing on the overlay, at 60 events/s. |
+| `viewer` | A fake participant shares a scrolling text page at 3024x1964 and 40 fps (H.264, or `--codec h265`; 12 Mbps, core's own maximums), as a screencast source that keeps its resolution, like core's own share. It and a second fake participant send 720p cameras at 30 fps and quiet audio. Core opens its screen-share and camera windows. |
+| `sharer` | Core joins, waits 7 s (past the 5 s after which it stops its muted tracks' keepalive frames), then shares the main display (or `HOPP_TEST_SCREEN_ID`) at the app's default 4K setting. A fake viewer, which supports HEVC, watches it, reports the size, frame intervals, time to first frame and the codec it received, and sends camera and audio. It alternates 4 s of cursor movement and 4 s of drawing on the overlay, at 60 events/s. |
 
 - **What you get:** the release core is built as shipped, with symbols. After a 5 s warm-up,
   `energy.py` reads core's CPU time, wake-ups and energy from the kernel for 20 s
@@ -98,6 +108,10 @@ work can be compared before and after a change without a second person.
   - `.trace`: the raw recording; open it in Instruments.
   - `.log` and `.core.log`: the harness's and core's logs. The sharer run's `.log` ends with the
     fake viewer's report (also printed at the end of the run), which the `.txt` doesn't include.
+- **Codec switches:** with `--switch-after`, the sharer run's report has a `fake viewer switched`
+  line (first frame of the new track after the watcher joined, and the gap since the previous
+  frame); in the viewer run, core's log shows `replaced screen track` and its `FramePacing` lines
+  carry on.
 - **Check the size in `FramePacing`:** WebRTC's own stats count decoder drops only, and a share
   that WebRTC scaled down still looks healthy there. With the harness on crates.io livekit, the
   "3K" share arrived at 1128x732.

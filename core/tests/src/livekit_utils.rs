@@ -4,14 +4,15 @@ use livekit_api::access_token;
 pub const ROOM: &str = "dev_room";
 
 pub fn generate_token(name: &str) -> String {
-    generate_token_with_identity(name, name)
+    generate_token_with_identity(name, name, false)
 }
 
 /// Token for `user`'s `track` connection ("audio" or "video"), with an identity in the format
 /// the backend issues: `room:<room>:<user id>:<track>`. Core only lists participants with this
-/// format in its `ParticipantsSnapshot`.
+/// format in its `ParticipantsSnapshot`. Like the backend's, only the audio (main) token may set
+/// its own attributes, which core needs to announce HEVC support (spec 0007).
 pub fn generate_participant_token(user: &str, track: &str) -> String {
-    generate_token_with_identity(&participant_identity(user, track), user)
+    generate_token_with_identity(&participant_identity(user, track), user, track == "audio")
 }
 
 /// `room:<room>:<user id>:<track>`, the user id being `user` lowercased with separators replaced.
@@ -35,7 +36,11 @@ pub fn participant_base_identity(user: &str) -> String {
     format!("room:{ROOM}:{user_id}")
 }
 
-fn generate_token_with_identity(identity: &str, name: &str) -> String {
+fn generate_token_with_identity(
+    identity: &str,
+    name: &str,
+    can_update_own_metadata: bool,
+) -> String {
     let api_key = std::env::var("LIVEKIT_API_KEY").unwrap();
     let api_secret = std::env::var("LIVEKIT_API_SECRET").unwrap();
 
@@ -45,6 +50,7 @@ fn generate_token_with_identity(identity: &str, name: &str) -> String {
         .with_grants(access_token::VideoGrants {
             room_join: true,
             room: ROOM.to_string(),
+            can_update_own_metadata,
             ..Default::default()
         })
         .to_jwt()

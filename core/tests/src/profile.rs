@@ -10,7 +10,7 @@ use crate::events::{
 };
 use crate::ipc::{CoreConn, Step};
 use crate::screenshare_client;
-use crate::smoke::{Participant, ROOM_EVENT_TIMEOUT};
+use crate::smoke::{codec_of, replace_screen_track, Participant, ROOM_EVENT_TIMEOUT};
 use clap::ValueEnum;
 use futures::StreamExt;
 use livekit::options::{
@@ -39,6 +39,8 @@ const CORE_USER: &str = "Profile Core";
 const SHARER: &str = "Profile Sharer";
 const CAMERA_USER: &str = "Profile Camera";
 const VIEWER: &str = "Profile Viewer";
+/// Joins the sharer run with `--switch-after`, without announcing HEVC support.
+const OLD_CLIENT: &str = "Profile Old Client";
 
 /// What a 14" MacBook Pro shares at the default "4K" setting, at core's maximum frame rate and
 /// H.264 bitrate (`bandwidth_mode.rs`).
@@ -68,13 +70,23 @@ pub enum Role {
     Sharer,
 }
 
-/// The codec of the fake share in the viewer run. In the sharer run profile.sh passes it to core
-/// (`HOPP_SCREEN_SHARE_CODEC`), and the fake viewer reports the codec it received.
+/// The codec of the fake share in the viewer run. In the sharer run profile.sh passes
+/// `--codec` to core (`HOPP_SCREEN_SHARE_CODEC`), and the fake viewer reports the codec it
+/// received.
 #[derive(Clone, Copy, ValueEnum, Debug)]
 pub enum Codec {
     H264,
     /// HEVC
     H265,
+}
+
+impl Codec {
+    fn other(self) -> Self {
+        match self {
+            Codec::H264 => Codec::H265,
+            Codec::H265 => Codec::H264,
+        }
+    }
 }
 
 impl From<Codec> for VideoCodec {
@@ -86,18 +98,28 @@ impl From<Codec> for VideoCodec {
     }
 }
 
-/// Runs the `role` load against the core at `--socket-path`.
-pub async fn run(role: Role, codec: Codec, ready_file: &Path, stop_file: &Path) -> io::Result<()> {
+/// Runs the `role` load against the core at `--socket-path`. With `switch_after`, the share
+/// changes codec that long after the load started (spec 0007): in the viewer run the fake sharer
+/// replaces its track with one in the other codec, as core does; in the sharer run a watcher
+/// without HEVC joins, so core switches to H.264.
+pub async fn run(
+    role: Role,
+    codec: Codec,
+    switch_after: Option<Duration>,
+    ready_file: &Path,
+    stop_file: &Path,
+) -> io::Result<()> {
     let conn = CoreConn::connect_with_livekit_url()?;
     match role {
-        Role::Viewer => viewer(&conn, codec, ready_file, stop_file).await,
-        Role::Sharer => sharer(&conn, ready_file, stop_file).await,
+        Role::Viewer => viewer(&conn, codec, switch_after, ready_file, stop_file).await,
+        Role::Sharer => sharer(&conn, switch_after, ready_file, stop_file).await,
     }
 }
 
 async fn viewer(
     conn: &CoreConn,
     codec: Codec,
+    switch_after: Option<Duration>,
     ready_file: &Path,
     stop_file: &Path,
 ) -> io::Result<()> {
@@ -110,8 +132,10 @@ async fn viewer(
     tasks.push(publish_audio(&sharer).await?);
     tasks.push(publish_camera(&sharer, 3).await?);
     let sharer_video = Participant::join_track(SHARER, "video").await?;
-    let (screen_task, screen_track) = publish_screen(&sharer_video, codec.into()).await?;
+    let (screen_task, screen_track, screen_source) =
+        publish_screen(&sharer_video.room.local_participant(), codec.into()).await?;
     tasks.push(screen_task);
+    let screen_track = Arc::new(Mutex::new(screen_track));
 
     step("second fake participant joins with camera and audio");
     let camera_user = Participant::join(CAMERA_USER).await?;
@@ -133,7 +157,17 @@ async fn viewer(
         },
     )?;
 
+    if let Some(after) = switch_after {
+        tasks.push(tokio::spawn(switch_fake_share(
+            sharer_video.room.local_participant(),
+            screen_track.clone(),
+            screen_source,
+            codec.other(),
+            after,
+        )));
+    }
     run_until_stopped(ready_file, stop_file).await?;
+    let screen_track = screen_track.lock().unwrap().clone();
     step(&encoder_report(&screen_track).await);
 
     for task in tasks {
@@ -145,7 +179,12 @@ async fn viewer(
     conn.end_call(call_id)
 }
 
-async fn sharer(conn: &CoreConn, ready_file: &Path, stop_file: &Path) -> io::Result<()> {
+async fn sharer(
+    conn: &CoreConn,
+    switch_after: Option<Duration>,
+    ready_file: &Path,
+    stop_file: &Path,
+) -> io::Result<()> {
     let display = screenshare_client::screen_id();
     if screenshare_client::display_asleep(display) {
         return Err(io::Error::other(format!(
@@ -166,13 +205,15 @@ async fn sharer(conn: &CoreConn, ready_file: &Path, stop_file: &Path) -> io::Res
     conn.start_screenshare(display, width, height)?;
 
     step("fake viewer watches the share and draws on the overlay");
-    let track = viewer
+    let (track, sid) = viewer
         .wait_event("screen share track", |event| match event {
             RoomEvent::TrackSubscribed {
                 track: RemoteTrack::Video(track),
                 publication,
                 ..
-            } if publication.source() == TrackSource::Screenshare => Some(track),
+            } if publication.source() == TrackSource::Screenshare => {
+                Some((track, publication.sid()))
+            }
             _ => None,
         })
         .await?;
@@ -180,12 +221,32 @@ async fn sharer(conn: &CoreConn, ready_file: &Path, stop_file: &Path) -> io::Res
         share_started: Some(share_started),
         ..FrameLog::default()
     }));
-    tasks.push(tokio::spawn(log_frames(track.clone(), frames.clone())));
+    tasks.push(tokio::spawn(log_frames(
+        track.clone(),
+        frames.clone(),
+        None,
+    )));
     tasks.push(tokio::spawn(drive_overlay(viewer.room.local_participant())));
+    let track = Arc::new(Mutex::new(track));
+    if let Some(after) = switch_after {
+        let (_, closed) = tokio::sync::mpsc::unbounded_channel();
+        let events = std::mem::replace(&mut viewer.events, closed);
+        tasks.push(tokio::spawn(follow_screen_tracks(
+            events,
+            sid,
+            track.clone(),
+            frames.clone(),
+        )));
+        tasks.push(tokio::spawn(join_old_client(after, frames.clone())));
+    }
 
     let started = Instant::now();
     run_until_stopped(ready_file, stop_file).await?;
     step(&frames.lock().unwrap().report(started.elapsed()));
+    for switch in &frames.lock().unwrap().switches {
+        step(switch);
+    }
+    let track = track.lock().unwrap().clone();
     step(&decoder_report(&track).await);
 
     for task in tasks {
@@ -212,9 +273,9 @@ async fn run_until_stopped(ready_file: &Path, stop_file: &Path) -> io::Result<()
 }
 
 async fn publish_screen(
-    participant: &Participant,
+    local_participant: &LocalParticipant,
     codec: VideoCodec,
-) -> io::Result<(JoinHandle<()>, LocalVideoTrack)> {
+) -> io::Result<(JoinHandle<()>, LocalVideoTrack, NativeVideoSource)> {
     let picture = ScrollingPicture::new(SCREEN.0, SCREEN.1);
     let source = NativeVideoSource::new(
         WebrtcVideoResolution {
@@ -225,26 +286,35 @@ async fn publish_screen(
     );
     let track =
         LocalVideoTrack::create_video_track("screen_share", RtcVideoSource::Native(source.clone()));
-    participant
-        .room
-        .local_participant()
-        .publish_track(
-            LocalTrack::Video(track.clone()),
-            TrackPublishOptions {
-                source: TrackSource::Screenshare,
-                video_codec: codec,
-                video_encoding: Some(VideoEncoding {
-                    max_bitrate: SCREEN_BITRATE,
-                    max_framerate: SCREEN_FPS,
-                }),
-                simulcast: false,
-                ..Default::default()
-            },
-        )
+    local_participant
+        .publish_track(LocalTrack::Video(track.clone()), screen_options(codec))
         .await
         .map_err(|e| io::Error::other(format!("publishing the fake screen share failed: {e:?}")))?;
-    // Like core's own share (`apply_screen_share_encoding`): under CPU or bandwidth pressure, drop
-    // frames rather than resolution. WebRTC's default scaled this share down to 1128x732.
+    keep_screen_resolution(&track)?;
+    // Scrolling a document by a few lines per frame.
+    Ok((
+        tokio::spawn(push_video(source.clone(), picture, SCREEN_FPS, 6)),
+        track,
+        source,
+    ))
+}
+
+fn screen_options(codec: VideoCodec) -> TrackPublishOptions {
+    TrackPublishOptions {
+        source: TrackSource::Screenshare,
+        video_codec: codec,
+        video_encoding: Some(VideoEncoding {
+            max_bitrate: SCREEN_BITRATE,
+            max_framerate: SCREEN_FPS,
+        }),
+        simulcast: false,
+        ..Default::default()
+    }
+}
+
+/// Like core's own share (`apply_screen_share_encoding`): under CPU or bandwidth pressure, drop
+/// frames rather than resolution. WebRTC's default scaled this share down to 1128x732.
+fn keep_screen_resolution(track: &LocalVideoTrack) -> io::Result<()> {
     track
         .set_encoding_parameters(VideoEncodingUpdate {
             max_bitrate: Some(SCREEN_BITRATE),
@@ -252,14 +322,86 @@ async fn publish_screen(
             scale_resolution_down_by: Some(1.0),
             degradation_preference: Some(DegradationPreference::MaintainResolution),
         })
-        .map_err(|e| {
-            io::Error::other(format!("setting the fake share's encoding failed: {e:?}"))
-        })?;
-    // Scrolling a document by a few lines per frame.
-    Ok((
-        tokio::spawn(push_video(source, picture, SCREEN_FPS, 6)),
-        track,
-    ))
+        .map_err(|e| io::Error::other(format!("setting the fake share's encoding failed: {e:?}")))
+}
+
+/// After `after`, replaces the fake share's track with one in `codec`, the way core switches
+/// codec (spec 0007).
+async fn switch_fake_share(
+    local_participant: LocalParticipant,
+    track: Arc<Mutex<LocalVideoTrack>>,
+    source: NativeVideoSource,
+    codec: Codec,
+    after: Duration,
+) {
+    tokio::time::sleep(after).await;
+    let old = track.lock().unwrap().clone();
+    let replacing_since = Instant::now();
+    let replaced = replace_screen_track(
+        &local_participant,
+        &old,
+        &source,
+        screen_options(codec.into()),
+    )
+    .await
+    .and_then(|new| keep_screen_resolution(&new).map(|()| new));
+    match replaced {
+        Ok(new) => {
+            step(&format!(
+                "fake sharer replaced its track with a {codec:?} one in {} ms",
+                replacing_since.elapsed().as_millis()
+            ));
+            *track.lock().unwrap() = new;
+        }
+        Err(e) => step(&format!("fake sharer could not replace its track: {e}")),
+    }
+}
+
+/// After `after`, a participant without HEVC joins, with its microphone on, so core's share
+/// switches to H.264. Stays until aborted.
+async fn join_old_client(after: Duration, frames: Arc<Mutex<FrameLog>>) {
+    tokio::time::sleep(after).await;
+    let old_client = match Participant::join_without_hevc(OLD_CLIENT).await {
+        Ok(old_client) => old_client,
+        Err(e) => {
+            step(&format!("the watcher without HEVC could not join: {e}"));
+            return;
+        }
+    };
+    frames.lock().unwrap().old_client_joined = Some(Instant::now());
+    let _microphone = publish_audio(&old_client).await;
+    std::future::pending::<()>().await;
+}
+
+/// Decodes every screen share track that replaces the first one (sid `first`), into the same
+/// frame log, and keeps `track` the latest.
+async fn follow_screen_tracks(
+    mut events: tokio::sync::mpsc::UnboundedReceiver<RoomEvent>,
+    first: TrackSid,
+    track: Arc<Mutex<RemoteVideoTrack>>,
+    frames: Arc<Mutex<FrameLog>>,
+) {
+    let mut current = first;
+    while let Some(event) = events.recv().await {
+        let RoomEvent::TrackSubscribed {
+            track: RemoteTrack::Video(new_track),
+            publication,
+            ..
+        } = event
+        else {
+            continue;
+        };
+        if publication.source() != TrackSource::Screenshare || publication.sid() == current {
+            continue;
+        }
+        current = publication.sid();
+        *track.lock().unwrap() = new_track.clone();
+        tokio::spawn(log_frames(
+            new_track,
+            frames.clone(),
+            Some(format!("{} track {current}", publication.mime_type())),
+        ));
+    }
 }
 
 /// The fake share's codec, encoder and what it sent, from WebRTC's outbound stats.
@@ -307,17 +449,6 @@ async fn decoder_report(track: &RemoteVideoTrack) -> String {
         .unwrap_or_else(|| "fake viewer decoder: no inbound video stats".to_string())
 }
 
-/// The MIME type of codec stat `id` (e.g. `video/H265`), or empty when it isn't there.
-fn codec_of(stats: &[RtcStats], id: &str) -> String {
-    stats
-        .iter()
-        .find_map(|stat| match stat {
-            RtcStats::Codec(codec) if codec.rtc.id == id => Some(codec.codec.mime_type.clone()),
-            _ => None,
-        })
-        .unwrap_or_default()
-}
-
 async fn publish_camera(participant: &Participant, speed: u32) -> io::Result<JoinHandle<()>> {
     let picture = ScrollingPicture::new(CAMERA.0, CAMERA.1);
     let source = NativeVideoSource::new(
@@ -350,7 +481,7 @@ async fn publish_camera(participant: &Participant, speed: u32) -> io::Result<Joi
     Ok(tokio::spawn(push_video(source, picture, CAMERA_FPS, speed)))
 }
 
-async fn publish_audio(participant: &Participant) -> io::Result<JoinHandle<()>> {
+pub(crate) async fn publish_audio(participant: &Participant) -> io::Result<JoinHandle<()>> {
     const SAMPLE_RATE: u32 = 48_000;
     // A full second of queue: capture_frame waits for room in it, which paces the loop.
     let source = NativeAudioSource::new(AudioSourceOptions::default(), SAMPLE_RATE, 1, 1000);
@@ -425,6 +556,10 @@ struct FrameLog {
     size: (u32, u32),
     last_at: Option<Instant>,
     intervals_ms: Vec<f64>,
+    /// When the watcher without HEVC joined (`--switch-after`).
+    old_client_joined: Option<Instant>,
+    /// One line per screen track that replaced the previous one.
+    switches: Vec<String>,
 }
 
 impl FrameLog {
@@ -453,8 +588,13 @@ impl FrameLog {
     }
 }
 
-/// Decodes the share, as a real viewer would, and logs each frame.
-async fn log_frames(track: RemoteVideoTrack, frames: Arc<Mutex<FrameLog>>) {
+/// Decodes the share, as a real viewer would, and logs each frame. `replacement` names a track
+/// that replaced the previous one: its first frame is logged as a switch.
+async fn log_frames(
+    track: RemoteVideoTrack,
+    frames: Arc<Mutex<FrameLog>>,
+    mut replacement: Option<String>,
+) {
     let mut stream = NativeVideoStream::new(track.rtc_track());
     while let Some(frame) = stream.next().await {
         let now = Instant::now();
@@ -462,6 +602,19 @@ async fn log_frames(track: RemoteVideoTrack, frames: Arc<Mutex<FrameLog>>) {
         log.frames += 1;
         if log.frames == 1 {
             log.first_frame_after = log.share_started.map(|started| now - started);
+        }
+        if let Some(replacement) = replacement.take() {
+            let ms = |since: Option<Instant>| {
+                since.map_or("?".to_string(), |since| {
+                    (now - since).as_millis().to_string()
+                })
+            };
+            let switch = format!(
+                "fake viewer switched to {replacement}: first frame {} ms after the watcher without HEVC joined, {} ms after the previous frame",
+                ms(log.old_client_joined),
+                ms(log.last_at),
+            );
+            log.switches.push(switch);
         }
         log.size = (frame.buffer.width(), frame.buffer.height());
         if let Some(last) = log.last_at.replace(now) {
