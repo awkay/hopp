@@ -97,3 +97,6 @@ from `RTCVideoEncoderH264.mm`.
   `viewer --switch-after N` has the fake sharer replace its track the way core does. The run's
   `.txt` reports the switch.
 - `core/tests/smoke.sh hevc-fallback track-replace`: the B3 switch, sharer and viewer side.
+- `core/tests/clarity.sh [--low-bandwidth]`: how sharp text stays in each codec, from a rendered
+  editor page shared the way core's capture delivers frames (spec 0007 notes have the results).
+  Neither codec sharpens a screen once it stops changing, since no new frames reach the encoder.

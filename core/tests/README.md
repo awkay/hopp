@@ -76,6 +76,20 @@ profile applied and turns it off at the end.
 failed scenarios. The scenarios live in `src/smoke.rs`; the socket client they share (request ids,
 call ids, keepalive) is `src/ipc.rs`.
 
+## Text clarity
+
+`clarity.sh` measures how sharp text stays in a screen share, H.264 against HEVC (spec 0007).
+It renders an editor page with real code, shares it through the fake participants with core's
+encoding settings (no core runs), one frame per change as core's capture would, and scores each
+decoded frame against the one sent. Needs `brew install livekit ffmpeg` and Xcode's `swift`.
+
+```sh
+./clarity.sh                   # normal mode, 3 rounds per codec
+./clarity.sh --low-bandwidth   # 900 kbps, 15 fps, scaled to 1660x1080
+```
+
+Output: `out/clarity/<label>/report.txt` and 1:1 / 3x crops (sent, H.264, HEVC).
+
 ## Profiling
 
 `profile.sh` keeps an emulated call busy and records core with Instruments' Time Profiler, so CPU

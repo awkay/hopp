@@ -7,6 +7,7 @@ pub static SOCKET_PATH: OnceLock<String> = OnceLock::new();
 
 mod audio_capture;
 mod camera;
+mod clarity;
 mod events;
 mod hang_repro;
 mod ipc;
@@ -137,6 +138,23 @@ enum Commands {
         /// The load stops once this file exists
         #[arg(long)]
         stop_file: PathBuf,
+    },
+    /// Share a rendered editor page in one codec and score what a viewer decodes (see clarity.sh)
+    Clarity {
+        #[arg(long, value_enum)]
+        codec: profile::Codec,
+        /// Use core's low-bandwidth encoding (900 kbps, 15 fps, at most 1920x1080)
+        #[arg(long)]
+        low_bandwidth: bool,
+        /// Directory with layout.json, base.yuv and full.yuv
+        #[arg(long)]
+        page_dir: PathBuf,
+        /// Where the decoded and sent frames of each phase are written
+        #[arg(long)]
+        out_dir: PathBuf,
+        /// Prefix of the report lines and of the written frames
+        #[arg(long)]
+        label: String,
     },
     /// Demangle Rust symbols, one per line from stdin to stdout (for flamegraph.py)
     Demangle,
@@ -518,6 +536,15 @@ async fn main() -> io::Result<()> {
         } => {
             let switch_after = switch_after.map(std::time::Duration::from_secs);
             profile::run(role, codec, switch_after, &ready_file, &stop_file).await?;
+        }
+        Commands::Clarity {
+            codec,
+            low_bandwidth,
+            page_dir,
+            out_dir,
+            label,
+        } => {
+            clarity::run(codec, low_bandwidth, &page_dir, &out_dir, &label).await?;
         }
         Commands::Demangle => {
             use std::io::{BufRead, Write};
