@@ -181,3 +181,12 @@ Mean PSNR of each phase's last decoded frame, light pane / dark pane, dB:
   (1662 sent, 1660 decoded) also dropped every score to about 25 dB.
 - Session tooling: the local LiveKit server once timed out a `set_attributes` (signal request
   timeout); the clarity viewer no longer announces HEVC support, which the run doesn't need.
+- The decoder side never reports `qp_sum` (VideoToolbox), so the clarity report has only the
+  encoder's QP.
+- `clarity.sh` appends every round's stderr to `out/clarity/<label>/harness.log`, also across
+  invocations with the same `--label`, so errors from an earlier round linger there.
+- Resolved while writing the tool: two `viewed.lock()` calls in one `println!` deadlocked (a
+  `std::sync::Mutex` guard lives to the end of the statement).
+- Session tooling: `cargo clippy` with `-D warnings` on `core/tests` fails on 7 lints in files
+  this branch never touched (`remote_keyboard.rs`, `hang_repro.rs`, `remote_clipboard.rs`,
+  `remote_drawing.rs`).

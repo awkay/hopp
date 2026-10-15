@@ -115,13 +115,15 @@ work can be compared before and after a change without a second person.
   Results go to `out/profile/<label>-<role>.*`:
   - `.svg`: the flamegraph; open it in a browser and hover a frame for its share.
   - `.txt`: CPU per thread, the functions with the most self time, core's own functions by total
-    time, the energy line, and core's `FramePacing` lines (every 10 s: the size the screen-share
+    time, the energy line, core's `FramePacing` lines (every 10 s: the size the screen-share
     window showed, presented fps, present intervals, render time and frame age, frames never
-    shown). Diff two labels' `.txt` for a before/after comparison.
+    shown), the fake share's encoder (viewer run) or what the fake viewer received and its
+    decoder (sharer run), any codec switch, and core's `VideoHealthSummary` (codecs and
+    encoder/decoder implementations). Diff two labels' `.txt` for a before/after comparison.
   - `.folded`: stacks for other flamegraph tools (inferno, speedscope).
   - `.trace`: the raw recording; open it in Instruments.
   - `.log` and `.core.log`: the harness's and core's logs. The sharer run's `.log` ends with the
-    fake viewer's report (also printed at the end of the run), which the `.txt` doesn't include.
+    fake viewer's report (also printed at the end of the run, and copied into the `.txt`).
 - **Codec switches:** with `--switch-after`, the sharer run's report has a `fake viewer switched`
   line (first frame of the new track after the watcher joined, and the gap since the previous
   frame); in the viewer run, core's log shows `replaced screen track` and its `FramePacing` lines
