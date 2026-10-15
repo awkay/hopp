@@ -124,5 +124,60 @@ LiveKit `--dev`).
 - B3's 2 s can only be measured from when the sharer learns of a join: a browser viewer, which
   publishes nothing, can reach the sharer up to 3 s after it joined.
 - After a full reconnect of a watcher, a sharer may fall back to H.264 for the rest of its share.
-- B7 isn't measured yet; HEVC drew more power in every pair of runs so far, and the binary's
-  minQP 23 may cap text sharpness (above).
+- B7: text clarity is measured (below); CPU, energy, latency and frame rate in a real call are
+  not. HEVC drew more power in every pair of profile runs so far.
+- Low-bandwidth mode: an HEVC share that starts on a static screen sometimes starts blocky and
+  stays so until the screen changes (below).
+- Neither codec sharpens a screen that stopped changing (below).
+
+## B7: text clarity (2026-10-15)
+
+`core/tests/clarity.sh` (harness `clarity`, page from `core/tests/clarity/render.swift`) shares
+an editor page with real code (Menlo 13 pt at 2x, a light and a dark pane, 3024x1964) through
+our SDK and WebRTC build with core's encoding settings, delivering frames the way core's capture
+does: one when the share starts (resent every 250 ms until one is encoded), one per keystroke
+while a 63-character line is typed at 8 characters a second, one per caret blink for 6 s, then
+nothing for 6 s. A fake viewer decodes every frame and scores it against the frame sent, matched
+by an id drawn in the status bar: luma PSNR of each pane, chroma PSNR. Five rounds per codec,
+alternating which goes first, on an M4 with local LiveKit. Reports and 3x crops (top to bottom:
+sent, H.264, HEVC) are in [clarity/](clarity/).
+
+Mean PSNR of each phase's last decoded frame, light pane / dark pane, dB:
+
+| | Normal H.264 | Normal HEVC | Low-bandwidth H.264 | Low-bandwidth HEVC |
+|---|---|---|---|---|
+| Share starts, static | 36.3 / 38.6 | 40.4 / 42.5 | 37.9 / 40.1 | 33.0 / 36.2 |
+| After typing (and blinking, idle) | 38.6 / 41.1 | 43.4 / 45.8 | 38.7 / 40.9 | 41.4 / 43.7 |
+| Encoder QP after typing | 28 | 26 | 28 | 26 |
+| Bytes while typing (8 s) | 361 kB | 552 kB | 160 kB | 249 kB |
+
+- **Normal mode: HEVC is sharper in every phase**, by 4–5 dB, and the crops show it: H.264's text
+  is softer, with ringing around coloured keywords. HEVC spends more bits doing so (about
+  0.55 vs 0.36 Mbps while typing), far under the 12 Mbps cap. HEVC's start was identical in all
+  five rounds (40.37 dB, 345 kB); H.264's varied (35.2–37.8 dB, 238–318 kB). Typing latency
+  (send to decode, median) was the same: 58 vs 59 ms.
+- **The minQP 23 floor never came into play.** HEVC settles at QP 26 and H.264 at 28 (the two
+  scales aren't directly comparable). The risk recorded from the sharer spike doesn't show with
+  this content and frame pattern.
+- **Low-bandwidth mode, after typing: HEVC is sharper** (41.4 vs 38.7 dB), at 0.25 vs 0.16 Mbps,
+  under the 900 kbps cap.
+- **Low-bandwidth mode, static start: HEVC is sometimes much worse.** In 3 of 5 rounds HEVC's first
+  frame came out at about 30 dB (80–86 kB, QP 30–31), visibly blocky
+  ([crop](clarity/low-bandwidth-static-light.png), round 1); in the other two at 37.3 dB, like
+  H.264's steady 37.8 dB (137 kB). Because nothing refines a static screen (next point), such a
+  share stays blocky until something on screen changes. In the harness the page's first frame
+  is a delta frame after the source's black keepalive frames, with the bandwidth estimate at
+  750–900 kbps; confirm in a real low-bandwidth call before acting on it.
+- **Neither codec sharpens a screen that stopped changing.** The last frame's quality stays: the
+  blinking and idle phases score exactly what typing ended with, and WebRTC sent no repeat
+  frames on its own (the idle phase encoded only the one frame sent). H.264's text in normal
+  mode therefore stays at about 38.6 dB, visibly soft, for as long as the screen is still, which
+  §SCREEN-SHARE-TEXT-CLARITY doesn't allow. Resending the last frame a few times after changes
+  stop might let the encoder refine it; untested, and it applies to both codecs.
+- Method: low-bandwidth mode encodes at 1660x1080 (WebRTC trims the 1662 px that scaling to fit
+  1920x1080 gives to a multiple of 4). Scoring the decoded frames scaled back up to 3024x1964
+  measured the scaling, about 25 dB for both codecs, so `clarity.sh --low-bandwidth` scales the
+  page to 1660x1080 first (area filter) and scores at that size. A 2 px size mismatch alone
+  (1662 sent, 1660 decoded) also dropped every score to about 25 dB.
+- Session tooling: the local LiveKit server once timed out a `set_attributes` (signal request
+  timeout); the clarity viewer no longer announces HEVC support, which the run doesn't need.

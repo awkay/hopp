@@ -1,0 +1,81 @@
+Run 1, h264
+  - h264-1: H264, normal at 12000 kbps, 40 fps, scaled down by 1.00
+  - static: sent 1, encoded 3 (0 key), decoded 3, scored 2; 269 kB; QP enc 32.0; PSNR-Y light last 35.95 min 34.20 mean 35.07; PSNR-Y dark last 38.35 min 36.68 mean 37.52; PSNR-UV last 38.52 min 37.33 mean 37.92; latency p50 523 ms
+  - typing: sent 63, encoded 63 (1 key), decoded 63, scored 63; 364 kB; QP enc 28.1; PSNR-Y light last 38.23 min 35.14 mean 38.15; PSNR-Y dark last 40.70 min 37.70 mean 40.56; PSNR-UV last 40.10 min 39.25 mean 40.08; latency p50 63 ms
+  - blinking: sent 11, encoded 11 (0 key), decoded 11, scored 11; 4 kB; QP enc 28.0; PSNR-Y light last 38.24 min 38.23 mean 38.23; PSNR-Y dark last 40.70 min 40.70 mean 40.70; PSNR-UV last 40.10 min 40.10 mean 40.10; latency p50 41 ms
+  - idle: sent 1, encoded 1 (0 key), decoded 1, scored 1; 0 kB; QP enc 28.0; PSNR-Y light last 38.23 min 38.23 mean 38.23; PSNR-Y dark last 40.70 min 40.70 mean 40.70; PSNR-UV last 40.10 min 40.10 mean 40.10; latency p50 38 ms
+  - encoder: codec=video/H264 implementation=VideoToolbox size=0x0 target_bitrate=5455 kbps; viewer decoded at 3024x1964 (VideoToolbox)
+Run 1, h265
+  - h265-1: H265, normal at 12000 kbps, 40 fps, scaled down by 1.00
+  - static: sent 1, encoded 3 (0 key), decoded 3, scored 2; 345 kB; QP enc 27.3; PSNR-Y light last 40.37 min 38.51 mean 39.44; PSNR-Y dark last 42.52 min 41.11 mean 41.82; PSNR-UV last 41.86 min 40.76 mean 41.31; latency p50 704 ms
+  - typing: sent 63, encoded 62 (1 key), decoded 62, scored 62; 544 kB; QP enc 26.1; PSNR-Y light last 43.09 min 38.65 mean 42.90; PSNR-Y dark last 45.49 min 41.08 mean 45.23; PSNR-UV last 44.03 min 40.69 mean 43.84; latency p50 54 ms
+  - blinking: sent 11, encoded 11 (0 key), decoded 11, scored 11; 15 kB; QP enc 26.0; PSNR-Y light last 43.10 min 43.10 mean 43.10; PSNR-Y dark last 45.49 min 45.49 mean 45.49; PSNR-UV last 44.03 min 44.03 mean 44.03; latency p50 35 ms
+  - idle: sent 1, encoded 1 (0 key), decoded 1, scored 1; 1 kB; QP enc 26.0; PSNR-Y light last 43.10 min 43.10 mean 43.10; PSNR-Y dark last 45.49 min 45.49 mean 45.49; PSNR-UV last 44.03 min 44.03 mean 44.03; latency p50 33 ms
+  - encoder: codec=video/H265 implementation=VideoToolbox size=0x0 target_bitrate=5455 kbps; viewer decoded at 3024x1964 (VideoToolbox)
+Run 2, h265
+  - h265-2: H265, normal at 12000 kbps, 40 fps, scaled down by 1.00
+  - static: sent 1, encoded 3 (0 key), decoded 3, scored 2; 345 kB; QP enc 27.3; PSNR-Y light last 40.37 min 38.51 mean 39.44; PSNR-Y dark last 42.52 min 41.11 mean 41.82; PSNR-UV last 41.86 min 40.76 mean 41.31; latency p50 706 ms
+  - typing: sent 63, encoded 59 (1 key), decoded 59, scored 59; 544 kB; QP enc 26.1; PSNR-Y light last 43.12 min 38.65 mean 42.92; PSNR-Y dark last 45.49 min 41.08 mean 45.23; PSNR-UV last 44.08 min 40.69 mean 43.89; latency p50 65 ms
+  - blinking: sent 11, encoded 11 (0 key), decoded 11, scored 11; 15 kB; QP enc 26.0; PSNR-Y light last 43.12 min 43.12 mean 43.12; PSNR-Y dark last 45.49 min 45.49 mean 45.49; PSNR-UV last 44.08 min 44.08 mean 44.08; latency p50 42 ms
+  - idle: sent 1, encoded 1 (0 key), decoded 1, scored 1; 1 kB; QP enc 26.0; PSNR-Y light last 43.12 min 43.12 mean 43.12; PSNR-Y dark last 45.49 min 45.49 mean 45.49; PSNR-UV last 44.08 min 44.08 mean 44.08; latency p50 40 ms
+  - encoder: codec=video/H265 implementation=VideoToolbox size=0x0 target_bitrate=5455 kbps; viewer decoded at 3024x1964 (VideoToolbox)
+Run 2, h264
+  - h264-2: H264, normal at 12000 kbps, 40 fps, scaled down by 1.00
+  - static: sent 1, encoded 2 (0 key), decoded 3, scored 2; 238 kB; QP enc 32.0; PSNR-Y light last 35.52 min 34.97 mean 35.25; PSNR-Y dark last 37.94 min 37.43 mean 37.69; PSNR-UV last 38.28 min 38.15 mean 38.21; latency p50 529 ms
+  - typing: sent 63, encoded 62 (1 key), decoded 62, scored 62; 362 kB; QP enc 28.1; PSNR-Y light last 38.24 min 35.14 mean 38.18; PSNR-Y dark last 40.69 min 37.70 mean 40.58; PSNR-UV last 40.10 min 39.25 mean 40.08; latency p50 56 ms
+  - blinking: sent 11, encoded 11 (0 key), decoded 11, scored 11; 4 kB; QP enc 28.0; PSNR-Y light last 38.25 min 38.24 mean 38.24; PSNR-Y dark last 40.70 min 40.69 mean 40.70; PSNR-UV last 40.10 min 40.10 mean 40.10; latency p50 40 ms
+  - idle: sent 1, encoded 1 (0 key), decoded 1, scored 1; 0 kB; QP enc 28.0; PSNR-Y light last 38.25 min 38.25 mean 38.25; PSNR-Y dark last 40.70 min 40.70 mean 40.70; PSNR-UV last 40.10 min 40.10 mean 40.10; latency p50 33 ms
+  - encoder: codec=video/H264 implementation=VideoToolbox size=0x0 target_bitrate=5455 kbps; viewer decoded at 3024x1964 (VideoToolbox)
+Run 3, h264
+  - h264-3: H264, normal at 12000 kbps, 40 fps, scaled down by 1.00
+  - static: sent 1, encoded 3 (0 key), decoded 3, scored 2; 288 kB; QP enc 31.7; PSNR-Y light last 36.81 min 34.97 mean 35.89; PSNR-Y dark last 39.10 min 37.43 mean 38.26; PSNR-UV last 38.90 min 38.15 mean 38.53; latency p50 549 ms
+  - typing: sent 63, encoded 63 (1 key), decoded 63, scored 63; 345 kB; QP enc 28.1; PSNR-Y light last 38.82 min 37.49 mean 38.82; PSNR-Y dark last 41.25 min 40.07 mean 41.20; PSNR-UV last 40.90 min 40.63 mean 40.91; latency p50 52 ms
+  - blinking: sent 11, encoded 11 (0 key), decoded 11, scored 11; 3 kB; QP enc 28.0; PSNR-Y light last 38.82 min 38.82 mean 38.82; PSNR-Y dark last 41.25 min 41.25 mean 41.25; PSNR-UV last 40.90 min 40.90 mean 40.90; latency p50 34 ms
+  - idle: sent 1, encoded 1 (0 key), decoded 1, scored 1; 0 kB; QP enc 28.0; PSNR-Y light last 38.82 min 38.82 mean 38.82; PSNR-Y dark last 41.25 min 41.25 mean 41.25; PSNR-UV last 40.90 min 40.90 mean 40.90; latency p50 24 ms
+  - encoder: codec=video/H264 implementation=VideoToolbox size=0x0 target_bitrate=5455 kbps; viewer decoded at 3024x1964 (VideoToolbox)
+Run 3, h265
+  - h265-3: H265, normal at 12000 kbps, 40 fps, scaled down by 1.00
+  - static: sent 1, encoded 2 (0 key), decoded 3, scored 2; 345 kB; QP enc 27.5; PSNR-Y light last 40.37 min 38.51 mean 39.44; PSNR-Y dark last 42.52 min 41.11 mean 41.82; PSNR-UV last 41.86 min 40.76 mean 41.31; latency p50 685 ms
+  - typing: sent 63, encoded 62 (1 key), decoded 62, scored 62; 563 kB; QP enc 26.0; PSNR-Y light last 43.80 min 38.65 mean 43.65; PSNR-Y dark last 46.18 min 41.08 mean 45.96; PSNR-UV last 44.56 min 40.69 mean 44.41; latency p50 56 ms
+  - blinking: sent 11, encoded 11 (0 key), decoded 11, scored 11; 15 kB; QP enc 26.0; PSNR-Y light last 43.80 min 43.80 mean 43.80; PSNR-Y dark last 46.18 min 46.18 mean 46.18; PSNR-UV last 44.56 min 44.56 mean 44.56; latency p50 44 ms
+  - idle: sent 1, encoded 1 (0 key), decoded 1, scored 1; 1 kB; QP enc 26.0; PSNR-Y light last 43.80 min 43.80 mean 43.80; PSNR-Y dark last 46.18 min 46.18 mean 46.18; PSNR-UV last 44.56 min 44.56 mean 44.56; latency p50 40 ms
+  - encoder: codec=video/H265 implementation=VideoToolbox size=0x0 target_bitrate=5845 kbps; viewer decoded at 3024x1964 (VideoToolbox)
+Run 4, h265
+  - h265-4: H265, normal at 12000 kbps, 40 fps, scaled down by 1.00
+  - static: sent 1, encoded 3 (0 key), decoded 3, scored 2; 345 kB; QP enc 27.3; PSNR-Y light last 40.37 min 38.51 mean 39.44; PSNR-Y dark last 42.52 min 41.11 mean 41.82; PSNR-UV last 41.86 min 40.76 mean 41.31; latency p50 702 ms
+  - typing: sent 63, encoded 62 (1 key), decoded 62, scored 62; 544 kB; QP enc 26.1; PSNR-Y light last 43.10 min 38.65 mean 42.90; PSNR-Y dark last 45.47 min 41.08 mean 45.21; PSNR-UV last 44.04 min 40.69 mean 43.85; latency p50 58 ms
+  - blinking: sent 11, encoded 11 (0 key), decoded 11, scored 11; 15 kB; QP enc 26.0; PSNR-Y light last 43.10 min 43.10 mean 43.10; PSNR-Y dark last 45.47 min 45.47 mean 45.47; PSNR-UV last 44.04 min 44.04 mean 44.04; latency p50 43 ms
+  - idle: sent 1, encoded 1 (0 key), decoded 1, scored 1; 1 kB; QP enc 26.0; PSNR-Y light last 43.10 min 43.10 mean 43.10; PSNR-Y dark last 45.47 min 45.47 mean 45.47; PSNR-UV last 44.04 min 44.04 mean 44.04; latency p50 30 ms
+  - encoder: codec=video/H265 implementation=VideoToolbox size=0x0 target_bitrate=5455 kbps; viewer decoded at 3024x1964 (VideoToolbox)
+Run 4, h264
+  - h264-4: H264, normal at 12000 kbps, 40 fps, scaled down by 1.00
+  - static: sent 1, encoded 3 (0 key), decoded 3, scored 2; 318 kB; QP enc 30.7; PSNR-Y light last 37.79 min 35.95 mean 36.87; PSNR-Y dark last 40.09 min 38.36 mean 39.22; PSNR-UV last 39.60 min 38.73 mean 39.16; latency p50 556 ms
+  - typing: sent 63, encoded 62 (1 key), decoded 62, scored 62; 357 kB; QP enc 28.0; PSNR-Y light last 39.47 min 38.22 mean 39.50; PSNR-Y dark last 41.90 min 40.84 mean 41.87; PSNR-UV last 41.49 min 41.24 mean 41.52; latency p50 55 ms
+  - blinking: sent 11, encoded 11 (0 key), decoded 11, scored 11; 3 kB; QP enc 28.0; PSNR-Y light last 39.47 min 39.47 mean 39.47; PSNR-Y dark last 41.90 min 41.90 mean 41.90; PSNR-UV last 41.49 min 41.49 mean 41.49; latency p50 27 ms
+  - idle: sent 1, encoded 1 (0 key), decoded 1, scored 1; 0 kB; QP enc 28.0; PSNR-Y light last 39.47 min 39.47 mean 39.47; PSNR-Y dark last 41.90 min 41.90 mean 41.90; PSNR-UV last 41.49 min 41.49 mean 41.49; latency p50 20 ms
+  - encoder: codec=video/H264 implementation=VideoToolbox size=0x0 target_bitrate=5455 kbps; viewer decoded at 3024x1964 (VideoToolbox)
+Run 5, h264
+  - h264-5: H264, normal at 12000 kbps, 40 fps, scaled down by 1.00
+  - static: sent 1, encoded 3 (0 key), decoded 3, scored 2; 249 kB; QP enc 33.0; PSNR-Y light last 35.23 min 33.45 mean 34.34; PSNR-Y dark last 37.65 min 36.00 mean 36.83; PSNR-UV last 38.10 min 37.33 mean 37.71; latency p50 486 ms
+  - typing: sent 63, encoded 63 (1 key), decoded 63, scored 63; 376 kB; QP enc 28.2; PSNR-Y light last 38.28 min 34.30 mean 38.14; PSNR-Y dark last 40.73 min 36.88 mean 40.54; PSNR-UV last 39.96 min 38.64 mean 39.91; latency p50 66 ms
+  - blinking: sent 11, encoded 11 (0 key), decoded 11, scored 11; 4 kB; QP enc 28.0; PSNR-Y light last 38.28 min 38.28 mean 38.28; PSNR-Y dark last 40.73 min 40.73 mean 40.73; PSNR-UV last 39.96 min 39.96 mean 39.96; latency p50 44 ms
+  - idle: sent 1, encoded 1 (0 key), decoded 1, scored 1; 0 kB; QP enc 28.0; PSNR-Y light last 38.28 min 38.28 mean 38.28; PSNR-Y dark last 40.73 min 40.73 mean 40.73; PSNR-UV last 39.96 min 39.96 mean 39.96; latency p50 40 ms
+  - encoder: codec=video/H264 implementation=VideoToolbox size=0x0 target_bitrate=5455 kbps; viewer decoded at 3024x1964 (VideoToolbox)
+Run 5, h265
+  - h265-5: H265, normal at 12000 kbps, 40 fps, scaled down by 1.00
+  - static: sent 1, encoded 3 (0 key), decoded 3, scored 2; 345 kB; QP enc 27.3; PSNR-Y light last 40.37 min 38.51 mean 39.44; PSNR-Y dark last 42.52 min 41.11 mean 41.82; PSNR-UV last 41.86 min 40.76 mean 41.31; latency p50 697 ms
+  - typing: sent 63, encoded 62 (1 key), decoded 62, scored 62; 563 kB; QP enc 26.0; PSNR-Y light last 43.80 min 38.65 mean 43.65; PSNR-Y dark last 46.18 min 41.08 mean 45.96; PSNR-UV last 44.56 min 40.69 mean 44.40; latency p50 64 ms
+  - blinking: sent 11, encoded 11 (0 key), decoded 11, scored 11; 15 kB; QP enc 26.0; PSNR-Y light last 43.81 min 43.80 mean 43.81; PSNR-Y dark last 46.18 min 46.18 mean 46.18; PSNR-UV last 44.56 min 44.56 mean 44.56; latency p50 32 ms
+  - idle: sent 1, encoded 1 (0 key), decoded 1, scored 1; 1 kB; QP enc 26.0; PSNR-Y light last 43.80 min 43.80 mean 43.80; PSNR-Y dark last 46.18 min 46.18 mean 46.18; PSNR-UV last 44.56 min 44.56 mean 44.56; latency p50 25 ms
+  - encoder: codec=video/H265 implementation=VideoToolbox size=0x0 target_bitrate=5114 kbps; viewer decoded at 3024x1964 (VideoToolbox)
+
+Summary (mean over 5 runs; PSNR of each phase's last decoded frame, dB)
+phase     codec    light     dark   chroma   QP enc       kB
+static    h264     36.26    38.63    38.68     31.9      272
+static    h265     40.37    42.52    41.86     27.3      345
+typing    h264     38.61    41.05    40.51     28.1      361
+typing    h265     43.38    45.76    44.25     26.1      552
+blinking  h264     38.61    41.06    40.51     28.0        4
+blinking  h265     43.39    45.76    44.25     26.0       15
+idle      h264     38.61    41.06    40.51     28.0        0
+idle      h265     43.38    45.76    44.25     26.0        1

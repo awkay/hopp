@@ -111,8 +111,10 @@ Alternatives rejected:
 - [x] Harness: selectable codec for the fake share; smoke scenario with a watcher without HEVC.
 - [x] `DATAICO.md` divergence row; anything that stays true after shipping moved into a `docs/`
       topic doc.
-- [ ] B7: compare HEVC and H.264 on controlled content (typing, scrolling, low-bandwidth mode):
-      CPU, energy, latency, delivered frame rate, text clarity; several runs each.
+- [x] B7, text clarity: `core/tests/clarity.sh`, normal and low-bandwidth (2026-10-15, notes).
+- [ ] B7, the rest: CPU, energy, latency and delivered frame rate on controlled content; and
+      confirm in a real low-bandwidth call whether an HEVC share starting on a static screen
+      starts blocky (notes).
 - [ ] User runs `smoke.sh hevc-fallback track-replace`, the manual checks below, and the
       §TILING-WM check of the viewer window through a codec switch under AeroSpace.
 - [ ] Preserve discoveries from `workingcontext.md` in `docs/specs/0007-hevc-screen-share/notes.md`
