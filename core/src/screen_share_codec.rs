@@ -3,6 +3,10 @@
 
 use std::collections::HashMap;
 use std::sync::OnceLock;
+use std::time::Duration;
+
+use crate::livekit::stats::EncoderProgress;
+use crate::webrtc_log::HevcSession;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ScreenShareCodec {
@@ -95,6 +99,12 @@ impl ScreenShareCodecChoice {
     /// [`Self::clear`] or [`Self::track_lost`].
     pub fn published(&self) -> Option<ScreenShareCodec> {
         self.published
+    }
+
+    /// A share is in progress: [`Self::share_started`] came after the last
+    /// [`Self::share_ended`] or [`Self::clear`].
+    pub fn sharing(&self) -> bool {
+        self.sharing
     }
 
     /// The user's "Use HEVC for screen sharing" setting, which this client also announces.
@@ -228,6 +238,128 @@ impl ScreenShareCodecChoice {
         }
         self.published = Some(ScreenShareCodec::H264);
         Some(ScreenShareCodec::H264)
+    }
+}
+
+/// How long a screen track has to encode a frame once the capture submits one, before its
+/// encoder counts as broken (spec 0007 B6 for HEVC).
+pub(crate) const ENCODER_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long the encoder check waits for the capture's first frame before giving up.
+pub(crate) const ENCODER_CHECK_IDLE_LIMIT: Duration = Duration::from_secs(30);
+
+/// What the encoder check of a screen track does after a stats sample.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum EncoderCheckStep {
+    /// Keep checking, and have the capture resend its last frame.
+    Continue,
+    /// The track encodes the expected codec, and its warm-up is over.
+    Done,
+    /// The capture submitted no frame within [`ENCODER_CHECK_IDLE_LIMIT`], so there is nothing
+    /// to judge the encoder by.
+    Inconclusive,
+    /// The encoder is broken, for this reason.
+    Failed(String),
+}
+
+/// Checks from periodic stats samples that a screen track, just published or unmuted, encodes
+/// the expected codec (spec 0007 B6).
+///
+/// The track fails when it encodes another codec, when its HEVC session isn't confirmed as
+/// hardware, or when the capture submitted frames and none was encoded within
+/// [`ENCODER_CHECK_TIMEOUT`]. A capture that submits nothing (a minimized window, a sleeping
+/// display) says nothing about the encoder: the check waits for its first frame, and gives up
+/// after [`ENCODER_CHECK_IDLE_LIMIT`]. After the first frame of the expected codec, a new track
+/// keeps the check going (and its last frame resent) until `warmup` has passed since the start.
+#[derive(Debug)]
+pub(crate) struct EncoderCheck {
+    codec: ScreenShareCodec,
+    /// The stats' codec label for `codec`, e.g. `H265`.
+    expected: String,
+    warmup: Duration,
+    /// Frames encoded and frames submitted by the capture at the first sample.
+    baseline: Option<(u64, u64)>,
+    /// Time of the first sample showing a frame submitted after the baseline.
+    first_frame_at: Option<Duration>,
+    encoding: bool,
+}
+
+impl EncoderCheck {
+    pub fn new(codec: ScreenShareCodec, expected: String, warmup: Duration) -> Self {
+        Self {
+            codec,
+            expected,
+            warmup,
+            baseline: None,
+            first_frame_at: None,
+            encoding: false,
+        }
+    }
+
+    /// The track has encoded a frame of the expected codec.
+    pub fn encoding(&self) -> bool {
+        self.encoding
+    }
+
+    /// Feeds a stats sample taken `elapsed` after the check started: the track's encoder
+    /// progress (`None` before it has outbound stats) and what WebRTC last logged about an HEVC
+    /// session.
+    pub fn observe(
+        &mut self,
+        progress: Option<&EncoderProgress>,
+        hevc_session: HevcSession,
+        elapsed: Duration,
+    ) -> EncoderCheckStep {
+        if !self.encoding {
+            let encoded = progress.map_or(0, |p| p.frames_encoded);
+            let submitted = progress.map_or(0, |p| p.source_frames);
+            let Some((encoded_before, submitted_before)) = self.baseline else {
+                self.baseline = Some((encoded, submitted));
+                return EncoderCheckStep::Continue;
+            };
+            let new_frame_encoded = encoded > encoded_before;
+            if self.first_frame_at.is_none() && (new_frame_encoded || submitted > submitted_before)
+            {
+                self.first_frame_at = Some(elapsed);
+            }
+            match progress.filter(|p| new_frame_encoded && !p.codec.is_empty()) {
+                Some(progress) => {
+                    if progress.codec != self.expected {
+                        return EncoderCheckStep::Failed(format!(
+                            "encoding {} instead of {} ({})",
+                            progress.codec, self.expected, progress.implementation
+                        ));
+                    }
+                    // Never a software HEVC encoder (B6): only WebRTC's log tells.
+                    if self.codec == ScreenShareCodec::H265 && hevc_session != HevcSession::Hardware
+                    {
+                        return EncoderCheckStep::Failed(format!(
+                            "VideoToolbox's HEVC session isn't confirmed as hardware: {hevc_session:?}"
+                        ));
+                    }
+                    self.encoding = true;
+                }
+                None => match self.first_frame_at {
+                    Some(first_frame_at)
+                        if elapsed.saturating_sub(first_frame_at) >= ENCODER_CHECK_TIMEOUT =>
+                    {
+                        return EncoderCheckStep::Failed(format!(
+                            "no {} frame encoded in {}s of captured frames: {progress:?}",
+                            self.expected,
+                            ENCODER_CHECK_TIMEOUT.as_secs()
+                        ));
+                    }
+                    None if elapsed >= ENCODER_CHECK_IDLE_LIMIT => {
+                        return EncoderCheckStep::Inconclusive;
+                    }
+                    _ => {}
+                },
+            }
+        }
+        if self.encoding && elapsed >= self.warmup {
+            EncoderCheckStep::Done
+        } else {
+            EncoderCheckStep::Continue
+        }
     }
 }
 
@@ -637,6 +769,211 @@ mod tests {
         assert!(!brand_may_share_hevc(
             "Intel(R) Core(TM) i7-1068NG7 CPU @ 2.30GHz"
         ));
+    }
+
+    #[test]
+    fn sharing_lasts_from_share_started_to_share_ended() {
+        let mut choice = ScreenShareCodecChoice::new(true, true);
+        assert!(!choice.sharing());
+        assert_eq!(choice.share_started(), None);
+        assert!(choice.sharing());
+        choice.share_ended();
+        assert!(!choice.sharing());
+        assert_eq!(choice.share_started(), None);
+        choice.clear();
+        assert!(!choice.sharing());
+    }
+
+    fn progress(codec: &str, encoded: u64, submitted: u64) -> Option<EncoderProgress> {
+        Some(EncoderProgress {
+            codec: codec.to_string(),
+            implementation: "VideoToolbox".to_string(),
+            frames_encoded: encoded,
+            source_frames: submitted,
+        })
+    }
+
+    fn ms(millis: u64) -> Duration {
+        Duration::from_millis(millis)
+    }
+
+    fn hevc_check(warmup: Duration) -> EncoderCheck {
+        let mut check = EncoderCheck::new(H265, "H265".to_string(), warmup);
+        assert_eq!(
+            check.observe(progress("", 0, 0).as_ref(), HevcSession::Unknown, ms(250)),
+            EncoderCheckStep::Continue
+        );
+        check
+    }
+
+    #[test]
+    fn hevc_check_passes_on_a_hardware_h265_frame_after_the_warmup() {
+        let mut check = hevc_check(Duration::from_secs(3));
+        let encoded = progress("H265", 1, 1);
+        assert_eq!(
+            check.observe(encoded.as_ref(), HevcSession::Hardware, ms(500)),
+            EncoderCheckStep::Continue
+        );
+        assert!(check.encoding());
+        // Encoding, but the warm-up isn't over: the last frame is still resent.
+        assert_eq!(
+            check.observe(encoded.as_ref(), HevcSession::Unknown, ms(2_750)),
+            EncoderCheckStep::Continue
+        );
+        assert_eq!(
+            check.observe(encoded.as_ref(), HevcSession::Unknown, ms(3_000)),
+            EncoderCheckStep::Done
+        );
+    }
+
+    #[test]
+    fn hevc_check_without_warmup_ends_on_the_first_frame() {
+        let mut check = hevc_check(Duration::ZERO);
+        assert_eq!(
+            check.observe(
+                progress("H265", 1, 1).as_ref(),
+                HevcSession::Hardware,
+                ms(500)
+            ),
+            EncoderCheckStep::Done
+        );
+    }
+
+    #[test]
+    fn frames_encoded_before_the_first_sample_do_not_count() {
+        let mut check = EncoderCheck::new(H265, "H265".to_string(), Duration::ZERO);
+        let earlier = progress("H265", 10, 10);
+        assert_eq!(
+            check.observe(earlier.as_ref(), HevcSession::Hardware, ms(250)),
+            EncoderCheckStep::Continue
+        );
+        assert_eq!(
+            check.observe(earlier.as_ref(), HevcSession::Hardware, ms(500)),
+            EncoderCheckStep::Continue
+        );
+        assert_eq!(
+            check.observe(
+                progress("H265", 11, 11).as_ref(),
+                HevcSession::Hardware,
+                ms(750)
+            ),
+            EncoderCheckStep::Done
+        );
+    }
+
+    #[test]
+    fn hevc_check_fails_on_another_codec() {
+        let mut check = hevc_check(Duration::ZERO);
+        let step = check.observe(
+            progress("H264", 1, 1).as_ref(),
+            HevcSession::Hardware,
+            ms(500),
+        );
+        assert!(matches!(step, EncoderCheckStep::Failed(_)), "{step:?}");
+    }
+
+    #[test]
+    fn hevc_check_fails_unless_the_session_is_confirmed_as_hardware() {
+        for session in [
+            HevcSession::Software,
+            HevcSession::Failed,
+            HevcSession::Unknown,
+        ] {
+            let mut check = hevc_check(Duration::ZERO);
+            let step = check.observe(progress("H265", 1, 1).as_ref(), session, ms(500));
+            assert!(
+                matches!(step, EncoderCheckStep::Failed(_)),
+                "{session:?}: {step:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn h264_check_ignores_the_hevc_session() {
+        let mut check = EncoderCheck::new(H264, "H264".to_string(), Duration::ZERO);
+        assert_eq!(
+            check.observe(progress("", 0, 0).as_ref(), HevcSession::Unknown, ms(250)),
+            EncoderCheckStep::Continue
+        );
+        assert_eq!(
+            check.observe(
+                progress("H264", 1, 1).as_ref(),
+                HevcSession::Unknown,
+                ms(500)
+            ),
+            EncoderCheckStep::Done
+        );
+    }
+
+    #[test]
+    fn a_label_less_frame_waits_for_the_codec_label() {
+        let mut check = hevc_check(Duration::ZERO);
+        assert_eq!(
+            check.observe(progress("", 1, 1).as_ref(), HevcSession::Hardware, ms(500)),
+            EncoderCheckStep::Continue
+        );
+        assert_eq!(
+            check.observe(
+                progress("H265", 2, 2).as_ref(),
+                HevcSession::Hardware,
+                ms(750)
+            ),
+            EncoderCheckStep::Done
+        );
+    }
+
+    #[test]
+    fn submitted_frames_that_never_encode_fail_after_the_timeout() {
+        let mut check = hevc_check(Duration::ZERO);
+        let submitted = progress("", 0, 3);
+        assert_eq!(
+            check.observe(submitted.as_ref(), HevcSession::Unknown, ms(500)),
+            EncoderCheckStep::Continue
+        );
+        assert_eq!(
+            check.observe(submitted.as_ref(), HevcSession::Unknown, ms(5_250)),
+            EncoderCheckStep::Continue
+        );
+        let step = check.observe(submitted.as_ref(), HevcSession::Unknown, ms(5_500));
+        assert!(matches!(step, EncoderCheckStep::Failed(_)), "{step:?}");
+    }
+
+    #[test]
+    fn a_capture_that_submits_nothing_is_inconclusive_not_a_failure() {
+        let mut check = hevc_check(Duration::ZERO);
+        let idle = progress("", 0, 0);
+        assert_eq!(
+            check.observe(idle.as_ref(), HevcSession::Unknown, ms(10_000)),
+            EncoderCheckStep::Continue
+        );
+        assert_eq!(
+            check.observe(None, HevcSession::Unknown, ms(20_000)),
+            EncoderCheckStep::Continue
+        );
+        assert_eq!(
+            check.observe(
+                idle.as_ref(),
+                HevcSession::Unknown,
+                ENCODER_CHECK_IDLE_LIMIT
+            ),
+            EncoderCheckStep::Inconclusive
+        );
+    }
+
+    #[test]
+    fn a_capture_starting_late_gets_the_whole_timeout() {
+        let mut check = hevc_check(Duration::ZERO);
+        let submitted = progress("", 0, 1);
+        assert_eq!(
+            check.observe(submitted.as_ref(), HevcSession::Unknown, ms(20_000)),
+            EncoderCheckStep::Continue
+        );
+        assert_eq!(
+            check.observe(submitted.as_ref(), HevcSession::Unknown, ms(24_750)),
+            EncoderCheckStep::Continue
+        );
+        let step = check.observe(submitted.as_ref(), HevcSession::Unknown, ms(25_000));
+        assert!(matches!(step, EncoderCheckStep::Failed(_)), "{step:?}");
     }
 
     #[test]

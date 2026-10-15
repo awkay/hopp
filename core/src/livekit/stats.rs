@@ -501,6 +501,8 @@ pub(crate) struct EncoderProgress {
     pub codec: String,
     pub implementation: String,
     pub frames_encoded: u64,
+    /// Frames the source handed to WebRTC (the media-source stats' `frames`), encoded or not.
+    pub source_frames: u64,
 }
 
 /// `Ok(None)` while the track has no outbound video stats yet; an error once it isn't
@@ -510,6 +512,14 @@ pub(crate) async fn encoder_progress(
 ) -> livekit::RoomResult<Option<EncoderProgress>> {
     let stats = track.get_stats().await?;
     let codecs = codec_map(&stats);
+    let source_frames = |source_id: &str| {
+        stats.iter().find_map(|stat| match stat {
+            RtcStats::MediaSource(source) if source.rtc.id == source_id => {
+                Some(source.video.frames as u64)
+            }
+            _ => None,
+        })
+    };
     Ok(stats.iter().find_map(|stat| match stat {
         RtcStats::OutboundRtp(outbound) if outbound.stream.kind == "video" => {
             Some(EncoderProgress {
@@ -519,6 +529,8 @@ pub(crate) async fn encoder_progress(
                     .unwrap_or_default(),
                 implementation: outbound.outbound.encoder_implementation.clone(),
                 frames_encoded: outbound.outbound.frames_encoded as u64,
+                source_frames: source_frames(&outbound.outbound.media_source_id)
+                    .unwrap_or_default(),
             })
         }
         _ => None,

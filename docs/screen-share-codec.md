@@ -45,6 +45,16 @@ sees those tracks first and switches its share to H.264 until its next share.
   muted track's, or mid-share when a watcher without HEVC joins, a watcher or the user turns HEVC
   off, or HEVC encoding fails. Mid-share it only goes HEVC → H.264; HEVC comes back at the next
   share.
+- **A failed publish ends the share.** The old track is already gone by then, so a share left
+  without a track would send nothing while the sharer's UI still says sharing. The publish is
+  tried once more after 1 s; if that fails too, core stops the share the way any share stops
+  (`screen_share_track_lost` → `UserEvent::StopScreenShare`), so the participants snapshot tells
+  Tauri, and the next share publishes a new track.
+- **A hang-up doesn't wait for a switch.** The command task runs commands one at a time, and a
+  publish on a bad link can take the SDK's 10 s timeout (twice, with the retry). The republish and
+  the HEVC announcement give way as soon as `destroy_room` or a new `create_room` supersedes the
+  call (`ConnectGate::superseded`), so the `DestroyRoom` or `CreateRoom` behind them runs at once.
+  Other commands (mute toggles, remote-control data) still wait for a slow switch to finish.
 - **The old track goes first.** An older Hopp viewer closes its window when the shown track is
   unsubscribed and reopens it for the new one; publishing the new track first, it would close it
   for good. Publishing first would be allowed: LiveKit's `AddTrack` has no duplicate-source
@@ -56,6 +66,11 @@ sees those tracks first and switches its share to H.264 until its next share.
   channel (`replace_remote_screen_share_stream`): no `OpenScreenShareWindow`, so no refocus
   (§TILING-WM) and no reset of drawings. A share still ends with a mute; a browser sharer's
   unpublish ends it at once.
+- Starting, replacing and ending the shown share each hold the `shown` lock throughout (lock
+  order: `shown`, then the other `RemoteScreenShare` fields, then `participants`). The 5 s wait
+  runs in its own task, so without that a replacement arriving right as it timed out could be
+  started and then torn down, leaving a live share hidden. Now the replacement is either taken as
+  one (the wait is over) or comes after the end, as a new share in a new window.
 - **Static screens.** ScreenCaptureKit sends no frames while nothing changes, so a new track
   would have nothing to encode, and a viewer subscribing to it would get no key frame until the
   screen changed. For 3 s after a republish, and until the first frame is encoded after a share
@@ -82,10 +97,17 @@ from `RTCVideoEncoderH264.mm`.
   `text_pcap_packet_observer.cc`), about 0.3% of core's CPU samples; the watch adds a substring
   search per message.
 - After an HEVC share starts or its track is republished, core checks the outbound stats
-  (`check_screen_share_encoder`): within 5 s the track must encode a frame as H265, and the last
-  H.265 session must have been logged as hardware. Otherwise (nothing encoded, WebRTC switched to
-  another codec after the encoder failed, a software session, or no session line at all) the
-  share republishes as H.264 for the rest of the call. If a WebRTC update changes that log text,
+  (`check_screen_share_encoder`, rules in `EncoderCheck`): within 5 s of the capture's first
+  frame the track must encode a frame as H265, and the last H.265 session must have been logged
+  as hardware. Otherwise (nothing encoded, WebRTC switched to another codec after the encoder
+  failed, a software session, or no session line at all) the share republishes as H.264 for the
+  rest of the call.
+- A capture that submits no frame says nothing about the encoder: a window minimized after it was
+  picked, or a sleeping display, never delivers one (core drops ScreenCaptureKit frames without
+  content). The check counts submitted frames from the media-source stats' `frames` (also behind
+  `VideoHealthSummary`'s `source=`), waits up to 30 s for the first, then gives up without a
+  verdict (logged). Timing out from the start instead would have forced H.264 for the whole call
+  and blamed the encoder. If a WebRTC update changes that log text,
   every HEVC share falls back to H.264 (logged), which `profile.sh sharer` and the smoke
   `hevc-fallback` scenario show.
 

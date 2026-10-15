@@ -379,8 +379,9 @@ enum LatestFrame {
     Repeat,
     /// A frame the window hasn't presented yet.
     New,
-    /// A new frame whose id is far below the last one presented: a new stream on the same buffer
-    /// restarted the ids.
+    /// A new frame whose id is far below the last one presented. Only defensive: a buffer's ids
+    /// only go up, even across streams (`process_video_stream`), and a window bound to a new
+    /// buffer starts from 0. Should ids ever go back, the window draws them instead of freezing.
     Restarted,
 }
 
@@ -391,11 +392,12 @@ impl LatestFrame {
     }
 }
 
-/// How far the frame id has to drop below the last one presented to count as a stream restart.
+/// How far the frame id has to drop below the last one presented to count as going back.
 const STREAM_RESTART_ID_GAP: u64 = 40;
 
 /// Compares the buffer's frame id with `last_rendered_id`, the id of the last frame the window
-/// presented (0 for none). `process_video_stream` numbers frames from 1.
+/// presented (0 for none). `process_video_stream` numbers frames from 1, and a stream taking
+/// over a buffer goes on from its last id.
 fn classify_latest_frame(current_id: u64, last_rendered_id: u64) -> LatestFrame {
     if current_id == 0 {
         LatestFrame::Missing
@@ -2488,7 +2490,7 @@ impl ScreensharingWindow {
         let latest_frame = classify_latest_frame(current_frame_id, self.last_rendered_frame_id);
         match latest_frame {
             LatestFrame::Restarted => log::info!(
-                "redraw_inner: stream restart detected (frame_id={current_frame_id}, last_rendered={}), resetting",
+                "redraw_inner: frame id went back (frame_id={current_frame_id}, last_rendered={}), resetting",
                 self.last_rendered_frame_id
             ),
             LatestFrame::Repeat => {
@@ -2952,7 +2954,7 @@ mod redraw_tests {
         // Skipping ids (frames replaced before any redraw) is still a new frame.
         assert_eq!(classify_latest_frame(9, 2), LatestFrame::New);
         assert_eq!(classify_latest_frame(9, 9), LatestFrame::Repeat);
-        // A new stream on the same buffer restarts its ids at 1.
+        // Ids going far back (never expected, see `LatestFrame::Restarted`) are still drawn.
         assert_eq!(classify_latest_frame(1, 500), LatestFrame::Restarted);
         // A smaller drop isn't taken for a restart.
         assert_eq!(

@@ -25,9 +25,9 @@ use crate::livekit::audio::AudioPublisher;
 use crate::livekit::participant::ParticipantInfo;
 use crate::livekit::video::{process_video_stream, VideoBufferManager};
 use crate::screen_share_codec::{
-    this_mac_may_share_hevc, ScreenShareCodec, ScreenShareCodecChoice,
+    this_mac_may_share_hevc, EncoderCheck, EncoderCheckStep, ScreenShareCodec,
+    ScreenShareCodecChoice, ENCODER_CHECK_IDLE_LIMIT,
 };
-use crate::webrtc_log::HevcSession;
 use crate::window::screensharing_window::RedrawCommand;
 
 use serde::{Deserialize, Serialize};
@@ -61,14 +61,17 @@ const HEVC_ANNOUNCEMENT_GRACE: Duration = Duration::from_millis(750);
 /// waits for it after a setting change or a reconnect, and a server that never answers mustn't
 /// hold up the commands behind it. The announcement is sent either way.
 const HEVC_ANNOUNCE_TIMEOUT: Duration = Duration::from_secs(2);
-/// How long a new screen track, or one just unmuted, has to start encoding before it counts as
-/// broken (spec 0007 B6 for HEVC), and how often that is checked.
-const SCREEN_SHARE_ENCODER_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+/// How often a new screen track, or one just unmuted, is checked for encoding (spec 0007 B6 for
+/// HEVC, `EncoderCheck`).
 const SCREEN_SHARE_ENCODER_CHECK_INTERVAL: Duration = Duration::from_millis(250);
 /// How long a screen track published during a share keeps getting the last captured frame
 /// resent, so viewers subscribing to it get a picture on a static screen. See
 /// `check_screen_share_encoder`.
 const SCREEN_SHARE_TRACK_WARMUP: Duration = Duration::from_secs(3);
+/// How many times a screen track republish tries to publish the new track, and how long it
+/// waits between tries.
+const SCREEN_SHARE_PUBLISH_ATTEMPTS: u32 = 2;
+const SCREEN_SHARE_PUBLISH_RETRY_DELAY: Duration = Duration::from_secs(1);
 /// How long a viewer keeps the screen-share window open after the shown track was unpublished
 /// while live, waiting for the sharer's replacement track (a codec switch, spec 0007).
 const SCREEN_SHARE_REPLACEMENT_GRACE: Duration = Duration::from_secs(5);
@@ -189,9 +192,15 @@ fn should_publish_app_veil_snapshot(
 /// an earlier `DestroyRoom` was still running) and must not connect. `arm` installs the
 /// cancel senders only if still current, atomically with that check, so a `destroy_room`
 /// can never slip in between and miss the connect it should cancel.
+///
+/// Commands that can wait on the server for seconds during a call (a screen track republish,
+/// spec 0007) take a [`ConnectGate::superseded`] receiver too, so a hang-up isn't queued
+/// behind them.
 #[derive(Debug, Default)]
 pub(crate) struct ConnectGate {
     generation: u64,
+    /// Generation of the last connect that armed: the call in progress while it is current.
+    armed: u64,
     cancel_connect: Vec<oneshot::Sender<()>>,
 }
 
@@ -216,8 +225,22 @@ impl ConnectGate {
         if generation != self.generation {
             return false;
         }
+        self.armed = generation;
         self.cancel_connect = senders;
         true
+    }
+
+    /// Resolves once the call in progress is superseded by `destroy_room` or a new connect,
+    /// at once if it already is, so a slow command can give way to the `DestroyRoom` or
+    /// `CreateRoom` queued behind it.
+    pub(crate) fn superseded(&mut self) -> oneshot::Receiver<()> {
+        let (tx, rx) = oneshot::channel();
+        if self.armed == self.generation {
+            // Drop the senders of finished commands and connects.
+            self.cancel_connect.retain(|tx| !tx.is_closed());
+            self.cancel_connect.push(tx);
+        }
+        rx
     }
 
     pub(crate) fn is_current(&self, generation: u64) -> bool {
@@ -2077,7 +2100,8 @@ async fn room_service_commands(
                     .unwrap()
                     .set_setting(enabled);
                 if let Some(local_participant) = room_local_participant(&inner).await {
-                    announce_hevc_support(local_participant, enabled).await;
+                    unless_superseded(&inner, announce_hevc_support(local_participant, enabled))
+                        .await;
                 }
                 republish_if_needed(&inner, republish, "HEVC turned off", &service_command_tx)
                     .await;
@@ -2085,7 +2109,8 @@ async fn room_service_commands(
             RoomServiceCommand::AnnounceHevcSupport => {
                 let supported = inner.screen_share_codec.lock().unwrap().setting();
                 if let Some(local_participant) = room_local_participant(&inner).await {
-                    announce_hevc_support(local_participant, supported).await;
+                    unless_superseded(&inner, announce_hevc_support(local_participant, supported))
+                        .await;
                 }
             }
             RoomServiceCommand::ScreenShareWatcher(event, generation) => {
@@ -2661,7 +2686,11 @@ fn start_remote_screen_share_stream(
     event_loop_proxy: &EventLoopProxy<UserEvent>,
     snapshot_sender: &SnapshotSender,
 ) {
+    // Held throughout, like when a share ends: a replacement wait timing out
+    // (`await_screen_share_replacement`) can't interleave with this start.
+    let mut shown = remote_screen_share.shown.lock().unwrap();
     if replace_remote_screen_share_stream(
+        &mut shown,
         &video_track,
         &track_sid,
         remote_screen_share,
@@ -2740,12 +2769,9 @@ fn start_remote_screen_share_stream(
 
     snapshot_sender.send_participants_snapshot();
 
-    {
-        let mut shown = remote_screen_share.shown.lock().unwrap();
-        shown.sid = Some(track_sid);
-        shown.redraw_tx = Some(redraw_tx.clone());
-        shown.awaiting_replacement = None;
-    }
+    shown.sid = Some(track_sid);
+    shown.redraw_tx = Some(redraw_tx.clone());
+    shown.awaiting_replacement = None;
 
     if let Err(e) = event_loop_proxy.send_event(UserEvent::OpenScreenShareWindow {
         participants: participants.clone(),
@@ -2762,6 +2788,7 @@ fn start_remote_screen_share_stream(
 /// reset, so its drawings and mode stay, and the last frame stays up until the new track's
 /// first one. Returns false, changing nothing, when this isn't a replacement.
 fn replace_remote_screen_share_stream(
+    shown: &mut ShownScreenShareTrack,
     video_track: &livekit::track::RemoteVideoTrack,
     track_sid: &TrackSid,
     remote_screen_share: &RemoteScreenShare,
@@ -2776,7 +2803,6 @@ fn replace_remote_screen_share_stream(
     if !same_sharer {
         return false;
     }
-    let mut shown = remote_screen_share.shown.lock().unwrap();
     let replaced = shown.awaiting_replacement.is_some()
         || shown.sid.as_ref().is_some_and(|sid| sid != track_sid);
     let Some(redraw_tx) = shown.redraw_tx.clone().filter(|_| replaced) else {
@@ -2791,7 +2817,6 @@ fn replace_remote_screen_share_stream(
     );
     shown.sid = Some(track_sid.clone());
     shown.awaiting_replacement = None;
-    drop(shown);
 
     if let Some(tx) = remote_screen_share.stop_tx.lock().unwrap().take() {
         let _ = tx.send(());
@@ -2841,6 +2866,28 @@ fn end_remote_screen_share(
     snapshot_sender: &SnapshotSender,
     event_loop_proxy: &EventLoopProxy<UserEvent>,
 ) {
+    let mut shown = remote_screen_share.shown.lock().unwrap();
+    end_shown_remote_screen_share(
+        &mut shown,
+        remote_screen_share,
+        participants,
+        sharer_video_identity,
+        snapshot_sender,
+        event_loop_proxy,
+    );
+}
+
+/// `end_remote_screen_share` with `shown` already locked. The lock is held throughout, so a
+/// new share starting (`start_remote_screen_share_stream`) comes before or after the whole end:
+/// lock order `shown`, then the other `RemoteScreenShare` fields and `participants`.
+fn end_shown_remote_screen_share(
+    shown: &mut ShownScreenShareTrack,
+    remote_screen_share: &RemoteScreenShare,
+    participants: &std::sync::RwLock<HashMap<String, ParticipantInfo>>,
+    sharer_video_identity: &str,
+    snapshot_sender: &SnapshotSender,
+    event_loop_proxy: &EventLoopProxy<UserEvent>,
+) {
     if let Some(tx) = remote_screen_share.stop_tx.lock().unwrap().take() {
         let _ = tx.send(());
     }
@@ -2851,7 +2898,7 @@ fn end_remote_screen_share(
         .unwrap()
         .take();
     remote_screen_share.app_veil_snapshot.lock().unwrap().take();
-    remote_screen_share.shown.lock().unwrap().forget();
+    shown.forget();
 
     // Derive the audio participant identity to clear is_screensharing
     let audio_identity = sharer_video_identity
@@ -2881,11 +2928,11 @@ fn await_screen_share_replacement(
     snapshot_sender: &SnapshotSender,
     event_loop_proxy: &EventLoopProxy<UserEvent>,
 ) {
-    if let Some(tx) = remote_screen_share.stop_tx.lock().unwrap().take() {
-        let _ = tx.send(());
-    }
     let wait = {
         let mut shown = remote_screen_share.shown.lock().unwrap();
+        if let Some(tx) = remote_screen_share.stop_tx.lock().unwrap().take() {
+            let _ = tx.send(());
+        }
         shown.next_wait += 1;
         shown.awaiting_replacement = Some(shown.next_wait);
         shown.next_wait
@@ -2901,17 +2948,17 @@ fn await_screen_share_replacement(
     let event_loop_proxy = event_loop_proxy.clone();
     tokio::spawn(async move {
         tokio::time::sleep(SCREEN_SHARE_REPLACEMENT_GRACE).await;
-        {
-            let mut shown = remote_screen_share.shown.lock().unwrap();
-            if shown.awaiting_replacement != Some(wait) {
-                return;
-            }
-            shown.forget();
+        // Checked and ended under one lock: a replacement arriving now is handled before (no
+        // longer awaited) or after (a new share, in a new window).
+        let mut shown = remote_screen_share.shown.lock().unwrap();
+        if shown.awaiting_replacement != Some(wait) {
+            return;
         }
         log::warn!(
             "handle_room_events: no replacement for the screen track of {sharer_video_identity}, ending the share"
         );
-        end_remote_screen_share(
+        end_shown_remote_screen_share(
+            &mut shown,
             &remote_screen_share,
             &participants,
             &sharer_video_identity,
@@ -3046,13 +3093,27 @@ async fn video_room_local_participant(inner: &RoomServiceInner) -> Option<LocalP
 
 /// Publishes our screen track again, unmuted, with `codec` (a published track can't change
 /// codec), from the same source, so the capture carries on unchanged. Runs when a share starts
-/// or during one.
+/// or during one. A publish that fails is tried once more; if that fails too, the share ends
+/// (`screen_share_track_lost`). A hang-up or a new call cancels it.
 ///
 /// The old track goes first. A viewer on an older Hopp closes its window when the track it
 /// shows is unsubscribed, and opens it again for the new track; publishing the new one first,
-/// it would close the window for good. Viewers on this version keep their window open either
-/// way (`start_remote_screen_share_stream`).
+/// it would close it for good. Viewers on this version keep their window open either way
+/// (`start_remote_screen_share_stream`).
 async fn republish_screen_share_track(
+    inner: &RoomServiceInner,
+    codec: ScreenShareCodec,
+    reason: &str,
+    service_command_tx: &mpsc::UnboundedSender<RoomServiceCommand>,
+) {
+    let republish = republish_screen_share_track_once(inner, codec, reason, service_command_tx);
+    if unless_superseded(inner, republish).await.is_none() {
+        log::info!("republish_screen_share_track: {reason}: cancelled, the call ended");
+        inner.screen_share_codec.lock().unwrap().track_lost();
+    }
+}
+
+async fn republish_screen_share_track_once(
     inner: &RoomServiceInner,
     codec: ScreenShareCodec,
     reason: &str,
@@ -3063,7 +3124,7 @@ async fn republish_screen_share_track(
     let source = inner.buffer_source.lock().unwrap().clone();
     let (Some(local_participant), Some(source)) = (local_participant, source) else {
         log::warn!("republish_screen_share_track: {reason}: no video room or screen source");
-        inner.screen_share_codec.lock().unwrap().track_lost();
+        screen_share_track_lost(inner);
         return;
     };
     let old_track = inner.screen_share_track.lock().unwrap().take();
@@ -3073,32 +3134,77 @@ async fn republish_screen_share_track(
             log::warn!("republish_screen_share_track: unpublishing {old_sid} failed: {e:?}");
         }
     }
-    match publish_screen_share_track(&local_participant, &source, codec, false).await {
-        Ok(track) => {
-            log::info!(
-                "republish_screen_share_track: {reason}: {codec:?} track {} replaced {old_sid:?} in {}ms",
-                track.sid(),
-                started.elapsed().as_millis()
-            );
-            *inner.screen_share_track.lock().unwrap() = Some(track.clone());
-            // A new track starts with the publish defaults: low-bandwidth mode needs its
-            // encoding again (spec 0007 B5).
-            apply_screen_share_encoding(inner);
-            spawn_screen_share_encoder_check(
-                inner,
-                track,
-                codec,
-                SCREEN_SHARE_TRACK_WARMUP,
-                service_command_tx,
-            );
+    let mut attempt = 1;
+    let track = loop {
+        match publish_screen_share_track(&local_participant, &source, codec, false).await {
+            Ok(track) => break track,
+            Err(e) if attempt < SCREEN_SHARE_PUBLISH_ATTEMPTS => {
+                log::warn!(
+                    "republish_screen_share_track: {reason}: publishing the {codec:?} track failed after {}ms, trying again: {e:?}",
+                    started.elapsed().as_millis()
+                );
+                tokio::time::sleep(SCREEN_SHARE_PUBLISH_RETRY_DELAY).await;
+                attempt += 1;
+            }
+            Err(e) => {
+                log::error!(
+                    "republish_screen_share_track: {reason}: publishing the {codec:?} track failed {attempt} times in {}ms: {e:?}",
+                    started.elapsed().as_millis()
+                );
+                screen_share_track_lost(inner);
+                return;
+            }
         }
-        Err(e) => {
-            log::error!(
-                "republish_screen_share_track: {reason}: publishing the {codec:?} track failed after {}ms; no screen track until the next share starts: {e:?}",
-                started.elapsed().as_millis()
-            );
-            inner.screen_share_codec.lock().unwrap().track_lost();
-        }
+    };
+    log::info!(
+        "republish_screen_share_track: {reason}: {codec:?} track {} replaced {old_sid:?} in {}ms",
+        track.sid(),
+        started.elapsed().as_millis()
+    );
+    *inner.screen_share_track.lock().unwrap() = Some(track.clone());
+    // A new track starts with the publish defaults: low-bandwidth mode needs its encoding again
+    // (spec 0007 B5).
+    apply_screen_share_encoding(inner);
+    spawn_screen_share_encoder_check(
+        inner,
+        track,
+        codec,
+        SCREEN_SHARE_TRACK_WARMUP,
+        service_command_tx,
+    );
+}
+
+/// No screen track is published: a republish failed. A share in progress can't go on without
+/// one, so it ends the way any share does, which the sharer's call controls show; the next
+/// share publishes a new track.
+fn screen_share_track_lost(inner: &RoomServiceInner) {
+    let sharing = {
+        let mut codec_choice = inner.screen_share_codec.lock().unwrap();
+        codec_choice.track_lost();
+        codec_choice.sharing()
+    };
+    if !sharing {
+        return;
+    }
+    log::error!("screen_share_track_lost: ending the share, it has no screen track");
+    if let Err(e) = inner
+        .event_loop_proxy
+        .send_event(UserEvent::StopScreenShare)
+    {
+        log::error!("screen_share_track_lost: failed to send StopScreenShare: {e:?}");
+    }
+}
+
+/// Runs `work` unless the call is superseded first (`ConnectGate::superseded`): the command
+/// loop then moves on to the hang-up or new call queued behind it. `None` when cancelled.
+async fn unless_superseded<T>(
+    inner: &RoomServiceInner,
+    work: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    let superseded = inner.connect_gate.lock().unwrap().superseded();
+    tokio::select! {
+        result = work => Some(result),
+        _ = superseded => None,
     }
 }
 
@@ -3146,9 +3252,8 @@ fn spawn_screen_share_encoder_check(
     });
 }
 
-/// Waits until `track` has encoded a frame as `codec`. Fails when it encodes another codec, or
-/// nothing within `SCREEN_SHARE_ENCODER_CHECK_TIMEOUT`. Ends quietly once the track is muted or
-/// unpublished.
+/// Waits until `track` has encoded a frame as `codec` (`EncoderCheck` has the rules). Ends
+/// quietly once the track is muted or unpublished, or when the capture submits nothing.
 ///
 /// ScreenCaptureKit sends no frames while the screen is static, so a track could wait for its
 /// first frame until something moves. Until a new frame is encoded, and on a new track for
@@ -3167,9 +3272,8 @@ async fn check_screen_share_encoder(
     event_loop_proxy: &EventLoopProxy<UserEvent>,
 ) -> Result<(), String> {
     let expected = livekit_video_codec(codec).as_str().to_ascii_uppercase();
+    let mut check = EncoderCheck::new(codec, expected, warmup);
     let started = Instant::now();
-    let mut baseline = None;
-    let mut encoding = false;
     loop {
         tokio::time::sleep(SCREEN_SHARE_ENCODER_CHECK_INTERVAL).await;
         if track.is_muted() {
@@ -3178,48 +3282,33 @@ async fn check_screen_share_encoder(
         let Ok(progress) = crate::livekit::stats::encoder_progress(track).await else {
             return Ok(());
         };
-        if !encoding {
-            let frames_encoded = progress.as_ref().map_or(0, |p| p.frames_encoded);
-            match (baseline, &progress) {
-                (None, _) => baseline = Some(frames_encoded),
-                (Some(before), Some(progress))
-                    if frames_encoded > before && !progress.codec.is_empty() =>
-                {
-                    if progress.codec != expected {
-                        return Err(format!(
-                            "encoding {} instead of {expected} ({})",
-                            progress.codec, progress.implementation
-                        ));
-                    }
-                    // Never a software HEVC encoder (B6): only WebRTC's log tells.
-                    let session = crate::webrtc_log::last_hevc_session();
-                    if codec == ScreenShareCodec::H265 && session != HevcSession::Hardware {
-                        return Err(format!(
-                            "VideoToolbox's HEVC session isn't confirmed as hardware: {session:?}"
-                        ));
-                    }
-                    log::info!(
-                        "check_screen_share_encoder: track {} encoding {} with {} after {}ms",
-                        track.sid(),
-                        progress.codec,
-                        progress.implementation,
-                        started.elapsed().as_millis()
-                    );
-                    encoding = true;
-                }
-                _ => {}
-            }
-            if !encoding && started.elapsed() >= SCREEN_SHARE_ENCODER_CHECK_TIMEOUT {
-                return Err(format!(
-                    "no {expected} frame encoded in {}s: {progress:?}",
-                    SCREEN_SHARE_ENCODER_CHECK_TIMEOUT.as_secs()
-                ));
-            }
+        let session = crate::webrtc_log::last_hevc_session();
+        let was_encoding = check.encoding();
+        let step = check.observe(progress.as_ref(), session, started.elapsed());
+        if let Some(progress) = progress.filter(|_| !was_encoding && check.encoding()) {
+            log::info!(
+                "check_screen_share_encoder: track {} encoding {} with {} after {}ms",
+                track.sid(),
+                progress.codec,
+                progress.implementation,
+                started.elapsed().as_millis()
+            );
         }
-        if encoding && started.elapsed() >= warmup {
-            return Ok(());
+        match step {
+            EncoderCheckStep::Continue => {
+                let _ = event_loop_proxy.send_event(UserEvent::ResendScreenShareFrame);
+            }
+            EncoderCheckStep::Done => return Ok(()),
+            EncoderCheckStep::Inconclusive => {
+                log::warn!(
+                    "check_screen_share_encoder: the capture submitted no frame to track {} in {}s; its encoder isn't checked",
+                    track.sid(),
+                    ENCODER_CHECK_IDLE_LIMIT.as_secs()
+                );
+                return Ok(());
+            }
+            EncoderCheckStep::Failed(reason) => return Err(reason),
         }
-        let _ = event_loop_proxy.send_event(UserEvent::ResendScreenShareFrame);
     }
 }
 
@@ -3798,30 +3887,20 @@ async fn handle_room_events(ctx: RoomEventContext) {
 
                 log::info!("handle_room_events: Participant disconnected: {}", identity);
 
-                let disconnected_current_sharer = remote_screen_share
+                let disconnected_sharer = remote_screen_share
                     .publisher_identity
                     .lock()
                     .unwrap()
-                    .as_ref()
-                    .is_some_and(|publisher| participant_identities_match(publisher, &identity));
-                if disconnected_current_sharer {
-                    if let Some(tx) = remote_screen_share.stop_tx.lock().unwrap().take() {
-                        let _ = tx.send(());
-                    }
-                    remote_screen_share
-                        .publisher_identity
-                        .lock()
-                        .unwrap()
-                        .take();
-                    remote_screen_share.app_veil_snapshot.lock().unwrap().take();
-                    remote_screen_share.shown.lock().unwrap().forget();
-                    if let Err(error) =
-                        event_loop_proxy.send_event(UserEvent::CloseScreenShareWindow)
-                    {
-                        log::error!(
-                            "handle_room_events: Failed to send CloseScreenShareWindow event: {error:?}"
-                        );
-                    }
+                    .clone()
+                    .filter(|publisher| participant_identities_match(publisher, &identity));
+                if let Some(sharer_video_identity) = disconnected_sharer {
+                    end_remote_screen_share(
+                        &remote_screen_share,
+                        &participants,
+                        &sharer_video_identity,
+                        &snapshot_sender,
+                        &event_loop_proxy,
+                    );
                 }
 
                 // Stop streams and remove from HashMap
@@ -4309,6 +4388,49 @@ mod connect_gate_tests {
         assert!(!gate.arm(generation, vec![tx]));
         assert!(rx.try_recv().is_err(), "sender dropped: connect cancelled");
         assert!(!gate.is_current(generation));
+    }
+
+    #[test]
+    fn destroy_supersedes_a_slow_command_of_the_call() {
+        let mut gate = ConnectGate::default();
+        let generation = gate.begin();
+        assert!(gate.arm(generation, Vec::new()));
+        let mut during_call = gate.superseded();
+        assert!(matches!(
+            during_call.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        gate.invalidate();
+        assert!(matches!(
+            during_call.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        ));
+        // A command dequeued after the hang-up gives way at once.
+        let mut after_hang_up = gate.superseded();
+        assert!(matches!(
+            after_hang_up.try_recv(),
+            Err(oneshot::error::TryRecvError::Closed)
+        ));
+        // Until the next call connects.
+        let generation = gate.begin();
+        assert!(gate.arm(generation, Vec::new()));
+        let mut next_call = gate.superseded();
+        assert!(matches!(
+            next_call.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn finished_commands_do_not_pile_up_in_the_gate() {
+        let mut gate = ConnectGate::default();
+        let generation = gate.begin();
+        assert!(gate.arm(generation, Vec::new()));
+        for _ in 0..10 {
+            drop(gate.superseded());
+        }
+        let _pending = gate.superseded();
+        assert_eq!(gate.cancel_connect.len(), 1);
     }
 
     #[test]
