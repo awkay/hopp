@@ -2,8 +2,8 @@
 //
 // macOS: Uses template images for automatic light/dark adaptation per display,
 // with a CALayer overlay for the colored notification dot during calls. While the local
-// user shares their screen, the icon widens to [draw] [stop sharing] [Hopp], each third
-// clickable on its own.
+// user shares their screen, a second status item shows [mic] [draw] [stop sharing] on a
+// blue pill, each button clickable on its own.
 //
 // Other platforms: No-op implementation (tray features not yet implemented).
 
@@ -13,15 +13,8 @@ use tauri::path::BaseDirectory;
 use tauri::tray::TrayIcon;
 use tauri::{AppHandle, Manager, Wry};
 
-#[cfg(target_os = "macos")]
-pub use macos::handle_sharing_controls_click;
-
 /// The Hopp icon.
 pub const HOPP_ICON: &str = "tray-dark-default.png";
-
-/// Width (points) the sharing icon adds left of the Hopp glyph: `tray-sharing*.png` is
-/// 86pt wide (three 18pt glyphs, 16pt gaps), the Hopp icon 18pt.
-pub const SHARING_CONTROLS_EXTRA_WIDTH: f64 = 68.0;
 
 // Platform-specific type alias
 #[cfg(target_os = "macos")]
@@ -53,10 +46,15 @@ impl TrayState {
         self.inner.rect()
     }
 
-    /// Shows or hides the draw and stop sharing buttons in the menu-bar item; `drawing`
-    /// picks the draw button's icon.
+    /// Shows or hides the menu-bar item with the mic, draw and stop sharing buttons;
+    /// `drawing` picks the draw button's icon.
     pub fn set_sharing_controls(&mut self, app: &AppHandle, visible: bool, drawing: bool) {
         self.inner.set_sharing_controls(app, visible, drawing);
+    }
+
+    /// Records whether the local mic is muted, for the mic button's icon.
+    pub fn set_local_muted(&mut self, app: &AppHandle, muted: bool) {
+        self.inner.set_local_muted(app, muted);
     }
 
     pub fn sharing_controls_visible(&self) -> bool {
@@ -103,6 +101,10 @@ mod default {
             // No-op: platform-specific tray features not implemented
         }
 
+        pub fn set_local_muted(&mut self, _app: &AppHandle, _muted: bool) {
+            // No-op: platform-specific tray features not implemented
+        }
+
         pub fn sharing_controls_visible(&self) -> bool {
             false
         }
@@ -123,26 +125,44 @@ mod macos {
     use objc2_foundation::{NSPoint, NSRect, NSSize};
     use objc2_quartz_core::CALayer;
     use socket_lib::Message;
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    /// Tray id of the sharing controls item.
+    const SHARING_CONTROLS_ID: &str = "sharing-controls";
+
+    /// Layout of `tray-sharing-pill*.png` in points: three 17pt glyph boxes 5pt apart, 5pt
+    /// from the pill's ends. Clicks split in the middle of the gaps, 11pt either side of
+    /// the center.
+    const PILL_WIDTH: f64 = 71.0;
+    const MIDDLE_BUTTON_HALF_WIDTH: f64 = 11.0;
 
     #[derive(Clone, Copy, PartialEq)]
-    enum ItemIcon {
-        Hopp,
-        Sharing { drawing: bool },
+    struct PillIcon {
+        muted: bool,
+        drawing: bool,
+    }
+
+    struct SharingControls {
+        item: TrayIcon<Wry>,
+        icon: PillIcon,
     }
 
     pub struct MacOSTrayState {
         tray_icon: TrayIcon<Wry>,
         notification_enabled: bool,
-        icon: ItemIcon,
+        sharing_controls: Option<SharingControls>,
+        drawing: bool,
+        muted: bool,
     }
 
     impl MacOSTrayState {
         pub fn new(tray_icon: TrayIcon<Wry>) -> Self {
-            make_click_target_follow_button(&tray_icon);
             Self {
                 tray_icon,
                 notification_enabled: false,
-                icon: ItemIcon::Hopp,
+                sharing_controls: None,
+                drawing: false,
+                muted: false,
             }
         }
 
@@ -160,99 +180,113 @@ mod macos {
         }
 
         pub fn set_sharing_controls(&mut self, app: &AppHandle, visible: bool, drawing: bool) {
-            let icon = if visible {
-                ItemIcon::Sharing { drawing }
-            } else {
-                ItemIcon::Hopp
-            };
-            if icon == self.icon {
-                return;
-            }
-            let file = match icon {
-                ItemIcon::Hopp => HOPP_ICON,
-                ItemIcon::Sharing { drawing: false } => "tray-sharing.png",
-                ItemIcon::Sharing { drawing: true } => "tray-sharing-drawing.png",
-            };
-            let Some(image) = load_tray_icon(app, file) else {
-                log::error!("[TRAY] failed to load {file}");
-                return;
-            };
-            let result = self
-                .tray_icon
-                .set_icon(Some(image))
-                .and_then(|()| self.tray_icon.set_icon_as_template(true));
-            if let Err(e) = result {
-                log::error!("[TRAY] failed to set {file}: {e:?}");
-                return;
-            }
-            self.icon = icon;
-            app.state::<crate::AppData>()
-                .tray_sharing_controls
-                .store(visible, Ordering::Relaxed);
-            // The dot sits on the Hopp glyph, which moves when the icon width changes.
-            if self.notification_enabled {
-                update_notification_dot(true);
-            }
+            self.drawing = drawing;
+            self.sync_sharing_controls(app, visible);
+        }
+
+        pub fn set_local_muted(&mut self, app: &AppHandle, muted: bool) {
+            self.muted = muted;
+            let visible = self.sharing_controls.is_some();
+            self.sync_sharing_controls(app, visible);
         }
 
         pub fn sharing_controls_visible(&self) -> bool {
-            self.icon != ItemIcon::Hopp
+            self.sharing_controls.is_some()
         }
-    }
 
-    /// Handles a left click on the menu-bar item while it shows the sharing controls: the
-    /// left third toggles drawing, the middle third stops sharing (the thirds split inside
-    /// the gaps between glyphs). Returns false for the Hopp third, and when the controls are
-    /// hidden, so the caller toggles the popup as before. Main thread.
-    pub fn handle_sharing_controls_click(
-        app: &AppHandle,
-        position: tauri::PhysicalPosition<f64>,
-        rect: tauri::Rect,
-    ) -> bool {
-        if !app
-            .state::<crate::AppData>()
-            .tray_sharing_controls
-            .load(Ordering::Relaxed)
-        {
-            return false;
-        }
-        let left = rect.position.to_physical::<f64>(1.0).x;
-        let width = rect.size.to_physical::<f64>(1.0).width;
-        let fraction = (position.x - left) / width;
-        if fraction < 1.0 / 3.0 {
-            toggle_drawing(app);
-        } else if fraction < 2.0 / 3.0 {
-            stop_sharing(app);
-        } else {
-            return false;
-        }
-        true
-    }
-
-    /// tray-icon sizes its click-catching view to the button once, but the button widens
-    /// and narrows with the sharing icon; let the view follow it so the whole item clicks.
-    fn make_click_target_follow_button(tray_icon: &TrayIcon<Wry>) {
-        let result = tray_icon.with_inner_tray_icon(|inner| {
-            let Some(item) = inner.ns_status_item() else {
-                return;
-            };
-            unsafe {
-                let button: *const AnyObject = msg_send![&*item, button];
-                if button.is_null() {
-                    return;
+        /// The controls are their own status item, created when they show and removed when
+        /// they hide: macOS puts a new item at the left end of the status items (next to its
+        /// screen recording indicator), where the user looks while sharing, and the pill
+        /// keeps the buttons visibly one group. The pill is a colored, non-template image,
+        /// so the notification dot (template items only) stays off it.
+        fn sync_sharing_controls(&mut self, app: &AppHandle, visible: bool) {
+            if !visible {
+                if let Some(controls) = self.sharing_controls.take() {
+                    // Dropping the last handle removes the status item.
+                    let _ = app.remove_tray_by_id(controls.item.id());
                 }
-                let subviews: *const AnyObject = msg_send![button, subviews];
-                let count: usize = msg_send![subviews, count];
-                for i in 0..count {
-                    let view: *const AnyObject = msg_send![subviews, objectAtIndex: i];
-                    // NSViewWidthSizable | NSViewHeightSizable
-                    let _: () = msg_send![view, setAutoresizingMask: 18usize];
+                return;
+            }
+            let icon = PillIcon {
+                muted: self.muted,
+                drawing: self.drawing,
+            };
+            match &mut self.sharing_controls {
+                Some(controls) if controls.icon == icon => {}
+                Some(controls) => {
+                    let Some(image) = load_pill_icon(app, icon) else {
+                        return;
+                    };
+                    if let Err(e) = controls.item.set_icon(Some(image)) {
+                        log::error!("[TRAY] failed to set the sharing controls icon: {e:?}");
+                        return;
+                    }
+                    controls.icon = icon;
+                }
+                None => {
+                    let Some(image) = load_pill_icon(app, icon) else {
+                        return;
+                    };
+                    let item = TrayIconBuilder::with_id(SHARING_CONTROLS_ID)
+                        .icon(image)
+                        .icon_as_template(false)
+                        .tooltip("Hopp: mute, draw, stop sharing")
+                        .on_tray_icon_event(on_sharing_controls_event)
+                        .build(app);
+                    match item {
+                        Ok(item) => self.sharing_controls = Some(SharingControls { item, icon }),
+                        Err(e) => log::error!("[TRAY] failed to add the sharing controls: {e:?}"),
+                    }
                 }
             }
-        });
-        if let Err(e) = result {
-            log::error!("[TRAY] make_click_target_follow_button: {e:?}");
         }
+    }
+
+    fn load_pill_icon(app: &AppHandle, icon: PillIcon) -> Option<Image<'static>> {
+        let file = match (icon.muted, icon.drawing) {
+            (false, false) => "tray-sharing-pill.png",
+            (false, true) => "tray-sharing-pill-drawing.png",
+            (true, false) => "tray-sharing-pill-muted.png",
+            (true, true) => "tray-sharing-pill-muted-drawing.png",
+        };
+        let image = load_tray_icon(app, file);
+        if image.is_none() {
+            log::error!("[TRAY] failed to load {file}");
+        }
+        image
+    }
+
+    /// A left click on the sharing controls: mic, draw or stop sharing, by where it lands.
+    /// The pill is centered in the item, which may be a few points wider. Main thread.
+    fn on_sharing_controls_event(tray: &TrayIcon<Wry>, event: TrayIconEvent) {
+        let TrayIconEvent::Click {
+            button: MouseButton::Left,
+            button_state: MouseButtonState::Up,
+            position,
+            rect,
+            ..
+        } = event
+        else {
+            return;
+        };
+        let left = rect.position.to_physical::<f64>(1.0).x;
+        let width = rect.size.to_physical::<f64>(1.0).width;
+        let from_center = (position.x - left - width / 2.0) / width * PILL_WIDTH;
+        let app = tray.app_handle();
+        if from_center < -MIDDLE_BUTTON_HALF_WIDTH {
+            toggle_mic(app);
+        } else if from_center > MIDDLE_BUTTON_HALF_WIDTH {
+            stop_sharing(app);
+        } else {
+            toggle_drawing(app);
+        }
+    }
+
+    /// Same as the mic shortcut: core flips the mute and sends a participants snapshot,
+    /// which updates the popup and this icon.
+    fn toggle_mic(app: &AppHandle) {
+        log::info!("[TRAY] mic clicked");
+        let _ = app.state::<crate::AppData>().core.send(Message::ToggleMic);
     }
 
     fn stop_sharing(app: &AppHandle) {
@@ -348,9 +382,8 @@ mod macos {
                 }
 
                 if show {
-                    // Dot size and position (coordinates from top-left of button). It sits
-                    // on the Hopp glyph, the rightmost 18pt of the centered image, so this
-                    // holds for the Hopp icon and the wider sharing icon alike.
+                    // Dot size and position (coordinates from top-left of button), on the
+                    // 18pt Hopp glyph.
                     let image_size: NSSize = msg_send![image, size];
                     let dot_size: f64 = 4.0;
                     let dot_x: f64 = image_size.width - 18.0 + 10.5;
@@ -404,6 +437,14 @@ pub fn update_sharing_controls(app: &AppHandle, show: bool) {
         // after the call ended can't bring the controls back.
         let visible = show && crate::call_state::current_call_id(data).is_some();
         tray.set_sharing_controls(app, visible, data.drawing_enabled.load(Ordering::Relaxed));
+    });
+}
+
+/// Updates the mic button's icon from core's participants snapshot. Callable from any
+/// thread.
+pub fn update_local_muted(app: &AppHandle, muted: bool) {
+    on_main_thread(app, move |app, _data, tray| {
+        tray.set_local_muted(app, muted)
     });
 }
 

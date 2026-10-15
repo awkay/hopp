@@ -47,9 +47,12 @@ impl IncomingHandler for CoreEventHandler {
                     "core_events: participants snapshot ({} participants)",
                     snapshot.len()
                 );
-                let local_sharing = snapshot
-                    .iter()
-                    .any(|p| p.identity == "local" && p.is_screensharing);
+                let local = snapshot.iter().find(|p| p.identity == "local");
+                let local_sharing = local.is_some_and(|p| p.is_screensharing);
+                if let Some(local) = local {
+                    // Posted before the controls' update, so they show with the right icon.
+                    tray::update_local_muted(app, local.muted);
+                }
                 let data = app.state::<AppData>();
                 let settings = data.settings();
                 let show = local_sharing

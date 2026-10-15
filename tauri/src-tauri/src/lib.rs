@@ -152,9 +152,6 @@ pub struct AppData {
 
     /// The window style this session runs with (fixed at launch).
     pub window_style: app_state::WindowStyleSettings,
-    /// Whether the menu-bar item shows the draw / stop sharing buttons (written on the main
-    /// thread together with the icon; read when placing the popup and handling clicks).
-    pub tray_sharing_controls: AtomicBool,
     /// Menu bar style: set once `setup_tray_icon`'s launch-time placement of the hidden popup
     /// under the tray icon is over, which waits up to `TRAY_POSITION_MAX_WAIT` for the tray's
     /// position. Also set when it gave up (no tray rect, or one outside all monitors): the
@@ -205,7 +202,6 @@ impl AppData {
             activation_policy_regular: Arc::new(AtomicBool::new(false)),
             tray_state: Mutex::new(None),
             window_style,
-            tray_sharing_controls: AtomicBool::new(false),
             main_window_placed: AtomicBool::new(false),
             #[cfg(target_os = "macos")]
             activation_observer: Mutex::new(None),
@@ -644,20 +640,8 @@ pub fn center_window_on_tray(window: &WebviewWindow, tray_rect: Rect, show_windo
         // we should change this as well.
         window_size = PhysicalSize::new(400, 500);
     }
-    // While sharing, the item also holds the draw and stop buttons left of the Hopp icon;
-    // center on the Hopp icon.
-    let extra_width = if window
-        .state::<AppData>()
-        .tray_sharing_controls
-        .load(Ordering::Relaxed)
-    {
-        tray::SHARING_CONTROLS_EXTRA_WIDTH * scale
-    } else {
-        0.0
-    };
-    let x = ((tray_pos.x as f64) + extra_width + (tray_size.width - extra_width) / 2.0
-        - (window_size.width as f64) / 2.0)
-        / scale;
+    let x =
+        ((tray_pos.x as f64) + tray_size.width / 2.0 - (window_size.width as f64) / 2.0) / scale;
     let y = (tray_pos.y as f64) / scale;
 
     let new_position = LogicalPosition::new(x, y);
@@ -910,8 +894,6 @@ pub fn setup_tray_icon(
                 if let TrayIconEvent::Click {
                     button: MouseButton::Left,
                     button_state: MouseButtonState::Up,
-                    position,
-                    rect,
                     ..
                 } = event
                 {
@@ -923,9 +905,6 @@ pub fn setup_tray_icon(
                     });
 
                     let app_handle = tray.app_handle();
-                    if tray::handle_sharing_controls_click(app_handle, position, rect) {
-                        return;
-                    }
                     if let Some(window) = app_handle.get_webview_window("main") {
                         if dock_style {
                             show_main_window(&window);
