@@ -2,6 +2,14 @@
 
 What's new in each Hopp for Dataico release, newest first.
 
+## 1.0.36 (2026-10-16)
+
+- **Sharing buttons in their own pill.** While you share your screen, mute, draw and stop sharing sit together on a blue pill in the menu bar, at the left end of the icons next to the purple screen-recording indicator. The mic button is new: it mutes and unmutes you. Turn the pill off in Settings › Call settings › "Show sharing buttons in menu bar".
+- **Less voice delay.** Other people's audio no longer builds up extra delay during a call.
+- **Lighter calls.** Hopp uses less CPU and battery in calls, especially with your camera off, your screen not shared or your mic muted, and its audio holds up better when your Mac is busy.
+- **Smoother screen sharing.** The viewer's window shows each new frame right away, so the end of a scroll no longer lags.
+- **No crash when you share while your displays sleep.**
+
 ## 1.0.35 (2026-10-08)
 
 - **Update button.** When a new version is out, an "Update" tile appears in the sidebar, above your avatar. Click it and Hopp downloads the update and restarts. You stay logged in and keep your settings and permissions. During a call it waits until you hang up. This is the last version you install by hand.
