@@ -290,10 +290,10 @@ across launches; no Rust settings change.
 - [x] Client: check-only polling, the update tile with progress and error handling, disabled in calls, toggle removed, logging
 - [x] Client: post-update toast, "What's new" tile, menu item and tab from the bundled `CHANGELOG.md`
 - [x] Local rehearsal: unsigned builds against a local feed (see notes)
-- [ ] End-to-end test against a test feed (see Verification)
-- [ ] Ship the first updater-enabled release with the task. Its notes say "install by hand one last time"
+- [x] End-to-end test: the first real update, 1.0.35 → 1.0.36 against the live feed, instead of a test feed (see notes)
+- [x] Ship the first updater-enabled release with the task. Its notes say "install by hand one last time"
 - [x] `DATAICO.md`: replace the "Auto-updater: off" row and the "How the updater is disabled" section, add a row for the release task, changelog and "What's new", and describe releasing in "Build"
-- [ ] Preserve discoveries from `workingcontext.md` in `docs/specs/0004-auto-updater/notes.md` and link
+- [x] Preserve discoveries from `workingcontext.md` in `docs/specs/0004-auto-updater/notes.md` and link
       below before marking complete, merging or removing the worktree. Include notes, quirks,
       awkward behavior, gotchas and bugs (resolved vs. remaining); explicitly say if none were found.
 

@@ -178,15 +178,34 @@ Rehearsal quirks, all from the unsigned builds:
   `main_window_placed` is still set, so B10 shows the window where it was created, not under the
   tray icon.
 
+## First real releases (1.0.35 to 1.0.37)
+
+- 2026-10-16, the signed end-to-end test: the user updated 1.0.35 → 1.0.36 from the Update tile
+  (signed, notarized, the published feed) and reported it worked, including the Menu bar style
+  under AeroSpace.
+- 1.0.35, 1.0.36 and 1.0.37 were each released with the task, a `DRY_RUN=1` run first, then the
+  real run reusing its build. Real `gh` created, uploaded and published all three.
+- The updater key that existed when the spec was implemented (key ID `1EB849ADA2774508`) wasn't on
+  the releasing Mac, so it was replaced before any release shipped it with one generated there (key
+  ID `A6F548CDEAA99EC1`). `tauri signer generate --ci -w <path> -p <password>` runs without
+  prompts; run the CLI with `mise exec -- node_modules/.bin/tauri` from the repo root (the system
+  Node 22 breaks Yarn).
+- In Claude Code sessions `git var GIT_EDITOR` prints `true`, so the notes editor returns at once
+  and the task stops on unedited notes. Write the notes to `dist/dataico/release-notes-<VERSION>.md`
+  before running: the task reuses an existing draft.
+- `task` isn't on PATH in agent shells; run `packaging/dataico/release.sh <VERSION>` directly.
+- The core release build warns "stripping debug info with `rust-objcopy` failed ... No such file or
+  directory". Harmless in 1.0.36 and 1.0.37: notarization and verification passed, and the zips
+  are the size of 1.0.35's.
+- `gh release create --draft` prints an `.../releases/tag/untagged-<hash>` URL: drafts have no tag
+  URL until they're published. The task's final banner prints the real one.
+- To drop a release after a dry run, `git reset --hard origin/main` removes the local release
+  commit; nothing was pushed or published (done once for 1.0.36).
+
 ## Remaining limitations
 
-- **Real `gh` hasn't created a release yet.** release.sh's create/upload/publish calls were tested
-  against a stub. Checked with real gh 2.102.0: a missing release prints "release not found" and
-  exits 1, which is what release.sh matches. `mise install` of `gh` fails with mise 2025.9.15
-  ("GitHub attestations verification failed for aqua:cli/cli@2.102.0"); use `brew install gh` or a
-  newer mise.
-- **Seen on screen only in the unsigned rehearsal** (above). B3, B7, B11 after a manual install and
-  the Menu bar style under AeroSpace are still unverified.
+- `mise install` of `gh` fails with mise 2025.9.15 ("GitHub attestations verification failed for
+  aqua:cli/cli@2.102.0"); use `brew install gh` or a newer mise.
 - If the tray has no rect at launch (`setup_tray_icon: Initial tray rect not available`) or its
   rect is off-screen (seen in the rehearsal), B10 shows the window where it was created instead of
   under the tray icon. With no rect, the popup also doesn't follow tray moves for that session (as
