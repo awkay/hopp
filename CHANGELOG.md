@@ -2,6 +2,11 @@
 
 What's new in each Hopp for Dataico release, newest first.
 
+## 1.0.38 (2026-10-28)
+
+- **Screen sharing no longer goes blank.** Sometimes Hopp showed that you were sharing, and the others saw your cursor but not your screen, until you left and rejoined the call. It happened when Hopp switched your share from H.264 to HEVC, which it does on its own. That's fixed.
+- **Record your drawings with OBS or Meet.** While you share your screen, OBS, Google Meet and other recorders now capture your drawings, the others' cursors and drawings, and screen effects. Your Hopp share still leaves them out, so viewers don't see them twice.
+
 ## 1.0.37 (2026-10-16)
 
 - **Sharper screen sharing with HEVC.** On an M3 or newer Mac, your screen share now uses HEVC, which keeps text sharper on the same bandwidth. It needs everyone watching to be on 1.0.37 or later: if someone can't use HEVC (an older Hopp, the web app, or someone who turned it off), the share switches to H.264 for everyone after a brief freeze, and you keep sharing. Turn it off in Settings › Screen share settings › "Use HEVC for screen sharing".
