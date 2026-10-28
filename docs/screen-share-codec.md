@@ -45,6 +45,16 @@ sees those tracks first and switches its share to H.264 until its next share.
   muted track's, or mid-share when a watcher without HEVC joins, a watcher or the user turns HEVC
   off, or HEVC encoding fails. Mid-share it only goes HEVC → H.264; HEVC comes back at the next
   share.
+- **An H.264 → H.265 switch needs the SDK fork at `8a7f87e` or later.** Video rooms use the SDK's
+  single peer connection mode, whose offers rewrite every inactive RTP m-section to recvonly.
+  Before awkay/rust-sdks#1 that included the removed H.264 track's section, so WebRTC applied its
+  codec as a receive codec; the screen profile (H.264 High `640033`) has no decoder, so the offer
+  failed, and with it every later negotiation of the call. `publish_track` still returned `Ok`
+  (the server acks before the offer), so the share looked active and sent nothing, and only a
+  rejoin recovered (1.0.37, tracker 0008). The SDK logs `failed to negotiate the publisher: ...
+  recv parameters for m-section with mid=...` once. Core can't see it yet: the encoder check
+  reads the missing outbound stats as a capture that submitted no frame. H.265 → H.264 never
+  failed (H.265 has a decoder).
 - **A failed publish ends the share.** The old track is already gone by then, so a share left
   without a track would send nothing while the sharer's UI still says sharing. The publish is
   tried once more after 1 s; if that fails too, core stops the share the way any share stops

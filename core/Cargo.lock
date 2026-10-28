@@ -1517,7 +1517,7 @@ dependencies = [
 [[package]]
 name = "device-info"
 version = "0.1.1"
-source = "git+https://github.com/awkay/rust-sdks?branch=hopp-encoding-params#2ce5cf01563c440c436c7d6dcc4b5883ee5788cc"
+source = "git+https://github.com/awkay/rust-sdks?branch=hopp-encoding-params#8a7f87e8d85e29e2704c263442ad342540e022bd"
 dependencies = [
  "core-foundation 0.10.1",
  "jni 0.21.1",
@@ -3454,7 +3454,7 @@ dependencies = [
 [[package]]
 name = "libwebrtc"
 version = "0.3.42"
-source = "git+https://github.com/awkay/rust-sdks?branch=hopp-encoding-params#2ce5cf01563c440c436c7d6dcc4b5883ee5788cc"
+source = "git+https://github.com/awkay/rust-sdks?branch=hopp-encoding-params#8a7f87e8d85e29e2704c263442ad342540e022bd"
 dependencies = [
  "cxx",
  "jni 0.21.1",
@@ -3579,7 +3579,7 @@ checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 [[package]]
 name = "livekit"
 version = "0.7.53"
-source = "git+https://github.com/awkay/rust-sdks?branch=hopp-encoding-params#2ce5cf01563c440c436c7d6dcc4b5883ee5788cc"
+source = "git+https://github.com/awkay/rust-sdks?branch=hopp-encoding-params#8a7f87e8d85e29e2704c263442ad342540e022bd"
 dependencies = [
  "base64 0.22.1",
  "bmrng",
@@ -3609,7 +3609,7 @@ dependencies = [
 [[package]]
 name = "livekit-api"
 version = "0.5.6"
-source = "git+https://github.com/awkay/rust-sdks?branch=hopp-encoding-params#2ce5cf01563c440c436c7d6dcc4b5883ee5788cc"
+source = "git+https://github.com/awkay/rust-sdks?branch=hopp-encoding-params#8a7f87e8d85e29e2704c263442ad342540e022bd"
 dependencies = [
  "async-tungstenite",
  "base64 0.21.7",
@@ -3644,7 +3644,7 @@ dependencies = [
 [[package]]
 name = "livekit-common"
 version = "0.1.0"
-source = "git+https://github.com/awkay/rust-sdks?branch=hopp-encoding-params#2ce5cf01563c440c436c7d6dcc4b5883ee5788cc"
+source = "git+https://github.com/awkay/rust-sdks?branch=hopp-encoding-params#8a7f87e8d85e29e2704c263442ad342540e022bd"
 dependencies = [
  "livekit-protocol",
 ]
@@ -3652,7 +3652,7 @@ dependencies = [
 [[package]]
 name = "livekit-data-stream"
 version = "0.1.0"
-source = "git+https://github.com/awkay/rust-sdks?branch=hopp-encoding-params#2ce5cf01563c440c436c7d6dcc4b5883ee5788cc"
+source = "git+https://github.com/awkay/rust-sdks?branch=hopp-encoding-params#8a7f87e8d85e29e2704c263442ad342540e022bd"
 dependencies = [
  "bmrng",
  "bytes",
@@ -3672,7 +3672,7 @@ dependencies = [
 [[package]]
 name = "livekit-datatrack"
 version = "0.1.11"
-source = "git+https://github.com/awkay/rust-sdks?branch=hopp-encoding-params#2ce5cf01563c440c436c7d6dcc4b5883ee5788cc"
+source = "git+https://github.com/awkay/rust-sdks?branch=hopp-encoding-params#8a7f87e8d85e29e2704c263442ad342540e022bd"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3692,7 +3692,7 @@ dependencies = [
 [[package]]
 name = "livekit-protocol"
 version = "0.7.10"
-source = "git+https://github.com/awkay/rust-sdks?branch=hopp-encoding-params#2ce5cf01563c440c436c7d6dcc4b5883ee5788cc"
+source = "git+https://github.com/awkay/rust-sdks?branch=hopp-encoding-params#8a7f87e8d85e29e2704c263442ad342540e022bd"
 dependencies = [
  "pbjson",
  "pbjson-types",
@@ -3703,7 +3703,7 @@ dependencies = [
 [[package]]
 name = "livekit-runtime"
 version = "0.4.0"
-source = "git+https://github.com/awkay/rust-sdks?branch=hopp-encoding-params#2ce5cf01563c440c436c7d6dcc4b5883ee5788cc"
+source = "git+https://github.com/awkay/rust-sdks?branch=hopp-encoding-params#8a7f87e8d85e29e2704c263442ad342540e022bd"
 dependencies = [
  "tokio",
  "tokio-stream",
@@ -8087,7 +8087,7 @@ dependencies = [
 [[package]]
 name = "webrtc-sys"
 version = "0.3.39"
-source = "git+https://github.com/awkay/rust-sdks?branch=hopp-encoding-params#2ce5cf01563c440c436c7d6dcc4b5883ee5788cc"
+source = "git+https://github.com/awkay/rust-sdks?branch=hopp-encoding-params#8a7f87e8d85e29e2704c263442ad342540e022bd"
 dependencies = [
  "cc",
  "cxx",
@@ -8101,7 +8101,7 @@ dependencies = [
 [[package]]
 name = "webrtc-sys-build"
 version = "0.3.18"
-source = "git+https://github.com/awkay/rust-sdks?branch=hopp-encoding-params#2ce5cf01563c440c436c7d6dcc4b5883ee5788cc"
+source = "git+https://github.com/awkay/rust-sdks?branch=hopp-encoding-params#8a7f87e8d85e29e2704c263442ad342540e022bd"
 dependencies = [
  "anyhow",
  "fs2",
