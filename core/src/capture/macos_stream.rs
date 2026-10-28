@@ -27,6 +27,16 @@ fn should_exclude_application(bundle_id: &str, excluded_bundle_ids: &[String]) -
             .any(|excluded| excluded == bundle_id)
 }
 
+/// Whether one of core's own windows stays out of the shared stream: the sharing overlay and the
+/// drawing window. Core's other windows (camera, stats) are captured like any other window.
+fn is_hidden_from_own_capture(title: Option<&str>) -> bool {
+    matches!(
+        title,
+        Some(crate::window_manager::OVERLAY_WINDOW_TITLE)
+            | Some(crate::window::drawing_window::DRAWING_WINDOW_TITLE)
+    )
+}
+
 #[allow(dead_code)]
 pub enum StreamRuntimeMessage {
     Failed,
@@ -220,7 +230,7 @@ impl Stream {
             .into_iter()
             .find(|display| display.display_id() == self.source.id)
             .ok_or(CapturerError::SelectedSourceNotFound)?;
-        let applications = shareable_content
+        let mut applications = shareable_content
             .applications()
             .into_iter()
             .filter(|application| {
@@ -230,10 +240,33 @@ impl Stream {
                 )
             })
             .collect::<Vec<_>>();
+        // The overlay and drawing windows aren't content-protected on macOS, so recorders like OBS
+        // see them. Keep them out of our own stream: viewers draw annotations themselves, and
+        // capturing ours would show every stroke twice. Excluding core's whole process (rather
+        // than those windows) also covers drawing windows created after the filter is built;
+        // core's other windows are excepted so they stay in the share.
+        let own_process_id = std::process::id() as i32;
+        applications.extend(
+            shareable_content
+                .applications()
+                .into_iter()
+                .filter(|application| application.process_id() == own_process_id),
+        );
+        let own_shared_windows = shareable_content
+            .windows()
+            .into_iter()
+            .filter(|window| {
+                window
+                    .owning_application()
+                    .is_some_and(|application| application.process_id() == own_process_id)
+                    && !is_hidden_from_own_capture(window.title().as_deref())
+            })
+            .collect::<Vec<_>>();
         let application_refs = applications.iter().collect::<Vec<_>>();
+        let own_shared_window_refs = own_shared_windows.iter().collect::<Vec<_>>();
         Ok(SCContentFilter::create()
             .with_display(&display)
-            .with_excluding_applications(&application_refs, &[])
+            .with_excluding_applications(&application_refs, &own_shared_window_refs)
             .build())
     }
 
@@ -631,5 +664,18 @@ mod app_veil_tests {
             &excluded
         ));
         assert!(!should_exclude_application(HOPP_BUNDLE_ID, &excluded));
+    }
+
+    #[test]
+    fn only_overlay_and_drawing_windows_are_hidden_from_own_capture() {
+        assert!(is_hidden_from_own_capture(Some(
+            crate::window_manager::OVERLAY_WINDOW_TITLE
+        )));
+        assert!(is_hidden_from_own_capture(Some(
+            crate::window::drawing_window::DRAWING_WINDOW_TITLE
+        )));
+        assert!(!is_hidden_from_own_capture(Some("Hopp Camera")));
+        assert!(!is_hidden_from_own_capture(Some("Stats")));
+        assert!(!is_hidden_from_own_capture(None));
     }
 }

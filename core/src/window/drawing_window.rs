@@ -27,13 +27,19 @@ use crate::room_service::DrawingMode;
 use crate::utils::geometry::{Frame, Position};
 use crate::window::drawing_helpers::{self, DrawTextInput, DrawTextUpdate};
 
+/// Title of the drawing window; core's macOS capture filter keeps windows with this title out of
+/// the shared stream.
+pub(crate) const DRAWING_WINDOW_TITLE: &str = "Hopp Drawing";
+
 pub fn drawing_window_attributes() -> WindowAttributes {
     use winit::window::WindowLevel;
     let attrs = WindowAttributes::default()
-        .with_title("Hopp Drawing")
+        .with_title(DRAWING_WINDOW_TITLE)
         .with_decorations(false)
         .with_transparent(true)
-        .with_content_protected(true)
+        // On macOS, content protection would hide drawings from every recorder (OBS, Meet).
+        // Hopp's own capture filter excludes this window instead; see `capture/macos_stream.rs`.
+        .with_content_protected(cfg!(not(target_os = "macos")))
         .with_inner_size(LogicalSize::new(1.0, 1.0))
         .with_window_level(WindowLevel::AlwaysOnTop);
 

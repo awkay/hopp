@@ -1040,6 +1040,11 @@ impl<'a> Application<'a> {
             Ok(mut cam) => {
                 cam.set_screensharing_active(screensharing_active);
                 self.camera_window = Some(cam);
+                // The capture filter excludes core's own windows except those it lists by
+                // name, so rebuild it to keep the new camera window in an active share.
+                let _ = self
+                    .event_loop_proxy
+                    .send_event(UserEvent::RefreshAppVeilFilter);
             }
             Err(e) => log::error!("Failed to create camera window: {e:?}"),
         }
@@ -2609,7 +2614,13 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                 log::debug!("user_event: OpenStatsWindow");
                 if self.stats_window.is_none() {
                     match StatsWindow::new(event_loop) {
-                        Ok(w) => self.stats_window = Some(w),
+                        Ok(w) => {
+                            self.stats_window = Some(w);
+                            // Keep the new window in an active share (see open_camera_window).
+                            let _ = self
+                                .event_loop_proxy
+                                .send_event(UserEvent::RefreshAppVeilFilter);
+                        }
                         Err(e) => log::error!("Failed to open stats window: {e:?}"),
                     }
                 }

@@ -106,9 +106,13 @@ use crate::{SelectionMode, SelectionOverlayState, ServerError};
 /// Initial size for the overlay window (width and height in logical pixels)
 const OVERLAY_WINDOW_INITIAL_SIZE: f64 = 1.0;
 
+/// Title of the sharing overlay; core's macOS capture filter keeps windows with this title out of
+/// the shared stream.
+pub(crate) const OVERLAY_WINDOW_TITLE: &str = "Overlay window";
+
 pub(crate) fn get_window_attributes() -> WindowAttributes {
     WindowAttributes::default()
-        .with_title("Overlay window")
+        .with_title(OVERLAY_WINDOW_TITLE)
         .with_window_level(WindowLevel::AlwaysOnTop)
         .with_decorations(false)
         .with_transparent(true)
@@ -116,7 +120,9 @@ pub(crate) fn get_window_attributes() -> WindowAttributes {
             OVERLAY_WINDOW_INITIAL_SIZE,
             OVERLAY_WINDOW_INITIAL_SIZE,
         ))
-        .with_content_protected(true)
+        // On macOS, content protection would hide the overlay from every recorder (OBS, Meet).
+        // Hopp's own capture filter excludes it instead; see `capture/macos_stream.rs`.
+        .with_content_protected(cfg!(not(target_os = "macos")))
 }
 
 /// Returns the logical position where a window should be placed for the given monitor.
