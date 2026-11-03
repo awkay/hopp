@@ -132,3 +132,15 @@ from `RTCVideoEncoderH264.mm`.
 - `core/tests/clarity.sh [--low-bandwidth]`: how sharp text stays in each codec, from a rendered
   editor page shared the way core's capture delivers frames (spec 0007 notes have the results).
   Neither codec sharpens a screen once it stops changing, since no new frames reach the encoder.
+- In a real call, sharing, turning "Use HEVC for screen sharing" off mid-share, stopping, turning
+  it on and sharing again goes H.265 → H.264 → H.265. The smoke scenarios only cover H.265 → H.264;
+  the way back is the switch that broke in 1.0.37 (tracker 0008).
+- SDK negotiation bugs reproduce without a LiveKit server (how 0008 was confirmed): a libwebrtc
+  `PeerConnection` set up like the SDK's single-PC publisher (data channels, 3 audio + 3 video
+  recvonly transceivers, `create_sender`'s codec preferences, `PeerTransport`'s offer munging),
+  answered with an SFU-style answer built from each offer (directions flipped, `a=setup:active`, a
+  real answerer's ICE and DTLS credentials). A libwebrtc answerer hides such bugs: it rejects
+  codecs it can't decode, H.264 `640033` among them, where the SFU forwards them. The binary needs
+  core's `-C link-args=-ObjC` (without it, it aborts in a static initializer before `main`), and
+  `LK_CUSTOM_WEBRTC` can point at core's cached prebuilt
+  (`core/target/debug/build/scratch-*/out/livekit_webrtc/livekit/<tag>/mac-arm64-release`).
