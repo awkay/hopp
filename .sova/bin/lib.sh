@@ -20,6 +20,10 @@ done
 [ -n "$mise" ] || die "mise not found; install it, then run 'mise install' in the main checkout"
 menv=$("$mise" env -C "$root" -s bash) || die "mise env failed in $root"
 eval "$menv"
+# When mise's shims dir is already on PATH (the supervisor's has it last, behind nvm's and
+# Homebrew's node), mise env leaves its tools at the shims' place, not first: put them first.
+bins=$("$mise" bin-paths -C "$root") || die "mise bin-paths failed in $root"
+[ -n "$bins" ] && PATH="$(echo "$bins" | tr '\n' ':')$PATH"
 
 # rustup's cargo proxies: the first of these that has one goes first in PATH.
 for d in "$HOME/.cargo/bin" /opt/homebrew/opt/rustup/bin /usr/local/opt/rustup/bin; do
