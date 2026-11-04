@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "sources": [
+    "CLAUDE.md",
+    "core/CLAUDE.md",
+    "mise.toml",
+    ".nvmrc",
+    ".yarnrc.yml",
+    "package.json",
+    "yarn.lock",
+    "tauri/package.json",
+    "web-app/package.json",
+    "workingcontext.md.template",
+    ".github/workflows/ci.yml",
+    ".github/workflows/hopp_core_reusable.yml",
+    ".github/workflows/tauri_rust_reusable.yml",
+    ".github/workflows/backend_go_reusable.yml",
+    ".github/workflows/lintint_reusable.yml",
+    ".pre-commit-config.yaml",
+    ".golangcli.yml",
+    "backend/go.mod",
+    "scripts/check-tauri-versions.mjs"
+  ],
+  "setup": [
+    {
+      "id": "context",
+      "run": [".sova/bin/setup", "context"],
+      "inputs": [".sova/bin/setup", "workingcontext.md.template"]
+    },
+    {
+      "id": "build-cache",
+      "run": [".sova/bin/setup", "build-cache"],
+      "inputs": [".sova/bin/setup"],
+      "timeout": 900
+    },
+    {
+      "id": "js-deps",
+      "run": [".sova/bin/setup", "js-deps"],
+      "inputs": [
+        ".sova/bin/setup",
+        ".sova/bin/lib.sh",
+        "package.json",
+        "tauri/package.json",
+        "web-app/package.json",
+        "yarn.lock",
+        ".yarnrc.yml"
+      ],
+      "timeout": 900
+    }
+  ],
+  "test": {
+    "run": [".sova/bin/test"],
+    "timeout": 1800,
+    "smoke": ["versions", "fmt", "backend:vet", "backend:test", "core:socket-lib", "ui:tsc"]
+  },
+  "share": {"allow": false}
+}

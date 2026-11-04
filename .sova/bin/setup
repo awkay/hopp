@@ -1,0 +1,80 @@
+#!/bin/sh
+# Sova setup steps for a fresh worktree: .sova/bin/setup context|build-cache|js-deps
+set -eu
+
+step=${1:?usage: setup context|build-cache|js-deps}
+root=${SOVA_CHECKOUT:?SOVA_CHECKOUT is not set}
+main=${SOVA_MAIN:?SOVA_MAIN is not set}
+cd "$root"
+
+in_main() {
+  [ "$(cd "$root" && pwd -P)" = "$(cd "$main" && pwd -P)" ]
+}
+
+# The mount's device of a path, as df names it.
+device() {
+  df -P "$1" | awk 'NR == 2 { print $1 }'
+}
+
+# Borrow main's Rust build output for one target dir, as an APFS clone (shared blocks, no
+# space used). Never a full copy: cp -c falls back to copying across filesystems, so it only
+# runs when both sides are on the same APFS volume.
+clone_target() {
+  src="$main/$1"
+  dst="$root/$1"
+  if [ -e "$dst" ]; then
+    echo "build-cache: $1 exists, kept"
+    return 0
+  fi
+  if [ ! -d "$src" ]; then
+    echo "build-cache: the main checkout has no $1, skipped"
+    return 0
+  fi
+  dev=$(device "$src")
+  if [ "$dev" != "$(device "$(dirname "$dst")")" ] ||
+    ! mount | grep -F "$dev on " | grep -q '(apfs'; then
+    echo "build-cache: warning: $1 is not on the same APFS volume as the main checkout's; not cloned, the first build starts cold" >&2
+    return 0
+  fi
+  tmp="$dst.sova-clone.$$"
+  rm -rf "$tmp"
+  if cp -cR "$src" "$tmp"; then
+    mv "$tmp" "$dst"
+    echo "build-cache: cloned $1 from the main checkout"
+  else
+    rm -rf "$tmp"
+    echo "build-cache: warning: cloning $1 failed; the first build starts cold" >&2
+  fi
+}
+
+case $step in
+context)
+  # The Git-ignored session context CLAUDE.md requires; never overwritten.
+  if [ -e workingcontext.md ]; then
+    echo "context: workingcontext.md exists, kept"
+  else
+    cp workingcontext.md.template workingcontext.md
+    echo "context: workingcontext.md created from workingcontext.md.template"
+  fi
+  ;;
+build-cache)
+  if in_main; then
+    echo "build-cache: the main checkout, nothing to borrow"
+    exit 0
+  fi
+  clone_target core/target
+  clone_target tauri/src-tauri/target
+  ;;
+js-deps)
+  if in_main; then
+    echo "js-deps: the main checkout, its packages are its own"
+    exit 0
+  fi
+  . "$root/.sova/bin/lib.sh"
+  yarn install --immutable
+  ;;
+*)
+  echo "setup: unknown step '$step' (context, build-cache, js-deps)" >&2
+  exit 2
+  ;;
+esac

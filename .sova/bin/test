@@ -1,0 +1,8 @@
+#!/bin/sh
+# Sova's test command: the CI and CLAUDE.md checks, by selector (.sova/bin/checks.mjs).
+set -eu
+
+. "${SOVA_CHECKOUT:?SOVA_CHECKOUT is not set}/.sova/bin/lib.sh"
+# Read by the Tauri crate at compile time; CI sets it empty.
+export SENTRY_DSN_RUST=""
+exec node "$root/.sova/bin/checks.mjs" "$@"
