@@ -96,7 +96,11 @@ its own grants, and an unsigned build loses them on every rebuild (`DATAICO.md`,
 ## Gotchas
 
 - **Wrong Node.** mise doesn't read `.nvmrc`, so until the repo's `mise.toml` is trusted your global
-  Node runs (Node 26 broke the pinned Yarn). `node -v` in the repo must print `v24.22.2`.
+  Node runs. `node -v` in the repo must print `v24.22.2`.
+- **Yarn `onCancel` crash.** Yarn 4.9.2 bundles got 11.8.2, whose race can crash `yarn install`
+  with "The `onCancel` handler was attached after the promise settled" when registry requests time
+  out or retry (yarnpkg/berry#7245): reported on Node 24.20+ and 26, depends on network timing,
+  fixed in Yarn 4.18.1.
 - **Backend on plain HTTP.** Without `backend/certs/` the backend only logs a warning and serves
   HTTP. The app and web app use `https` / `wss`, so nothing connects.
 - **A web app type error stops the backend.** `task dev` in `backend/` runs the web app's

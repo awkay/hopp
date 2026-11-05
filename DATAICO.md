@@ -116,9 +116,12 @@ lost, no installed app can be updated again**: everyone would reinstall by hand 
 - macOS on Apple Silicon (arm64). Intel (x86_64) should work but is untested.
 - Xcode Command Line Tools: `xcode-select --install`
 - Rust via rustup (`https://rustup.rs`, or `brew install rustup && rustup-init`).
-- Node.js **24** (`.nvmrc`: 24.22.2, which has the Brotli fix for CVE-2026-111497). Node 26 broke
-  the pinned yarn 4.9.2 (`onCancel` error). `nvm install 24.22.2`, `mise install` or
-  `brew install node@24`; the script finds any of them.
+- Node.js **24.22.1 or later 24.x** (`.nvmrc`: 24.22.2; 24.22.1 has the Brotli fix for
+  CVE-2026-111497, and the script refuses anything older). `nvm install 24.22.2`, `mise install` or
+  `brew install node@24`; the script finds any of them. The pinned yarn 4.9.2 bundles got 11.8.2,
+  whose race can crash `yarn install` with an `onCancel` error when registry requests time out or
+  retry (yarnpkg/berry#7245): reported on Node 24.20+ and 26, depends on network timing, fixed in
+  Yarn 4.18.1.
 - Optional: `LK_CUSTOM_WEBRTC=/path/to/prebuilt/libwebrtc`. Without it, the first core build
   downloads libwebrtc (several hundred MB) from `gethopp/rust-sdks` releases; the SDK fork does
   not host its own copy. `cargo --offline` does not prevent this download (the `webrtc-sys` build
