@@ -34,10 +34,15 @@ for d in "$HOME/.cargo/bin" /opt/homebrew/opt/rustup/bin /usr/local/opt/rustup/b
 done
 export PATH
 
-case $(node -v 2>/dev/null) in
+# 24.22.1 is the first 24.x with the Brotli fix (CVE-2026-111497).
+min_node=24.22.1
+node_v=$(node -v 2>/dev/null)
+case $node_v in
 v24.*) ;;
-*) die "Node 24 is required (.nvmrc; the pinned Yarn broke on Node 26): run 'mise install' in the main checkout" ;;
+*) die "Node 24 is required (.nvmrc): run 'mise install' in the main checkout" ;;
 esac
+[ "$(printf '%s\n' "$min_node" "${node_v#v}" | sort -V | head -1)" = "$min_node" ] \
+  || die "Node $node_v lacks the Brotli fix (CVE-2026-111497), $min_node or later is required: run 'mise install' in the main checkout"
 command -v cargo >/dev/null 2>&1 || die "cargo not found: install Rust with rustup (brew install rustup)"
 
 # The repo's pinned Yarn (.yarnrc.yml yarnPath), whatever yarn is on PATH; checks.mjs reads
