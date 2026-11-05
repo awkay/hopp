@@ -129,9 +129,6 @@ indexes or file listings. Update a doc in the same commit as the behavior it des
 Run the checks for what you changed and fix what they report; CI runs the same ones. Never start the
 app, a dev server or an install (`task dev`, `yarn dev`, `task go`,
 `task -d packaging/dataico install`): they need a desktop or never exit. Ask the user to run those.
-In a Sova worktree, run these checks with project_verbs test: an area (core, harness, tauri, ui,
-web, backend, fmt, versions), one check such as tauri:clippy, or nothing for all of them; Sova's
-setup already installed the pinned JS packages, so don't run installs yourself.
 
 - **core:** see `core/CLAUDE.md`.
 - **Tauri backend** (`tauri/src-tauri/`): `cargo clippy --all-targets --all-features -- -D warnings`
