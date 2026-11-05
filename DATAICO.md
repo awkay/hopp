@@ -39,6 +39,7 @@ fork-only features (see below).
 | Remote audio playout delay | each participant's queue in `core/src/audio/mixer.rs` only trims above 200 ms, one frame per mix, so a burst or clock drift between LiveKit's 10 ms decode timer and the output device leaves up to 200 ms of extra delay for the rest of the call | each queue measures its lowest level over 3 s and drops what it never needed down to one spare 10 ms frame, crossfading each dropped frame into the next, at most one in five mixes; running dry plays a frame of silence, which refills the spare; core's log reports both per participant (`Audio playout [...]`) | mouth-to-ear delay stays near what the output needs instead of ratcheting up during a call |
 | Screen share while the displays sleep | macOS lists no displays while they sleep, and starting a display share then panics core's main thread (`get_selected_monitor` indexes an empty monitor list) | the share fails with `NoDisplayAvailable` ("No display available to share (is the display asleep?)"), returned in `StartScreenShareResult` | core crashed (seen in the `d9ed322` audit's sharer profile run, `docs/audit/d9ed322/profile/sharer-display-asleep-panic.core.log`) |
 | Screen share codec | H.264 (HEVC shipped 2026-08-01 and was reverted for good on 2026-08-07, `01e59cf`) | HEVC when the sharer has an M3 or newer, its "Use HEVC for screen sharing" setting is on (default) and every watcher announces support (`hopp_hevc` participant attribute); otherwise H.264. A watcher without HEVC joining mid-share switches the share to H.264 by republishing the track; viewers keep their window. HEVC must start in hardware or falls back to H.264. See `docs/screen-share-codec.md` (spec 0007) | less bitrate for the same picture and sharper text; upstream clients and browser viewers still get H.264 |
+| Node.js | 20 (`.nvmrc`, `mise.toml`, the backend image's web-app build) | 24.22.2 everywhere we pin it (`.nvmrc`, `mise.toml`, CI's pre-commit job, both backend image workflows, `packaging/dataico/build-macos.sh`); upstream's `release.yml` keeps `lts/*` | Node 20 is end-of-life and never gets the Brotli decoder fix (CVE-2026-111497, fixed in 24.22.1) |
 | `task backend:compose-up` | runs `backend/docker-files/docker-compose.yml`, which upstream #305 moved to `backend/dev-compose.yml`, so the task fails | runs `backend/dev-compose.yml` (Postgres 16 and Redis) | local setup needed a hand-typed `docker compose` command |
 
 The packaging layer lives in new files; it modifies no upstream file:
@@ -115,8 +116,9 @@ lost, no installed app can be updated again**: everyone would reinstall by hand 
 - macOS on Apple Silicon (arm64). Intel (x86_64) should work but is untested.
 - Xcode Command Line Tools: `xcode-select --install`
 - Rust via rustup (`https://rustup.rs`, or `brew install rustup && rustup-init`).
-- Node.js **20** (`.nvmrc`). Newer Node (e.g. 26) breaks the pinned yarn 4.9.2
-  (`onCancel` error). `nvm install 20`, `mise install node@20` or `brew install node@20`; the script finds any of them.
+- Node.js **24** (`.nvmrc`: 24.22.2, which has the Brotli fix for CVE-2026-111497). Node 26 broke
+  the pinned yarn 4.9.2 (`onCancel` error). `nvm install 24.22.2`, `mise install` or
+  `brew install node@24`; the script finds any of them.
 - Optional: `LK_CUSTOM_WEBRTC=/path/to/prebuilt/libwebrtc`. Without it, the first core build
   downloads libwebrtc (several hundred MB) from `gethopp/rust-sdks` releases; the SDK fork does
   not host its own copy. `cargo --offline` does not prevent this download (the `webrtc-sys` build
@@ -278,7 +280,7 @@ git rm -rq --ignore-unmatch docs/src docs/public docs/package.json docs/astro.co
 
 A conflict in `yarn.lock` (upstream bumped a package we dropped with the docs workspace): take
 the rebased side (`git checkout --ours yarn.lock`; in a rebase, "ours" is upstream plus the
-commits already replayed), run `yarn install --mode=update-lockfile` (Node 20), then `git add yarn.lock`.
+commits already replayed), run `yarn install --mode=update-lockfile` (Node 24), then `git add yarn.lock`.
 
 Others then update with `git fetch && git reset --hard origin/main` (main is rebased, not merged).
 

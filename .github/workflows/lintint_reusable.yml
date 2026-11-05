@@ -14,7 +14,7 @@ jobs:
           architecture: x64
       - uses: actions/setup-node@v5
         with:
-          node-version: "22"
+          node-version: "24.22.2"
       # `tauri build` refuses an @tauri-apps/* npm package whose major.minor differs from its
       # crate, and no CI job runs `tauri build`. Reads only the lockfiles, so it needs no install,
       # and it runs here because this job has no path filter (npm-only changes skip tauri-rust).

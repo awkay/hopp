@@ -155,7 +155,8 @@ app, a dev server or an install (`task dev`, `yarn dev`, `task go`,
 - **API types are generated.** The contract is `backend/api-files/openapi.yaml`. After changing it,
   run `yarn generate-openapi-types` from the repo root, which rewrites `web-app/src/openapi.d.ts` and
   `tauri/src/openapi.d.ts`. Don't edit those two by hand.
-- **Node 20** (`.nvmrc`). Yarn is pinned to 4.9.2 in `.yarn/releases/`, and newer Node breaks it.
+- **Node 24.22.2** (`.nvmrc`), for the Brotli fix (CVE-2026-111497). Yarn is pinned to 4.9.2 in
+  `.yarn/releases/`, and Node 26 broke it.
 - **Tauri plugin versions pair up.** Each `@tauri-apps/plugin-*` npm package must resolve to the
   same minor version as its `tauri-plugin-*` crate in `tauri/src-tauri/Cargo.lock` (pin it, e.g.
   `~2.8`). `tauri build` refuses a mismatch; `tsc` and clippy don't notice it. CI's pre-commit job

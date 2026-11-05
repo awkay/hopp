@@ -1,5 +1,5 @@
 # Sourced by .sova/bin/setup and .sova/bin/test: the checkout's toolchains, never installed here.
-# Node 20, Go and golangci-lint come from mise.toml; Rust from rustup (outside mise, like CI).
+# Node 24, Go and golangci-lint come from mise.toml; Rust from rustup (outside mise, like CI).
 
 die() {
   echo "sova: $*" >&2
@@ -35,8 +35,8 @@ done
 export PATH
 
 case $(node -v 2>/dev/null) in
-v20.*) ;;
-*) die "Node 20 is required (.nvmrc; the pinned Yarn breaks on newer Node): run 'mise install' in the main checkout" ;;
+v24.*) ;;
+*) die "Node 24 is required (.nvmrc; the pinned Yarn broke on Node 26): run 'mise install' in the main checkout" ;;
 esac
 command -v cargo >/dev/null 2>&1 || die "cargo not found: install Rust with rustup (brew install rustup)"
 

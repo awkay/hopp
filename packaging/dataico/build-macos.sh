@@ -43,7 +43,7 @@ LOG_PREFIX="dataico-build"
 source "$SCRIPT_DIR/lib.sh"
 OVERLAY_CONFIG="src-tauri/tauri.conf.dataico.json"   # relative to tauri/
 UPDATER_CONFIG="src-tauri/tauri.conf.dataico-updater.json"
-REQUIRED_NODE_MAJOR=20
+REQUIRED_NODE_MAJOR=24
 
 # From here until build-info.json is written again, dist/dataico holds no finished build.
 rm -f "$BUILD_INFO"
@@ -92,7 +92,7 @@ artifact_names "$HOST_TRIPLE" \
   || die "Unsupported Rust host triple '$HOST_TRIPLE'. Need aarch64-apple-darwin (Apple Silicon) or x86_64-apple-darwin."
 [[ "$HOST_TRIPLE" != x86_64-apple-darwin ]] || warn "x86_64 builds are expected to work but have not been tested."
 
-# Node 20 (the repo's .nvmrc). Newer Node (e.g. 26) breaks the pinned yarn 4.9.2.
+# Node 24 (the repo's .nvmrc). Node 26 broke the pinned yarn 4.9.2 (`onCancel` error).
 node_major() { "$1" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0; }
 NODE_BIN=""
 if command -v node >/dev/null 2>&1 && [[ "$(node_major node)" == "$REQUIRED_NODE_MAJOR" ]]; then
@@ -115,7 +115,7 @@ fi
 [[ -n "$NODE_BIN" ]] || die "Node.js ${REQUIRED_NODE_MAJOR}.x not found (current: $(node -v 2>/dev/null || echo none)).
   Install it with nvm ('nvm install ${REQUIRED_NODE_MAJOR}'), mise ('mise install node@${REQUIRED_NODE_MAJOR}')
   or Homebrew ('brew install node@${REQUIRED_NODE_MAJOR}').
-  Newer Node versions break the repo's pinned yarn 4.9.2."
+  Node 26 broke the repo's pinned yarn 4.9.2."
 NODE_DIR="$(dirname "$NODE_BIN")"
 export PATH="$NODE_DIR:$PATH"
 
