@@ -1,0 +1,159 @@
+{
+  "format": "sova-spec-draft/1",
+  "name": "clearable-shortcuts",
+  "createdAt": "2026-11-10T23:53:33.921Z",
+  "purpose": "Clearable call shortcuts in Settings › Shortcuts (al_1)",
+  "base": {
+    "specExisted": false,
+    "claimsRoot": "claims",
+    "files": {},
+    "commit": "5ab6277fa45f8d7eb3b7f36fa4219e0468d2ec61"
+  },
+  "evidence": [
+    {
+      "recordedAt": "2026-11-11T00:04:10.182Z",
+      "by": "claude-opus-5-5 (worker, pi session 01a1c7e1)",
+      "verification": "Code read at 0dddda6/05a73a8: settings/main.tsx renders the four SHORTCUT_ROWS; shortcuts.rs registers only set shortcuts (register() skips !is_shortcut_set). tauri:clippy, tauri:test, ui:tsc pass after the merge. App not run (agents never start it): user's manual check in spec 0010 pending.",
+      "mode": "note",
+      "ids": [
+        {
+          "id": "§settings/shortcuts",
+          "kind": "surface",
+          "deleted": false,
+          "recordSha": "38eb5976168ed003520f03c940020aa8ab768706ed158fb341835b7e5b48bb78",
+          "textSha256": "53b189bdb46dc37d6151874fcc604738be5cedf506cf6fe797a0af2f3a042969"
+        }
+      ],
+      "inputs": []
+    },
+    {
+      "recordedAt": "2026-11-11T00:04:10.356Z",
+      "by": "claude-opus-5-5 (worker, pi session 01a1c7e1)",
+      "verification": "× is a sibling <button> after the field Button (main.tsx ShortcutRow), shown iff isShortcutSet(value), onClick commits SHORTCUT_NONE; set_shortcut stores normalize_shortcut(accel) (main.rs); register() skips unset ones (shortcuts.rs). Tests app_state::shortcut_tests cleared_shortcuts_are_stored_as_none, only_real_accelerators_count_as_set and a_cleared_shortcut_survives_a_restart_and_keeps_the_other_settings pass. UI and key release to other apps not run: manual check pending.",
+      "mode": "note",
+      "ids": [
+        {
+          "id": "§settings.shortcuts/clear",
+          "kind": "behavior",
+          "deleted": false,
+          "recordSha": "b35111725030b5e5603654e2689f93da38c0bcc437f118898dfdf8ca675e30d8",
+          "textSha256": "e79aa389ef85d275fd96fa36589904d31944c997c1700e5f0e3f6a31e02e57aa"
+        }
+      ],
+      "inputs": []
+    },
+    {
+      "recordedAt": "2026-11-11T00:04:10.559Z",
+      "by": "claude-opus-5-5 (worker, pi session 01a1c7e1)",
+      "verification": "Code read: ShortcutRow shows 'Not set' with text-gray-400 when !isShortcutSet(value), no × and a size-7 placeholder instead (same size as the ×). ui:tsc passes. Not seen rendered: manual check pending.",
+      "mode": "note",
+      "ids": [
+        {
+          "id": "§settings.shortcuts/not-set",
+          "kind": "behavior",
+          "deleted": false,
+          "recordSha": "73f1707aa935685d90590d84480106a380d735276b187060ce256749de67d832",
+          "textSha256": "9985ed2992ac2fe419c712747c7b54e1420713a77919b695dc67089af88ec395"
+        }
+      ],
+      "inputs": []
+    },
+    {
+      "recordedAt": "2026-11-11T00:04:10.779Z",
+      "by": "claude-opus-5-5 (worker, pi session 01a1c7e1)",
+      "verification": "Code read: recording state lifted to SettingsWindow (recordingShortcut, one id or null); ShortcutRow's keydown listener lives in useEffect keyed on recording with cleanup; nav clicks, × and Restore defaults set it to null; keys without Meta/Ctrl/Alt are still ignored (Backspace/Delete included); Esc without modifiers stops recording. ui:tsc passes. Not run in the app: manual check pending.",
+      "mode": "note",
+      "ids": [
+        {
+          "id": "§settings.shortcuts/recording",
+          "kind": "behavior",
+          "deleted": false,
+          "recordSha": "a81d20c8615854ffff809530e6e92402380bb2af2e5c187cebf57f52b94fbf75",
+          "textSha256": "5b21812ac59b9c3dc21b5a0230a4691c3784b74a9dac4fed66d6a993e96dfdb7"
+        }
+      ],
+      "inputs": []
+    },
+    {
+      "recordedAt": "2026-11-11T00:04:11.006Z",
+      "by": "claude-opus-5-5 (worker, pi session 01a1c7e1)",
+      "verification": "Code read: commitShortcut skips the conflict loop when the new value isn't set and sends SHORTCUT_NONE (not '') to another row whose resolved value equals the recorded accel; set_shortcut stores it as 'none' (normalize_shortcut, tested). ui:tsc passes. Not run in the app: manual check pending.",
+      "mode": "note",
+      "ids": [
+        {
+          "id": "§settings.shortcuts/conflicts",
+          "kind": "behavior",
+          "deleted": false,
+          "recordSha": "495d2830856b71ee8165081e469ead6d7df24cc4f0763eb330d2e9c1b105d385",
+          "textSha256": "f91774fae91e51fe9589f58dbe24eed6cfe5dc62ab164e73b9ae505a435188a4"
+        }
+      ],
+      "inputs": []
+    },
+    {
+      "recordedAt": "2026-11-11T00:04:11.205Z",
+      "by": "claude-opus-5-5 (worker, pi session 01a1c7e1)",
+      "verification": "Restore defaults link (main.tsx) stops recording and invokes the new reset_shortcuts command (main.rs, registered in invoke_handler), which runs UserSettings::reset_shortcuts (all four None) and refresh_call_shortcuts. Tests restore_defaults_puts_every_shortcut_back and a_cleared_shortcut_survives_a_restart_and_keeps_the_other_settings (reset then reload resolves the defaults) pass. Mid-call effect not run: manual check pending.",
+      "mode": "note",
+      "ids": [
+        {
+          "id": "§settings.shortcuts/restore-defaults",
+          "kind": "behavior",
+          "deleted": false,
+          "recordSha": "d3edc17089dd910febc023773aa387aedf905cc5c1064516b09e749a5920c939",
+          "textSha256": "45ebea336b630dd4e17850620b5d7ed2b286576606968643afa68b2f1103ad9b"
+        }
+      ],
+      "inputs": []
+    },
+    {
+      "recordedAt": "2026-11-11T00:04:11.401Z",
+      "by": "claude-opus-5-5 (worker, pi session 01a1c7e1)",
+      "verification": "Code read: update_shortcuts (main.rs) saves, calls call_state::refresh_call_shortcuts (unregister_all + register on the main thread when a call is active, unchanged) and emits user_settings_changed; CallCenter listens and invalidates ['user-settings']; hints go through shortcutHint/isShortcutSet. Main window has core:default (capabilities/migrated.json). clippy/tsc pass. Not run in a call: manual check steps 5-7 pending.",
+      "mode": "note",
+      "ids": [
+        {
+          "id": "§settings.shortcuts/in-call",
+          "kind": "behavior",
+          "deleted": false,
+          "recordSha": "4160fd391751b66819313e7399bb8d3009fd9169de0aa84dd0ea3a9db4f22d48",
+          "textSha256": "b4e51a299467fc0723ab524b1f0dc21b386ed9e96d0a3b7b9b8d7e2b1943cbc2"
+        }
+      ],
+      "inputs": []
+    },
+    {
+      "recordedAt": "2026-11-11T00:04:11.570Z",
+      "by": "claude-opus-5-5 (worker, pi session 01a1c7e1)",
+      "verification": "Fields stay Option<String> (no serde change). Tests pass: saved_shortcuts_load_and_only_missing_ones_get_defaults (mic 'none', camera missing, screenshare null, end_call 'Cmd+K' deserialize; resolve keeps 'none'/'Cmd+K', fills defaults) and a_cleared_shortcut_survives_a_restart_and_keeps_the_other_settings (AppState file round trip keeps JWT and shortcuts). isShortcutSet handles undefined/null/''/'none' in the Settings window (tsc).",
+      "mode": "note",
+      "ids": [
+        {
+          "id": "§settings.shortcuts/saved-settings",
+          "kind": "behavior",
+          "deleted": false,
+          "recordSha": "a32fa60f9739efc1aec34038fc6de5e47ffd6a3250057214172ec22feeddc825",
+          "textSha256": "1cf9acd511b46219ec2505b3ad76c6d41650b7fa6f92b05a18fdeca1ff596edc"
+        }
+      ],
+      "inputs": []
+    },
+    {
+      "recordedAt": "2026-11-11T00:04:11.768Z",
+      "by": "claude-opus-5-5 (worker, pi session 01a1c7e1)",
+      "verification": "Read ShortcutRow's recorder: it builds the accelerator from KeyboardEvent.key (typed character), unchanged by this work; limitation not reproduced in the app (out of scope per the user).",
+      "mode": "note",
+      "ids": [
+        {
+          "id": "§settings.shortcuts/typed-symbol-limitation",
+          "kind": "note",
+          "deleted": false,
+          "recordSha": "4a5d7fd89ff706aaa2b98ae04975f3c0a22183ca94afebd2b716bb269d6d933e",
+          "textSha256": "afdc8aa1101412d8b994e80340d30227b0a1920142ab911f4437cfb061e26a21"
+        }
+      ],
+      "inputs": []
+    }
+  ],
+  "promotions": []
+}
