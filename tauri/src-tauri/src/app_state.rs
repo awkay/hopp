@@ -266,7 +266,38 @@ const DEFAULT_SHORTCUT_END_CALL: &str = "Cmd+Shift+W";
 #[cfg(not(target_os = "macos"))]
 const DEFAULT_SHORTCUT_END_CALL: &str = "Alt+Q";
 
+/// Stored value of a call shortcut the user cleared in Settings ("Not set"). A `None`
+/// field means "use the default" instead, so a cleared shortcut needs a value of its own.
+pub const SHORTCUT_NONE: &str = "none";
+
+/// Whether a stored call shortcut is set, i.e. should be registered. False for an empty
+/// value and for `SHORTCUT_NONE` in any case, surrounding whitespace ignored.
+pub fn is_shortcut_set(accel: &str) -> bool {
+    let accel = accel.trim();
+    !accel.is_empty() && !accel.eq_ignore_ascii_case(SHORTCUT_NONE)
+}
+
+/// The value to store for a shortcut the Settings window sent: `SHORTCUT_NONE` for a
+/// cleared one (`""` or any spelling of `"none"`), else the accelerator as given.
+pub fn normalize_shortcut(accel: String) -> String {
+    if is_shortcut_set(&accel) {
+        accel
+    } else {
+        SHORTCUT_NONE.to_string()
+    }
+}
+
 impl UserSettings {
+    /// Puts all four call shortcuts back to their defaults (Settings > Restore defaults).
+    pub fn reset_shortcuts(&mut self) {
+        self.shortcut_toggle_mic = None;
+        self.shortcut_toggle_camera = None;
+        self.shortcut_toggle_screenshare = None;
+        self.shortcut_end_call = None;
+    }
+
+    /// Fills each call shortcut that is `None` with its default. A cleared shortcut
+    /// (`SHORTCUT_NONE`) stays cleared.
     pub fn resolve_shortcuts(&mut self) {
         if self.shortcut_toggle_mic.is_none() {
             self.shortcut_toggle_mic = Some(DEFAULT_SHORTCUT_MIC.to_string());
@@ -946,6 +977,132 @@ mod window_style_tests {
                 assert!(effective.show_menu_bar_icon);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod shortcut_tests {
+    use super::*;
+
+    fn temp_directory(name: &str) -> PathBuf {
+        let directory = std::env::temp_dir().join(format!(
+            "hopp-{name}-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        directory
+    }
+
+    #[test]
+    fn saved_shortcuts_load_and_only_missing_ones_get_defaults() {
+        let mut saved = serde_json::to_value(UserSettings::default()).unwrap();
+        let object = saved.as_object_mut().unwrap();
+        object.insert("shortcut_toggle_mic".into(), serde_json::json!("none"));
+        object.remove("shortcut_toggle_camera");
+        object.insert(
+            "shortcut_toggle_screenshare".into(),
+            serde_json::Value::Null,
+        );
+        object.insert("shortcut_end_call".into(), serde_json::json!("Cmd+K"));
+        let mut settings: UserSettings = serde_json::from_value(saved).unwrap();
+
+        settings.resolve_shortcuts();
+        assert_eq!(settings.shortcut_toggle_mic.as_deref(), Some(SHORTCUT_NONE));
+        assert_eq!(
+            settings.shortcut_toggle_camera.as_deref(),
+            Some(DEFAULT_SHORTCUT_CAMERA)
+        );
+        assert_eq!(
+            settings.shortcut_toggle_screenshare.as_deref(),
+            Some(DEFAULT_SHORTCUT_SCREENSHARE)
+        );
+        assert_eq!(settings.shortcut_end_call.as_deref(), Some("Cmd+K"));
+    }
+
+    #[test]
+    fn only_real_accelerators_count_as_set() {
+        for cleared in ["", "   ", "none", "NONE", "None", " none "] {
+            assert!(!is_shortcut_set(cleared), "{cleared:?} should not be set");
+        }
+        for set in ["Cmd+Shift+A", "Alt+Q", "Ctrl+N"] {
+            assert!(is_shortcut_set(set), "{set:?} should be set");
+        }
+    }
+
+    #[test]
+    fn cleared_shortcuts_are_stored_as_none() {
+        for cleared in ["", "none", "NONE", " none "] {
+            assert_eq!(normalize_shortcut(cleared.to_string()), SHORTCUT_NONE);
+        }
+        assert_eq!(normalize_shortcut("Cmd+K".to_string()), "Cmd+K");
+    }
+
+    #[test]
+    fn restore_defaults_puts_every_shortcut_back() {
+        let mut settings = UserSettings {
+            shortcut_toggle_mic: Some(SHORTCUT_NONE.to_string()),
+            shortcut_toggle_camera: Some("Cmd+K".to_string()),
+            shortcut_toggle_screenshare: Some(SHORTCUT_NONE.to_string()),
+            shortcut_end_call: Some("Cmd+J".to_string()),
+            ..UserSettings::default()
+        };
+        settings.reset_shortcuts();
+        settings.resolve_shortcuts();
+        assert_eq!(
+            settings.shortcut_toggle_mic.as_deref(),
+            Some(DEFAULT_SHORTCUT_MIC)
+        );
+        assert_eq!(
+            settings.shortcut_toggle_camera.as_deref(),
+            Some(DEFAULT_SHORTCUT_CAMERA)
+        );
+        assert_eq!(
+            settings.shortcut_toggle_screenshare.as_deref(),
+            Some(DEFAULT_SHORTCUT_SCREENSHARE)
+        );
+        assert_eq!(
+            settings.shortcut_end_call.as_deref(),
+            Some(DEFAULT_SHORTCUT_END_CALL)
+        );
+    }
+
+    #[test]
+    fn a_cleared_shortcut_survives_a_restart_and_keeps_the_other_settings() {
+        let directory = temp_directory("cleared-shortcut");
+        let mut state = AppState::new(&directory);
+        state.set_user_jwt(Some("jwt".to_string()));
+        state.update_user_setting(|s| {
+            s.shortcut_toggle_mic = Some(normalize_shortcut(String::new()));
+            s.shortcut_end_call = Some("Cmd+K".to_string());
+        });
+        drop(state);
+
+        let mut state = AppState::new(&directory);
+        assert_eq!(state.user_jwt().as_deref(), Some("jwt"));
+        let mut settings = state.user_settings();
+        settings.resolve_shortcuts();
+        assert_eq!(settings.shortcut_toggle_mic.as_deref(), Some(SHORTCUT_NONE));
+        assert_eq!(settings.shortcut_end_call.as_deref(), Some("Cmd+K"));
+        assert_eq!(
+            settings.shortcut_toggle_camera.as_deref(),
+            Some(DEFAULT_SHORTCUT_CAMERA)
+        );
+
+        state.update_user_setting(UserSettings::reset_shortcuts);
+        drop(state);
+        let state = AppState::new(&directory);
+        let mut settings = state.user_settings();
+        settings.resolve_shortcuts();
+        assert_eq!(
+            settings.shortcut_toggle_mic.as_deref(),
+            Some(DEFAULT_SHORTCUT_MIC)
+        );
+        assert_eq!(
+            settings.shortcut_end_call.as_deref(),
+            Some(DEFAULT_SHORTCUT_END_CALL)
+        );
+        std::fs::remove_dir_all(directory).unwrap();
     }
 }
 

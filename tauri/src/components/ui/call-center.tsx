@@ -26,8 +26,13 @@ import toast from "react-hot-toast";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { Constants } from "@/constants";
 import { useEndCall } from "@/lib/hooks";
-import { typedInvoke, type CoreCallEndedPayload, type CoreRoomConnectionFailedPayload } from "@/core_payloads";
-import { useQuery } from "@tanstack/react-query";
+import {
+  isShortcutSet,
+  typedInvoke,
+  type CoreCallEndedPayload,
+  type CoreRoomConnectionFailedPayload,
+} from "@/core_payloads";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { getAllWindows } from "@tauri-apps/api/window";
 import { sounds } from "@/constants/sounds";
@@ -48,6 +53,11 @@ const Colors = {
   },
 } as const;
 
+/** A call shortcut to show in a button's hint, or undefined when it is cleared ("Not set"). */
+function shortcutHint(accel?: string): string | undefined {
+  return isShortcutSet(accel) ? accel : undefined;
+}
+
 export function CallCenter() {
   const { callTokens, teammates } = useStore();
   const [controllerCursorState, setControllerCursorState] = useState(true);
@@ -58,6 +68,18 @@ export function CallCenter() {
     queryFn: () => typedInvoke("get_user_settings"),
     refetchOnWindowFocus: true,
   });
+
+  // Shortcuts changed in Settings: refresh the hints below without waiting for focus.
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    const unlisten = listen("user_settings_changed", () => {
+      queryClient.invalidateQueries({ queryKey: ["user-settings"] });
+    });
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [queryClient]);
+  const endCallShortcut = shortcutHint(userSettings?.shortcut_end_call);
 
   const handleEndCall = useEndCall();
   const handleEndCallRef = useRef(handleEndCall);
@@ -215,9 +237,9 @@ export function CallCenter() {
       <div className="gap-2 px-3 flex flex-col items-center w-full mb-2">
         <div className="flex flex-row gap-1 w-full">
           <MediaDevicesSettings
-            micShortcut={userSettings?.shortcut_toggle_mic}
-            cameraShortcut={userSettings?.shortcut_toggle_camera}
-            screenShareShortcut={userSettings?.shortcut_toggle_screenshare}
+            micShortcut={shortcutHint(userSettings?.shortcut_toggle_mic)}
+            cameraShortcut={shortcutHint(userSettings?.shortcut_toggle_camera)}
+            screenShareShortcut={shortcutHint(userSettings?.shortcut_toggle_screenshare)}
           />
         </div>
         <div className="flex flex-col gap-2 w-full">
@@ -288,9 +310,9 @@ export function CallCenter() {
                     End call
                   </Button>
                 </TooltipTrigger>
-                {userSettings?.shortcut_end_call && (
+                {endCallShortcut && (
                   <TooltipContent sideOffset={0} side="bottom" variant="transparent">
-                    <kbd className="text-xs">{userSettings.shortcut_end_call}</kbd>
+                    <kbd className="text-xs">{endCallShortcut}</kbd>
                   </TooltipContent>
                 )}
               </Tooltip>

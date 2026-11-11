@@ -1,3 +1,4 @@
+use crate::app_state::is_shortcut_set;
 use crate::AppData;
 use socket_lib::{CameraStartMessage, Message};
 use std::sync::atomic::Ordering;
@@ -15,66 +16,34 @@ pub struct CallShortcuts {
 }
 
 pub fn register_call_shortcuts(app: &tauri::AppHandle, shortcuts: CallShortcuts) {
+    register(app, "mic", &shortcuts.mic, handle_mic);
+    register(app, "camera", &shortcuts.camera, handle_camera);
+    register(
+        app,
+        "screenshare",
+        &shortcuts.screenshare,
+        handle_screenshare,
+    );
+    register(app, "end_call", &shortcuts.end_call, handle_end_call);
+}
+
+/// Registers one call shortcut; a cleared one (Settings "Not set") is skipped, leaving its
+/// keys to other apps.
+fn register(app: &tauri::AppHandle, name: &str, accel: &str, handler: fn(&tauri::AppHandle)) {
+    if !is_shortcut_set(accel) {
+        log::info!("register_call_shortcuts: {name} shortcut not set, skipped");
+        return;
+    }
     if let Err(e) = app
         .global_shortcut()
-        .on_shortcut(shortcuts.mic.as_str(), |app, _sc, event| {
+        .on_shortcut(accel, move |app, _sc, event| {
             if event.state() != ShortcutState::Pressed {
                 return;
             }
-            handle_mic(app);
+            handler(app);
         })
     {
-        log::error!(
-            "register_call_shortcuts: failed to register mic shortcut '{}': {e}",
-            shortcuts.mic
-        );
-    }
-
-    if let Err(e) =
-        app.global_shortcut()
-            .on_shortcut(shortcuts.camera.as_str(), |app, _sc, event| {
-                if event.state() != ShortcutState::Pressed {
-                    return;
-                }
-                handle_camera(app);
-            })
-    {
-        log::error!(
-            "register_call_shortcuts: failed to register camera shortcut '{}': {e}",
-            shortcuts.camera
-        );
-    }
-
-    if let Err(e) =
-        app.global_shortcut()
-            .on_shortcut(shortcuts.screenshare.as_str(), |app, _sc, event| {
-                if event.state() != ShortcutState::Pressed {
-                    return;
-                }
-                handle_screenshare(app);
-            })
-    {
-        log::error!(
-            "register_call_shortcuts: failed to register screenshare shortcut '{}': {e}",
-            shortcuts.screenshare
-        );
-    }
-
-    if !shortcuts.end_call.is_empty() {
-        if let Err(e) =
-            app.global_shortcut()
-                .on_shortcut(shortcuts.end_call.as_str(), |app, _sc, event| {
-                    if event.state() != ShortcutState::Pressed {
-                        return;
-                    }
-                    handle_end_call(app);
-                })
-        {
-            log::error!(
-                "register_call_shortcuts: failed to register end_call shortcut '{}': {e}",
-                shortcuts.end_call
-            );
-        }
+        log::error!("register_call_shortcuts: failed to register {name} shortcut '{accel}': {e}");
     }
 }
 
