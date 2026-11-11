@@ -1,4 +1,0 @@
-{
-  "formatVersion": 2,
-  "claims": "records live beside each claim file, in claims/**/*.json"
-}
