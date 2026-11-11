@@ -43,7 +43,8 @@ LOG_PREFIX="dataico-build"
 source "$SCRIPT_DIR/lib.sh"
 OVERLAY_CONFIG="src-tauri/tauri.conf.dataico.json"   # relative to tauri/
 UPDATER_CONFIG="src-tauri/tauri.conf.dataico-updater.json"
-REQUIRED_NODE_MAJOR=20
+REQUIRED_NODE_MAJOR=24
+MIN_NODE_VERSION=24.22.1   # first 24.x with the Brotli fix (CVE-2026-111497)
 
 # From here until build-info.json is written again, dist/dataico holds no finished build.
 rm -f "$BUILD_INFO"
@@ -92,30 +93,38 @@ artifact_names "$HOST_TRIPLE" \
   || die "Unsupported Rust host triple '$HOST_TRIPLE'. Need aarch64-apple-darwin (Apple Silicon) or x86_64-apple-darwin."
 [[ "$HOST_TRIPLE" != x86_64-apple-darwin ]] || warn "x86_64 builds are expected to work but have not been tested."
 
-# Node 20 (the repo's .nvmrc). Newer Node (e.g. 26) breaks the pinned yarn 4.9.2.
-node_major() { "$1" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0; }
+# Node 24, at least MIN_NODE_VERSION (the repo's .nvmrc). The pinned yarn 4.9.2 bundles got 11.8.2,
+# whose race can crash `yarn install` with an `onCancel` error when registry requests time out or
+# retry (yarnpkg/berry#7245): reported on Node 24.20+ and 26, depends on network timing, fixed in
+# Yarn 4.18.1.
+version_at_least() { [[ "$(printf '%s\n' "$2" "$1" | sort -V | head -1)" == "$2" ]]; }
+node_ok() {
+  local v
+  v="$("$1" -p 'process.versions.node' 2>/dev/null || echo 0)"
+  [[ "${v%%.*}" == "$REQUIRED_NODE_MAJOR" ]] && version_at_least "$v" "$MIN_NODE_VERSION"
+}
 NODE_BIN=""
-if command -v node >/dev/null 2>&1 && [[ "$(node_major node)" == "$REQUIRED_NODE_MAJOR" ]]; then
+if command -v node >/dev/null 2>&1 && node_ok node; then
   NODE_BIN="$(command -v node)"
 fi
 if [[ -z "$NODE_BIN" && -d "$HOME/.nvm/versions/node" ]]; then
   candidate="$(printf '%s\n' "$HOME/.nvm/versions/node/v${REQUIRED_NODE_MAJOR}."* | sort -V | tail -1)"
-  [[ -n "$candidate" && -x "$candidate/bin/node" ]] && NODE_BIN="$candidate/bin/node"
+  [[ -n "$candidate" && -x "$candidate/bin/node" ]] && node_ok "$candidate/bin/node" && NODE_BIN="$candidate/bin/node"
 fi
 MISE_NODE_DIR="${MISE_DATA_DIR:-$HOME/.local/share/mise}/installs/node"
 if [[ -z "$NODE_BIN" && -d "$MISE_NODE_DIR" ]]; then
   candidate="$(printf '%s\n' "$MISE_NODE_DIR/${REQUIRED_NODE_MAJOR}."* | sort -V | tail -1)"
-  [[ -n "$candidate" && -x "$candidate/bin/node" ]] && NODE_BIN="$candidate/bin/node"
+  [[ -n "$candidate" && -x "$candidate/bin/node" ]] && node_ok "$candidate/bin/node" && NODE_BIN="$candidate/bin/node"
 fi
 if [[ -z "$NODE_BIN" ]]; then
   for dir in "/opt/homebrew/opt/node@${REQUIRED_NODE_MAJOR}/bin" "/usr/local/opt/node@${REQUIRED_NODE_MAJOR}/bin"; do
-    [[ -x "$dir/node" ]] && { NODE_BIN="$dir/node"; break; }
+    [[ -x "$dir/node" ]] && node_ok "$dir/node" && { NODE_BIN="$dir/node"; break; }
   done
 fi
-[[ -n "$NODE_BIN" ]] || die "Node.js ${REQUIRED_NODE_MAJOR}.x not found (current: $(node -v 2>/dev/null || echo none)).
+[[ -n "$NODE_BIN" ]] || die "Node.js ${REQUIRED_NODE_MAJOR}.x, ${MIN_NODE_VERSION} or later, not found (current: $(node -v 2>/dev/null || echo none)).
   Install it with nvm ('nvm install ${REQUIRED_NODE_MAJOR}'), mise ('mise install node@${REQUIRED_NODE_MAJOR}')
   or Homebrew ('brew install node@${REQUIRED_NODE_MAJOR}').
-  Newer Node versions break the repo's pinned yarn 4.9.2."
+  Older 24.x releases lack the Brotli fix (CVE-2026-111497)."
 NODE_DIR="$(dirname "$NODE_BIN")"
 export PATH="$NODE_DIR:$PATH"
 
