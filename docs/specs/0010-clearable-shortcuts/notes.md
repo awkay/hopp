@@ -41,6 +41,14 @@ what it finds here.
 - `CallCenter` is mounted for the whole call (hidden when another tab is shown), so its listener
   covers the call; outside a call, the query refetches on mount anyway.
 
+## Tooling
+
+- An agent's edit tool with a prettier hook rewrites the whole Markdown tables in `docs/TRACKER.md`
+  and `DATAICO.md` (column padding, hundreds of changed lines) when it touches one row. Add rows
+  there with a plain text insert and check `git diff --stat`.
+- Merging main while this was open moved the Node pin to 24.22.2; `.sova/bin/test` refuses Node
+  below 24.22.1. The checks passed on both 20.20.2 (before the merge) and 24.22.2 (after).
+
 ## Remaining limitations
 
 - Recording uses `KeyboardEvent.key`, the typed character: ⌥-combinations or ⇧ with a digit
