@@ -18,7 +18,10 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 use tauri_plugin_log::{Target, TargetKind};
 
 use hopp::{
-    app_state::{AppState, AppVeilApplication, UserSettings, WindowStyle, WindowStyleSettings},
+    app_state::{
+        normalize_shortcut, AppState, AppVeilApplication, UserSettings, WindowStyle,
+        WindowStyleSettings,
+    },
     application_catalog::InstalledApplication,
     call_state, connect_core,
     core_client::{CoreError, REQUEST_TIMEOUT},
@@ -742,17 +745,33 @@ fn set_app_veil_applications(
         })
 }
 
+/// Saves a call shortcut change, re-registers the shortcuts if a call is active and tells
+/// every window, so the call window's shortcut hints update without needing focus.
+fn update_shortcuts(app: &tauri::AppHandle, f: impl FnOnce(&mut UserSettings)) {
+    app.state::<AppData>()
+        .settings()
+        .app_state
+        .update_user_setting(f);
+    call_state::refresh_call_shortcuts(app);
+    if let Err(e) = app.emit("user_settings_changed", ()) {
+        log::error!("update_shortcuts: failed to emit user_settings_changed: {e}");
+    }
+}
+
 fn set_shortcut(
     app: &tauri::AppHandle,
     accel: String,
     apply: impl FnOnce(&mut UserSettings, Option<String>),
 ) {
-    let value = if accel.is_empty() { None } else { Some(accel) };
-    app.state::<AppData>()
-        .settings()
-        .app_state
-        .update_user_setting(|s| apply(s, value));
-    call_state::refresh_call_shortcuts(app);
+    // "" or "none" clears the shortcut ("Not set"); None would mean "use the default".
+    let value = Some(normalize_shortcut(accel));
+    update_shortcuts(app, |s| apply(s, value));
+}
+
+#[tauri::command(async)]
+fn reset_shortcuts(app: tauri::AppHandle) {
+    log::info!("reset_shortcuts");
+    update_shortcuts(&app, UserSettings::reset_shortcuts);
 }
 
 #[tauri::command(async)]
@@ -1595,6 +1614,7 @@ fn main() {
             set_shortcut_toggle_camera,
             set_shortcut_toggle_screenshare,
             set_shortcut_end_call,
+            reset_shortcuts,
             set_is_camera_on,
             set_is_screensharing,
             mute_mic,

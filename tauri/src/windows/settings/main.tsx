@@ -6,9 +6,13 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { HiXMark } from "react-icons/hi2";
 import {
+  isShortcutSet,
+  SHORTCUT_NONE,
   typedInvoke,
   type AppVeilApplication,
+  type CommandMap,
   type InstalledApplication,
   type ScreenSharePickerMode,
   type ScreenShareResolution,
@@ -153,28 +157,80 @@ function formatAccel(accel: string): string {
   return accel;
 }
 
+type ShortcutId = "mic" | "camera" | "screenshare" | "end_call";
+
+const SHORTCUT_ROWS = [
+  {
+    id: "mic",
+    title: "Mute / unmute mic",
+    description: "Toggle microphone during call",
+    field: "shortcut_toggle_mic",
+    setter: "set_shortcut_toggle_mic",
+  },
+  {
+    id: "camera",
+    title: "Toggle camera",
+    description: "Turn camera on or off during call",
+    field: "shortcut_toggle_camera",
+    setter: "set_shortcut_toggle_camera",
+  },
+  {
+    id: "screenshare",
+    title: "Toggle screen share",
+    description: "Start or stop screen sharing",
+    field: "shortcut_toggle_screenshare",
+    setter: "set_shortcut_toggle_screenshare",
+  },
+  {
+    id: "end_call",
+    title: "End call",
+    description: "Leave the current call",
+    field: "shortcut_end_call",
+    setter: "set_shortcut_end_call",
+  },
+] as const satisfies ReadonlyArray<{
+  id: ShortcutId;
+  title: string;
+  description: string;
+  field: keyof UserSettings;
+  setter: keyof CommandMap;
+}>;
+
+/**
+ * One call shortcut: a field that records a new combination when clicked, and an × beside it
+ * that clears it ("Not set"). The parent owns which row records, so only one does at a time.
+ */
 function ShortcutRow({
   title,
   description,
   value,
+  recording,
+  onRecordingChange,
   onCommit,
+  onClear,
 }: {
   title: string;
   description: string;
   value: string;
+  recording: boolean;
+  onRecordingChange: (recording: boolean) => void;
   onCommit: (accel: string) => void;
+  onClear: () => void;
 }) {
-  const [recording, setRecording] = useState(false);
-  const listenerRef = useRef<((e: KeyboardEvent) => void) | null>(null);
+  const onRecordingChangeRef = useRef(onRecordingChange);
+  onRecordingChangeRef.current = onRecordingChange;
+  const onCommitRef = useRef(onCommit);
+  onCommitRef.current = onCommit;
 
-  const startRecording = () => {
-    setRecording(true);
+  // Removed when recording stops and when the row unmounts (leaving the Shortcuts section).
+  useEffect(() => {
+    if (!recording) return;
     const handler = (e: KeyboardEvent) => {
       e.preventDefault();
       e.stopPropagation();
 
       if (e.key === "Escape" && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
-        stopRecording();
+        onRecordingChangeRef.current(false);
         return;
       }
 
@@ -197,21 +253,15 @@ function ShortcutRow({
       parts.push(e.key.toUpperCase());
       const accel = parts.join("+");
 
-      stopRecording();
-      onCommit(accel);
+      onRecordingChangeRef.current(false);
+      onCommitRef.current(accel);
     };
 
-    listenerRef.current = handler;
     window.addEventListener("keydown", handler, true);
-  };
+    return () => window.removeEventListener("keydown", handler, true);
+  }, [recording]);
 
-  const stopRecording = () => {
-    setRecording(false);
-    if (listenerRef.current) {
-      window.removeEventListener("keydown", listenerRef.current, true);
-      listenerRef.current = null;
-    }
-  };
+  const set = isShortcutSet(value);
 
   return (
     <div className="flex items-start justify-between gap-2">
@@ -219,15 +269,31 @@ function ShortcutRow({
         <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{title}</span>
         <span className="text-sm text-gray-500 dark:text-gray-400">{description}</span>
       </div>
-      <Button
-        variant="outline"
-        className="w-[180px] font-mono text-sm justify-start shrink-0"
-        onClick={() => (recording ? stopRecording() : startRecording())}
-      >
-        {recording ?
-          <span className="text-gray-400 dark:text-gray-500 text-xs">Recording...</span>
-        : <span className="text-gray-600 dark:text-gray-400 text-s">{formatAccel(value)}</span>}
-      </Button>
+      <div className="flex shrink-0 items-center gap-1">
+        <Button
+          variant="outline"
+          className="w-[180px] font-mono text-sm justify-start shrink-0"
+          onClick={() => onRecordingChange(!recording)}
+        >
+          {recording ?
+            <span className="text-gray-400 dark:text-gray-500 text-xs">Recording...</span>
+          : set ?
+            <span className="text-gray-600 dark:text-gray-400 text-s">{formatAccel(value)}</span>
+          : <span className="text-gray-400 dark:text-gray-500 text-s">Not set</span>}
+        </Button>
+        {/* Not set: a placeholder as wide as the ×, so the four fields stay aligned. */}
+        {set ?
+          <button
+            type="button"
+            aria-label={`Clear ${title} shortcut`}
+            title="Clear shortcut"
+            className="flex size-7 items-center justify-center rounded text-gray-500 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-400 dark:hover:bg-gray-800"
+            onClick={onClear}
+          >
+            <HiXMark className="size-4" />
+          </button>
+        : <div aria-hidden className="size-7" />}
+      </div>
     </div>
   );
 }
@@ -422,6 +488,8 @@ function SettingsWindow() {
 
   const [serverUrl, setServerUrl] = useState("");
   const [section, setSection] = useState<SectionId>("call");
+  // The shortcut field recording keys, if any; leaving the Shortcuts section stops it.
+  const [recordingShortcut, setRecordingShortcut] = useState<ShortcutId | null>(null);
 
   const { data: settings, refetch: refetchSettings } = useQuery({
     queryKey: ["user-settings"],
@@ -443,29 +511,18 @@ function SettingsWindow() {
     }
   }, [settings]);
 
-  async function commitShortcut(which: "mic" | "camera" | "screenshare" | "end_call", accel: string) {
-    const setters = {
-      mic: "set_shortcut_toggle_mic",
-      camera: "set_shortcut_toggle_camera",
-      screenshare: "set_shortcut_toggle_screenshare",
-      end_call: "set_shortcut_end_call",
-    } as const;
-
-    if (settings) {
-      const others = (["mic", "camera", "screenshare", "end_call"] as const).filter((k) => k !== which);
-      for (const other of others) {
-        const otherVal =
-          other === "mic" ? settings.shortcut_toggle_mic
-          : other === "camera" ? settings.shortcut_toggle_camera
-          : other === "screenshare" ? settings.shortcut_toggle_screenshare
-          : settings.shortcut_end_call;
-        if (otherVal === accel) {
-          await typedInvoke(setters[other], { accel: "" });
+  /** Saves `accel` (or `SHORTCUT_NONE` to clear) for one row; another row using the same keys is cleared. */
+  async function commitShortcut(which: ShortcutId, accel: string) {
+    if (settings && isShortcutSet(accel)) {
+      for (const other of SHORTCUT_ROWS) {
+        if (other.id !== which && settings[other.field] === accel) {
+          await typedInvoke(other.setter, { accel: SHORTCUT_NONE });
         }
       }
     }
 
-    await typedInvoke(setters[which], { accel });
+    const row = SHORTCUT_ROWS.find((r) => r.id === which);
+    if (row) await typedInvoke(row.setter, { accel });
     refetchSettings();
   }
 
@@ -485,7 +542,10 @@ function SettingsWindow() {
             {visibleSections.map((s) => (
               <button
                 key={s.id}
-                onClick={() => setSection(s.id)}
+                onClick={() => {
+                  setSection(s.id);
+                  setRecordingShortcut(null);
+                }}
                 className={`rounded-md px-3 py-1.5 text-left text-sm ${
                   section === s.id ?
                     "bg-gray-200 font-medium text-black dark:bg-gray-700 dark:text-white"
@@ -628,30 +688,31 @@ function SettingsWindow() {
 
             {section === "shortcuts" && (
               <div className="flex flex-col gap-3">
-                <ShortcutRow
-                  title="Mute / unmute mic"
-                  description="Toggle microphone during call"
-                  value={settings.shortcut_toggle_mic}
-                  onCommit={(accel) => commitShortcut("mic", accel)}
-                />
-                <ShortcutRow
-                  title="Toggle camera"
-                  description="Turn camera on or off during call"
-                  value={settings.shortcut_toggle_camera}
-                  onCommit={(accel) => commitShortcut("camera", accel)}
-                />
-                <ShortcutRow
-                  title="Toggle screen share"
-                  description="Start or stop screen sharing"
-                  value={settings.shortcut_toggle_screenshare}
-                  onCommit={(accel) => commitShortcut("screenshare", accel)}
-                />
-                <ShortcutRow
-                  title="End call"
-                  description="Leave the current call"
-                  value={settings.shortcut_end_call}
-                  onCommit={(accel) => commitShortcut("end_call", accel)}
-                />
+                {SHORTCUT_ROWS.map((row) => (
+                  <ShortcutRow
+                    key={row.id}
+                    title={row.title}
+                    description={row.description}
+                    value={settings[row.field]}
+                    recording={recordingShortcut === row.id}
+                    onRecordingChange={(recording) => setRecordingShortcut(recording ? row.id : null)}
+                    onCommit={(accel) => commitShortcut(row.id, accel)}
+                    onClear={() => {
+                      setRecordingShortcut(null);
+                      commitShortcut(row.id, SHORTCUT_NONE);
+                    }}
+                  />
+                ))}
+                <button
+                  type="button"
+                  className="self-start text-xs text-gray-500 underline-offset-2 hover:text-gray-700 hover:underline dark:text-gray-400 dark:hover:text-gray-200"
+                  onClick={() => {
+                    setRecordingShortcut(null);
+                    typedInvoke("reset_shortcuts").then(() => refetchSettings());
+                  }}
+                >
+                  Restore defaults
+                </button>
               </div>
             )}
 

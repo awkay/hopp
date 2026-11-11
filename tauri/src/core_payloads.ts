@@ -126,6 +126,7 @@ export interface UserSettings {
   /** "Use HEVC for screen sharing" (spec 0007); on by default. */
   screen_share_hevc: boolean;
   hopp_server_url: string | null;
+  /** Call shortcuts: an accelerator, or `SHORTCUT_NONE` when cleared ("Not set"). */
   shortcut_toggle_mic: string;
   shortcut_toggle_camera: string;
   shortcut_toggle_screenshare: string;
@@ -133,6 +134,15 @@ export interface UserSettings {
   telemetry_enabled: boolean;
   auto_update_enabled: boolean;
   app_veil_applications: AppVeilApplication[];
+}
+
+/** Stored value of a call shortcut the user cleared in Settings ("Not set"). */
+export const SHORTCUT_NONE = "none";
+
+/** Whether a call shortcut is set: false for a missing or empty value and for `SHORTCUT_NONE` in any case. */
+export function isShortcutSet(accel?: string | null): accel is string {
+  const trimmed = accel?.trim() ?? "";
+  return trimmed !== "" && trimmed.toLowerCase() !== SHORTCUT_NONE;
 }
 
 /** Low-bandwidth mode state for the current call; active while anyone requests it. */
@@ -267,6 +277,7 @@ export interface CommandMap {
   set_shortcut_toggle_camera: { args: { accel: string }; return: void };
   set_shortcut_toggle_screenshare: { args: { accel: string }; return: void };
   set_shortcut_end_call: { args: { accel: string }; return: void };
+  reset_shortcuts: { args: void; return: void };
   set_is_camera_on: { args: { value: boolean }; return: void };
   set_is_screensharing: { args: { value: boolean }; return: void };
 
