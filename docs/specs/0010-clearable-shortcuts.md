@@ -134,6 +134,23 @@ Run by the user on a build of this branch:
 - **Q:** Call window hints mid-call? **A:** They update as soon as a shortcut changes, without the
   call window needing focus (from the plan review). (2026-11-10)
 
+## Screenshots
+
+Rendered from this branch's UI build in a headless browser with mocked settings, not from the
+running app.
+
+All four set to the defaults:
+
+![Shortcuts with all four set](0010-clearable-shortcuts/shortcuts-set.png)
+
+Mute / unmute mic and End call cleared:
+
+![Two shortcuts cleared, showing Not set](0010-clearable-shortcuts/shortcuts-cleared.png)
+
+Toggle camera recording:
+
+![Toggle camera field recording](0010-clearable-shortcuts/shortcuts-recording.png)
+
 ## Completion notes
 
 [Notes, quirks, awkward behavior, gotchas and bugs](0010-clearable-shortcuts/notes.md)
