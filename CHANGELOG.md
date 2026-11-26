@@ -2,6 +2,11 @@
 
 What's new in each Hopp for Dataico release, newest first.
 
+## 1.0.39 (2026-11-26)
+
+- **Clear any call shortcut.** In Settings › Shortcuts, click the × beside a shortcut to set it to "Not set". Hopp stops using those keys, so your other apps get them back. Giving one shortcut keys that another already uses clears the other one, and "Restore defaults" brings back all four. Changes apply at once, even during a call.
+- **Your drawings stay when you stop drawing.** With "drawing persists" on, turning drawing off (to click something, say) now hides your drawings instead of erasing them. They come back when you turn drawing on again. Right-clicking while drawing, or ending the share, still clears them. Everyone in the call needs 1.0.39 for this: on older versions your drawings may stay on screen after you stop drawing, or not come back when you start again.
+
 ## 1.0.38 (2026-10-28)
 
 - **Screen sharing no longer goes blank.** Sometimes Hopp showed that you were sharing, and the others saw your cursor but not your screen, until you left and rejoined the call. It happened when Hopp switched your share from H.264 to HEVC, which it does on its own. That's fixed.
