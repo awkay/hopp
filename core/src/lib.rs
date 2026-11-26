@@ -1058,11 +1058,11 @@ impl<'a> Application<'a> {
         }
     }
 
+    /// Session teardown: hides the drawing window and drops its strokes, persistent ones too.
     fn close_drawing_window(&mut self) {
         log::info!("close_drawing_window");
         if let Some(window) = &mut self.drawing_window {
-            window.hide();
-            window.stop_redraw_thread();
+            window.close();
         }
         if let Err(e) = self.socket.send(Message::DrawingDisabled) {
             log::error!("Failed to send DrawingDisabled: {e:?}");
@@ -1277,6 +1277,9 @@ impl<'a> Application<'a> {
             }
             if let Some(gfx) = window_manager.active_gfx_mut() {
                 gfx.set_drawing_mode(identity, drawing_mode);
+                // Leaving or re-entering draw drops fade paths and hides or shows persistent
+                // ones; show that without waiting for input.
+                gfx.trigger_render();
             }
         }
     }
@@ -2784,15 +2787,21 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                 } else {
                     let remote_control = self.remote_control.as_mut().unwrap();
 
-                    // Send LiveKit event to clear all paths
-                    if let Some(room_service) = &self.room_service {
-                        room_service.publish_draw_clear_all_paths();
-                    }
-
                     // Restore the saved remote control preference
                     remote_control.set_enabled(self.remote_control_enabled);
 
+                    // Fade-mode and in-progress strokes go away; persistent ones are kept,
+                    // hidden with the window, until drawing turns back on.
+                    let cleared = self
+                        .drawing_window
+                        .as_mut()
+                        .map(|window| window.stop_drawing())
+                        .unwrap_or_default();
+
                     if let Some(room_service) = &self.room_service {
+                        if !cleared.is_empty() {
+                            room_service.publish_draw_clear_paths(cleared);
+                        }
                         room_service.publish_drawing_mode(room_service::DrawingMode::Disabled);
                     }
 
@@ -2806,8 +2815,9 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                         gfx.trigger_render();
                     }
 
-                    // Hide drawing window
-                    self.close_drawing_window();
+                    if let Err(e) = self.socket.send(Message::DrawingDisabled) {
+                        log::error!("Failed to send DrawingDisabled: {e:?}");
+                    }
                 }
             }
             UserEvent::ExitRequested => {
@@ -3014,11 +3024,8 @@ impl<'a> ApplicationHandler<UserEvent> for Application<'a> {
                                 }
                             },
                             ScreenShareInputEvent::DrawingModeChanged(mode) => {
-                                if mode == crate::room_service::DrawingMode::Disabled
-                                    || mode == crate::room_service::DrawingMode::ClickAnimation
-                                {
-                                    rs.publish_draw_clear_all_paths();
-                                }
+                                // No clear-all here: leaving draw keeps persistent paths, and the
+                                // window already sent `DrawClearPaths` for the ones it dropped.
                                 if let crate::room_service::DrawingMode::Draw(settings) = &mode {
                                     if settings.permanent != self.controller_draw_persist {
                                         self.controller_draw_persist = settings.permanent;

@@ -371,15 +371,9 @@ impl DrawingWindow {
             )
         };
 
-        let mut participants_manager = ParticipantsManager::new();
-        if let Err(e) = participants_manager.add_participant(
-            drawing_helpers::LOCAL_PARTICIPANT_IDENTITY.to_string(),
-            drawing_helpers::LOCAL_PARTICIPANT_IDENTITY,
-            true,
-            DrawingMode::Draw(crate::room_service::DrawSettings { permanent }),
-        ) {
-            log::warn!("DrawingWindow::new: failed to add local participant: {e:?}");
-        }
+        let participants_manager = Self::local_participants_manager(DrawingMode::Draw(
+            crate::room_service::DrawSettings { permanent },
+        ));
 
         let (redraw_tx, redraw_rx) = std::sync::mpsc::channel();
         let redraw_thread = Some(spawn_redraw_thread(redraw_rx, window.clone()));
@@ -446,10 +440,21 @@ impl DrawingWindow {
         self.redraw_tx = redraw_tx;
     }
 
-    pub fn hide(&self) {
-        self.window.set_visible(false);
+    fn local_participants_manager(mode: DrawingMode) -> ParticipantsManager {
+        let mut participants_manager = ParticipantsManager::new();
+        if let Err(e) = participants_manager.add_participant(
+            drawing_helpers::LOCAL_PARTICIPANT_IDENTITY.to_string(),
+            drawing_helpers::LOCAL_PARTICIPANT_IDENTITY,
+            true,
+            mode,
+        ) {
+            log::warn!("DrawingWindow: failed to add local participant: {e:?}");
+        }
+        participants_manager
     }
 
+    /// Turns local drawing on: shows the window with the persistent strokes kept from earlier,
+    /// exactly as they were.
     pub fn show(
         &mut self,
         position: Option<LogicalPosition<f64>>,
@@ -459,22 +464,16 @@ impl DrawingWindow {
         cover_monitor(&self.window, position);
 
         self.left_mouse_pressed = false;
-        self.current_path_id = 0;
         self.last_cursor_position = None;
         self.text_input = DrawTextInput::default();
-
-        let mut participants_manager = ParticipantsManager::new();
-        if let Err(e) = participants_manager.add_participant(
-            drawing_helpers::LOCAL_PARTICIPANT_IDENTITY.to_string(),
+        // `current_path_id` keeps counting: kept strokes hold the earlier ids, and receivers
+        // ignore or clear the wrong element when an id is reused.
+        self.participants_manager.set_drawing_mode(
             drawing_helpers::LOCAL_PARTICIPANT_IDENTITY,
-            true,
             DrawingMode::Draw(crate::room_service::DrawSettings {
                 permanent: self.draw_persist,
             }),
-        ) {
-            log::warn!("DrawingWindow::show: failed to add local participant: {e:?}");
-        }
-        self.participants_manager = participants_manager;
+        );
 
         self.cache = Some(Cache::default());
         self.ensure_redraw_thread();
@@ -482,6 +481,34 @@ impl DrawingWindow {
         self.window.focus_window();
         self.update_draw_y_transform();
         self.window.request_redraw();
+    }
+
+    /// Turns local drawing off: hides the window and returns the ids of the paths that went away
+    /// (fade-mode and in-progress ones), for the other participants. Persistent strokes are kept,
+    /// hidden, until drawing turns back on.
+    pub fn stop_drawing(&mut self) -> Vec<u64> {
+        self.left_mouse_pressed = false;
+        self.text_input = DrawTextInput::default();
+        let cleared = self.participants_manager.set_drawing_mode(
+            drawing_helpers::LOCAL_PARTICIPANT_IDENTITY,
+            DrawingMode::Disabled,
+        );
+        self.window.set_visible(false);
+        self.stop_redraw_thread();
+        cleared
+    }
+
+    /// Ends the session's drawing: hides the window and drops every stroke, so the next share
+    /// starts clean.
+    pub fn close(&mut self) {
+        self.window.set_visible(false);
+        self.stop_redraw_thread();
+        self.left_mouse_pressed = false;
+        self.last_cursor_position = None;
+        self.text_input = DrawTextInput::default();
+        self.current_path_id = 0;
+        self.participants_manager = Self::local_participants_manager(DrawingMode::Disabled);
+        self.cache = Some(Cache::default());
     }
 
     pub fn move_to(&mut self, position: Option<LogicalPosition<f64>>) {
@@ -505,6 +532,8 @@ impl DrawingWindow {
         ));
     }
 
+    /// Sets persist or fade for new strokes; existing strokes keep the behaviour they were drawn
+    /// with.
     pub fn set_draw_persist(&mut self, permanent: bool) {
         self.draw_persist = permanent;
         self.participants_manager.set_drawing_mode(

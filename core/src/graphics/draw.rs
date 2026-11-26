@@ -52,6 +52,10 @@ struct DrawPath {
     path_id: u64,
     shape: DrawShape,
     finished_at: Option<Instant>,
+    /// Whether the element was finished in persist mode. Persistent elements never expire and
+    /// survive leaving draw mode; only an explicit clear removes them. Decided when the element
+    /// is finished, so later mode changes don't change how it behaves.
+    permanent: bool,
 }
 
 impl DrawPath {
@@ -60,6 +64,7 @@ impl DrawPath {
             path_id,
             shape: DrawShape::Stroke(vec![point]),
             finished_at: None,
+            permanent: false,
         }
     }
 }
@@ -112,11 +117,60 @@ impl Draw {
         self.mode.clone()
     }
 
-    pub fn set_mode(&mut self, mode: DrawingMode) {
-        self.mode = mode.clone();
-        if mode == DrawingMode::Disabled {
-            self.clear();
+    /// Sets the drawing mode and returns the ids of the elements it removed.
+    ///
+    /// Leaving draw mode (`Disabled` or `ClickAnimation`) drops the in-progress stroke and text
+    /// and the completed fade-mode elements. Persistent ones are kept but hidden until the
+    /// participant is back in draw mode, and only an explicit [`Draw::clear`] (right-click) or
+    /// session teardown removes them. Switching between persist and fade keeps everything; each
+    /// element keeps the behaviour it was finished with.
+    pub fn set_mode(&mut self, mode: DrawingMode) -> Vec<u64> {
+        self.mode = mode;
+        // Visibility may have changed, so rebuild the cached geometry on the next draw.
+        self.completed_cache.clear();
+        if self.is_shown() {
+            return Vec::new();
         }
+
+        let mut removed_ids: Vec<u64> = self
+            .in_progress_path
+            .take()
+            .into_iter()
+            .chain(self.in_progress_text.take())
+            .map(|path| path.path_id)
+            .collect();
+        self.completed_paths.retain(|path| {
+            if !path.permanent {
+                removed_ids.push(path.path_id);
+            }
+            path.permanent
+        });
+        removed_ids
+    }
+
+    /// Whether this participant's drawings render: not while they are known to be out of draw
+    /// mode. An unknown mode (`Any`, before the first mode message) still shows them.
+    fn is_shown(&self) -> bool {
+        !matches!(
+            self.mode,
+            DrawingMode::Disabled | DrawingMode::ClickAnimation
+        )
+    }
+
+    /// Completed elements to render.
+    fn visible_paths(&self) -> impl Iterator<Item = &DrawPath> {
+        let shown = self.is_shown();
+        self.completed_paths.iter().filter(move |_| shown)
+    }
+
+    /// Ids of the completed elements that render right now.
+    #[cfg(test)]
+    pub fn visible_path_ids(&self) -> Vec<u64> {
+        self.visible_paths().map(|path| path.path_id).collect()
+    }
+
+    fn is_permanent_mode(&self) -> bool {
+        matches!(&self.mode, DrawingMode::Draw(settings) if settings.permanent)
     }
 
     pub fn start_path(&mut self, path_id: u64, point: Position) {
@@ -155,6 +209,7 @@ impl Draw {
         if let Some(mut in_progress_path) = self.in_progress_path.take() {
             log::info!("finish_path: finishing path {}", in_progress_path.path_id);
             in_progress_path.finished_at = Some(Instant::now());
+            in_progress_path.permanent = self.is_permanent_mode();
             self.completed_paths.push(in_progress_path);
             self.completed_cache.clear();
         } else {
@@ -203,6 +258,7 @@ impl Draw {
                 content: content.to_string(),
             },
             finished_at: None,
+            permanent: false,
         };
 
         if committed {
@@ -212,6 +268,7 @@ impl Draw {
             }
             self.completed_paths.push(DrawPath {
                 finished_at: Some(Instant::now()),
+                permanent: self.is_permanent_mode(),
                 ..text
             });
             self.completed_cache.clear();
@@ -256,19 +313,14 @@ impl Draw {
             return Vec::new();
         }
 
-        // Only clear in non-permanent mode
-        if let DrawingMode::Draw(settings) = &self.mode {
-            if settings.permanent {
-                return Vec::new();
-            }
-        } else {
-            return Vec::new();
-        }
-
+        // Persistent elements never expire, whatever the current mode.
         let now = Instant::now();
         let mut removed_ids = Vec::new();
 
         self.completed_paths.retain(|path| {
+            if path.permanent {
+                return true;
+            }
             if let Some(finished_at) = path.finished_at {
                 let should_keep = now.duration_since(finished_at) < PATH_EXPIRY_DURATION;
                 if !should_keep {
@@ -295,7 +347,7 @@ impl Draw {
         translate: &dyn Fn(Position) -> Position,
     ) -> Geometry {
         self.completed_cache.draw(renderer, bounds.size(), |frame| {
-            for draw_path in &self.completed_paths {
+            for draw_path in self.visible_paths() {
                 self.draw_shape(frame, &draw_path.shape, false, translate);
             }
         })
@@ -550,23 +602,185 @@ mod tests {
         assert!(d.completed_paths.is_empty());
     }
 
+    fn stroke(d: &mut Draw, path_id: u64) {
+        d.start_path(path_id, pos(0.1, 0.1));
+        d.add_point(pos(0.2, 0.2));
+        d.finish_path();
+    }
+
+    fn age_completed(d: &mut Draw) {
+        for path in &mut d.completed_paths {
+            path.finished_at =
+                Some(Instant::now() - PATH_EXPIRY_DURATION - Duration::from_millis(1));
+        }
+    }
+
+    fn completed_ids(d: &Draw) -> Vec<u64> {
+        d.completed_paths.iter().map(|path| path.path_id).collect()
+    }
+
+    fn draw_mode(permanent: bool) -> DrawingMode {
+        DrawingMode::Draw(DrawSettings { permanent })
+    }
+
     #[test]
-    fn clear_and_disable_drop_all_text() {
+    fn clear_drops_all_text() {
         let mut d = draw(true);
         d.set_text(1, pos(0.1, 0.1), "done", true);
         d.set_text(2, pos(0.2, 0.2), "typing", false);
         d.clear();
         assert!(d.in_progress_text.is_none());
         assert!(d.completed_paths.is_empty());
+    }
 
-        d.set_text(3, pos(0.1, 0.1), "done", true);
-        d.set_text(4, pos(0.2, 0.2), "typing", false);
+    #[test]
+    fn disable_keeps_committed_persistent_text_but_drops_pending_text() {
+        let mut d = draw(true);
+        d.set_text(1, pos(0.1, 0.1), "done", true);
+        d.set_text(2, pos(0.2, 0.2), "typing", false);
         d.set_mode(DrawingMode::Disabled);
         assert!(d.in_progress_text.is_none());
-        assert!(d.completed_paths.is_empty());
+        assert_eq!(completed_ids(&d), vec![1]);
 
-        d.set_text(5, pos(0.1, 0.1), "ignored", false);
+        d.set_text(3, pos(0.1, 0.1), "ignored", false);
         assert!(d.in_progress_text.is_none());
+    }
+
+    #[test]
+    fn persistent_strokes_survive_disable_and_reenable() {
+        let mut d = draw(true);
+        stroke(&mut d, 1);
+        d.set_text(2, pos(0.3, 0.3), "note", true);
+
+        assert!(d.set_mode(DrawingMode::Disabled).is_empty());
+        assert_eq!(completed_ids(&d), vec![1, 2]);
+
+        assert!(d.set_mode(draw_mode(true)).is_empty());
+        assert_eq!(completed_ids(&d), vec![1, 2]);
+        assert_eq!(d.visible_path_ids(), vec![1, 2]);
+
+        age_completed(&mut d);
+        assert!(d.clear_expired_paths().is_empty());
+        assert_eq!(completed_ids(&d), vec![1, 2]);
+    }
+
+    #[test]
+    fn persistent_strokes_survive_leaving_draw_for_click_animation() {
+        let mut d = draw(true);
+        stroke(&mut d, 1);
+
+        d.set_mode(DrawingMode::ClickAnimation);
+        d.set_mode(draw_mode(true));
+        assert_eq!(completed_ids(&d), vec![1]);
+    }
+
+    #[test]
+    fn disable_drops_in_progress_persistent_stroke() {
+        let mut d = draw(true);
+        stroke(&mut d, 1);
+        d.start_path(2, pos(0.5, 0.5));
+
+        assert_eq!(d.set_mode(DrawingMode::Disabled), vec![2]);
+        assert!(d.in_progress_path.is_none());
+        assert_eq!(completed_ids(&d), vec![1]);
+    }
+
+    #[test]
+    fn fade_strokes_clear_on_disable() {
+        let mut d = draw(false);
+        stroke(&mut d, 1);
+        d.set_text(2, pos(0.3, 0.3), "note", true);
+
+        assert_eq!(d.set_mode(DrawingMode::Disabled), vec![1, 2]);
+        assert!(d.completed_paths.is_empty());
+    }
+
+    #[test]
+    fn fade_strokes_clear_on_leaving_draw_for_click_animation() {
+        let mut d = draw(false);
+        stroke(&mut d, 1);
+
+        d.set_mode(DrawingMode::ClickAnimation);
+        assert!(d.completed_paths.is_empty());
+    }
+
+    #[test]
+    fn fade_strokes_still_expire_after_switching_to_persist() {
+        let mut d = draw(false);
+        stroke(&mut d, 1);
+        d.set_mode(draw_mode(true));
+        stroke(&mut d, 2);
+
+        age_completed(&mut d);
+        assert_eq!(d.clear_expired_paths(), vec![1]);
+        assert_eq!(completed_ids(&d), vec![2]);
+    }
+
+    #[test]
+    fn persistent_strokes_never_expire_after_switching_to_fade() {
+        let mut d = draw(true);
+        stroke(&mut d, 1);
+        d.set_mode(draw_mode(false));
+        stroke(&mut d, 2);
+
+        age_completed(&mut d);
+        assert_eq!(d.clear_expired_paths(), vec![2]);
+        assert_eq!(completed_ids(&d), vec![1]);
+    }
+
+    #[test]
+    fn persistent_strokes_survive_switching_to_fade_and_disabling() {
+        let mut d = draw(true);
+        stroke(&mut d, 1);
+        d.set_mode(draw_mode(false));
+        stroke(&mut d, 2);
+
+        assert_eq!(d.set_mode(DrawingMode::Disabled), vec![2]);
+        assert_eq!(completed_ids(&d), vec![1]);
+    }
+
+    #[test]
+    fn persistent_strokes_are_hidden_while_drawing_is_off() {
+        let mut d = draw(true);
+        stroke(&mut d, 1);
+        assert_eq!(d.visible_path_ids(), vec![1]);
+
+        d.set_mode(DrawingMode::Disabled);
+        assert!(d.visible_path_ids().is_empty());
+        assert_eq!(completed_ids(&d), vec![1]);
+
+        d.set_mode(draw_mode(true));
+        assert_eq!(d.visible_path_ids(), vec![1]);
+    }
+
+    #[test]
+    fn persistent_strokes_are_hidden_in_click_animation_mode() {
+        let mut d = draw(true);
+        stroke(&mut d, 1);
+
+        d.set_mode(DrawingMode::ClickAnimation);
+        assert!(d.visible_path_ids().is_empty());
+
+        d.set_mode(draw_mode(false));
+        assert_eq!(d.visible_path_ids(), vec![1]);
+    }
+
+    #[test]
+    fn strokes_show_while_the_mode_is_unknown() {
+        let mut d = Draw::new("#FF0000", false, DrawingMode::Any);
+        stroke(&mut d, 1);
+        assert_eq!(d.visible_path_ids(), vec![1]);
+    }
+
+    #[test]
+    fn clear_drops_persistent_strokes() {
+        let mut d = draw(true);
+        stroke(&mut d, 1);
+        d.set_mode(DrawingMode::Disabled);
+        d.set_mode(draw_mode(true));
+
+        d.clear();
+        assert!(d.completed_paths.is_empty());
     }
 
     #[test]

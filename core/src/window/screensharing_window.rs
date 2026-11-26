@@ -1197,6 +1197,8 @@ impl ScreensharingWindow {
         self.participants_manager
             .set_cursor_mode(identity, cursor_mode);
         self.participants_manager.set_drawing_mode(identity, mode);
+        // Persistent strokes hide outside draw mode and come back with it.
+        self.window.request_redraw();
     }
 
     pub fn drawing_mode(&self) -> crate::room_service::DrawingMode {
@@ -1905,19 +1907,19 @@ impl ScreensharingWindow {
                                     crate::room_service::DrawingMode::Disabled
                                 }
                             };
-                            if mode == crate::room_service::DrawingMode::Disabled
-                                || mode == crate::room_service::DrawingMode::ClickAnimation
-                            {
-                                self.participants_manager.draw_clear_all_paths(
-                                    drawing_helpers::LOCAL_PARTICIPANT_IDENTITY,
-                                );
-                            }
                             let update = self.state.text_input.cancel();
                             self.apply_text_update(update, &mut input_events);
-                            self.participants_manager.set_drawing_mode(
+                            // Leaving draw drops fade-mode and in-progress paths and hides the
+                            // persistent ones until Draw is picked again; tell the others which
+                            // paths went away.
+                            let cleared = self.participants_manager.set_drawing_mode(
                                 drawing_helpers::LOCAL_PARTICIPANT_IDENTITY,
                                 mode.clone(),
                             );
+                            if !cleared.is_empty() {
+                                input_events.push(ScreenShareInputEvent::DrawClearPaths(cleared));
+                            }
+                            self.window.request_redraw();
                             self.state.left_mouse_pressed = false;
                             input_events.push(ScreenShareInputEvent::DrawingModeChanged(mode));
                         }

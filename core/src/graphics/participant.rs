@@ -260,19 +260,23 @@ impl ParticipantsManager {
     }
 
     /// Sets the drawing mode for a specific participant.
-    pub fn set_drawing_mode(&mut self, identity: &str, mode: DrawingMode) {
+    ///
+    /// Returns the ids of the paths the mode change removed: leaving draw mode drops fade-mode
+    /// and in-progress paths but keeps persistent ones (see `Draw::set_mode`).
+    pub fn set_drawing_mode(&mut self, identity: &str, mode: DrawingMode) -> Vec<u64> {
         log::debug!(
             "ParticipantsManager::set_drawing_mode: identity={} mode={:?}",
             identity,
             mode
         );
         if let Some(participant) = self.participants.get_mut(identity) {
-            participant.draw_mut().set_mode(mode);
+            participant.draw_mut().set_mode(mode)
         } else {
             log::warn!(
                 "ParticipantsManager::set_drawing_mode: participant {} not found",
                 identity
             );
+            Vec::new()
         }
     }
 
@@ -463,5 +467,70 @@ impl ParticipantsManager {
         geometries.push(in_progress_frame.into_geometry());
 
         geometries
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::room_service::DrawSettings;
+
+    const LOCAL: &str = "local";
+
+    fn draw_mode(permanent: bool) -> DrawingMode {
+        DrawingMode::Draw(DrawSettings { permanent })
+    }
+
+    fn manager(permanent: bool) -> ParticipantsManager {
+        let mut manager = ParticipantsManager::new();
+        manager
+            .add_participant(LOCAL.to_string(), LOCAL, true, draw_mode(permanent))
+            .expect("add local participant");
+        manager
+    }
+
+    fn stroke(manager: &mut ParticipantsManager, path_id: u64) {
+        manager.draw_start(LOCAL, Position { x: 0.1, y: 0.1 }, path_id);
+        manager.draw_end(LOCAL, Position { x: 0.2, y: 0.2 });
+    }
+
+    fn visible(manager: &ParticipantsManager) -> Vec<u64> {
+        manager.participants[LOCAL].draw().visible_path_ids()
+    }
+
+    #[test]
+    fn persist_drawing_is_kept_hidden_while_off_and_shown_again() {
+        let mut manager = manager(true);
+        stroke(&mut manager, 1);
+
+        assert!(manager
+            .set_drawing_mode(LOCAL, DrawingMode::Disabled)
+            .is_empty());
+        assert!(visible(&manager).is_empty());
+
+        assert!(manager.set_drawing_mode(LOCAL, draw_mode(true)).is_empty());
+        assert_eq!(visible(&manager), vec![1]);
+    }
+
+    #[test]
+    fn disabling_fade_drawing_returns_removed_paths() {
+        let mut manager = manager(false);
+        stroke(&mut manager, 1);
+        stroke(&mut manager, 2);
+
+        assert_eq!(
+            manager.set_drawing_mode(LOCAL, DrawingMode::Disabled),
+            vec![1, 2]
+        );
+        manager.set_drawing_mode(LOCAL, draw_mode(false));
+        assert!(visible(&manager).is_empty());
+    }
+
+    #[test]
+    fn unknown_participant_mode_change_removes_nothing() {
+        let mut manager = manager(true);
+        assert!(manager
+            .set_drawing_mode("nobody", DrawingMode::Disabled)
+            .is_empty());
     }
 }
